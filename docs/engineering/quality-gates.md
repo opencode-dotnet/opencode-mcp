@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-05
+Date: 2026-11-06
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -161,6 +161,23 @@ of their own, never beside the managed pass:
 `../architecture/hosting-and-packaging.md` owns the native and package contract;
 `../ROADMAP.md` records which of these passes exist today.
 
+### Focused executable checks
+
+Focused managed-process verification uses the actual Release product, not `dotnet run` or the
+AppHost:
+
+```powershell
+dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --treenode-filter "/*/*/(WireTranscriptTests|ProductExecutableTests|RecordingDuplexStreamTests|OwnedMcpProcessTests)/*" --minimum-expected-tests 1
+dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --treenode-filter "/*/*/ExecutableTests/*" --minimum-expected-tests 1
+dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --treenode-filter "/*/*/(McpAppTests|HttpTransportTests)/*" --minimum-expected-tests 1
+```
+
+`OPENCODE_MCP_TEST_EXECUTABLE` selects an existing non-DLL executable directly for the executable
+class; an invalid explicit path fails instead of falling back. This selector does not inspect the
+native image or establish native, RID, package or runtime-independence evidence. Without it, the
+tests resolve the built Release DLL from the test executable's location. Focused runs do not replace
+the local check.
+
 ## Continuous integration
 
 This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
@@ -221,8 +238,9 @@ into the results directory, and the rows in flight are among those listed but no
 ## Owned processes
 
 A gate that starts a process owns it. Every process a test, fixture or script starts is ended and
-waited for until it has closed its handles, its readers are joined, and its owned roots are removed
-afterwards; it ends only processes it started. A stdio MCP server proves a clean exit by ending
+awaited with `Process.WaitForExitAsync`, its readers are joined, and its owned roots are removed
+afterwards. The `Process` instance is retained until disposal; the owner ends only processes it
+started. A stdio MCP server proves a clean exit by ending
 after end of input, an HTTP MCP server by its endpoint refusing connections after stop, and an
 AppHost run by the recorded product processes having exited. A missing prerequisite fails fast and
 names the missing requirement. `testing-style.md` §6 owns the authoring rules.

@@ -25,11 +25,17 @@
     <PackageReference Include="OpenTelemetry" />
     <PackageReference Include="OpenTelemetry.Api" />
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+    <PackageReference Include="Testably.Abstractions" />
+    <PackageReference Include="Testably.Abstractions.Testing" />
     <PackageReference Include="TUnit" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Fixtures/Protocol/http-complete.json" LogicalName="Fixtures.Protocol.http-complete.json" />
+    <EmbeddedResource Include="Fixtures/Protocol/discover-complete.json" LogicalName="Fixtures.Protocol.discover-complete.json" />
+    <EmbeddedResource Include="Fixtures/Protocol/tool-list-complete.json" LogicalName="Fixtures.Protocol.tool-list-complete.json" />
+    <EmbeddedResource Include="Fixtures/Protocol/tool-call-complete.json" LogicalName="Fixtures.Protocol.tool-call-complete.json" />
+    <EmbeddedResource Include="Fixtures/Protocol/malformed-stdout.txt" LogicalName="Fixtures.Protocol.malformed-stdout.txt" />
   </ItemGroup>
 
 </Project>

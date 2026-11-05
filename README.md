@@ -19,7 +19,7 @@ The bootstrap delivers an MCP server that is designed to:
 - run over standard input and output by default, or as a loopback-only Streamable HTTP endpoint on
   request;
 - speak MCP revision `2026-07-28`;
-- offer one MCP tool, `bootstrap_ping`, a connectivity probe that returns `pong` and checks only
+- offer one MCP tool, `bootstrap_ping`, a connectivity probe that returns `pong opencode-mcp <version>` and checks only
   the connection between the MCP client and this server, not OpenCode or a model provider;
 - ship as a NuGet MCP tool package and as native executables for Windows, Linux, and macOS on x64
   and Arm64.
@@ -47,6 +47,9 @@ dotnet ./src/OpenCode.Mcp/bin/Release/net10.0/OpenCode.Mcp.dll --transport stdio
 Configure a local MCP client's command as `dotnet` and its arguments as the absolute path to that
 `OpenCode.Mcp.dll`, followed by `--transport` and `stdio`. Standard input and output belong to the
 client; diagnostic logs go to standard error. Omitting `--transport` also selects stdio.
+Standard output contains protocol messages only: no banner, log line, or prompt. When the client
+closes standard input, the stdio session ends, the host shuts down, and the process exits with
+code 0. No extra shutdown request is required.
 
 The client must support MCP revision `2026-07-28`: discover with `server/discover`, list tools, then
 call `bootstrap_ping` with no arguments. Its result is exactly `pong opencode-mcp <version>`, where

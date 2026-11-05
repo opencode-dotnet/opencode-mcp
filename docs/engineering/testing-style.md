@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-05
+Date: 2026-11-06
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in
@@ -96,6 +96,10 @@ are promoted into the fixture set when available. The protocol proof itself come
 exchanges with the running MCP server, not from fixtures. Documentation states the observed fixture
 count rather than projecting completeness onto it.
 
+The protocol fixture set contains five files: the HTTP recorder fixture, three complete stdio
+response frames (discovery, tool list and tool call), and malformed stdout. These representative
+inputs exercise observation and fragmentation; they are not a protocol conformance corpus.
+
 ## 4. Fakes and mocks
 
 - **Substitute at seams only** (NSubstitute over interfaces). Records, tool types, and
@@ -160,6 +164,31 @@ cannot own its server fails.
   it adds the test's explicit inputs. It keeps the operating-system and runtime variables a launch
   needs and a loopback proxy bypass, and nothing of the user's secrets or global state. It drains
   standard error concurrently within a bound and records only redacted, selected lines.
+  Explicit inputs override the scrubbed environment, but an explicit isolation-path variable is
+  refused. The launch explicitly transfers an owned root: a direct child of the temporary directory
+  whose name starts with `opencode-mcp-` and which contains the working directory. The owner refuses
+  other roots before starting a process and deletes only that root. Home, config, cache and temp
+  paths are assigned beneath it by the owner last. The direct owner
+  diagnostic probes use the operating system's command interpreter; they never launch an MCP
+  stand-in or require an additional installed runtime.
+- **One stdout reader.** The MCP stream transport is the sole stdout reader while connected.
+  `RecordingDuplexStream` observes transferred bytes and owns the stream it wraps; both synchronous
+  and asynchronous disposal close it idempotently. Synchronous I/O is unsupported. Stdin EOF is
+  sent by disposing the input wrapper while the client remains alive. Await exit and client
+  completion before inspecting the final transcript or disposing the client. Only a launch with
+  no connected client drains stdout directly through its wrapper, concurrently with the exit wait.
+  HTTP endpoint discovery also starts that drain. The transcript counts raw server bytes and retains
+  every server line, including blank lines, errors and notifications; an empty result list alone
+  never proves empty stdout.
+- **Bounded diagnostic retention is not a drain limit.** The owner drains stderr through EOF even
+  after it has retained 200 selected lines. Each selected line is limited to 2,000 characters;
+  oversized lines carry a truncation marker. Lifetime-category lines, selector refusals, and the
+  first line of fail/critical entries are retained after sensitive token values and owned paths
+  are redacted. Retaining the selector-refusal line is an approved deviation from the original
+  category-only selection policy: invalid-CLI tests need its full diagnostic assertion.
+  A sensitive separator at the end of a token also redacts the next whitespace-separated token.
+  A valid numeric loopback listening announcement completes endpoint discovery even
+  when diagnostic retention is full.
 - **An OpenCode server process extends the boundary, never weakens it.** A fixture that starts one
   sets every variable and configuration root that could steer it at the developer's data inside
   the fixture's run root, refuses the launch while machine-wide configuration that no variable
@@ -167,14 +196,18 @@ cannot own its server fails.
   confirms that the server honoured the boundary before any test reaches it.
 - **An owned process never outlives its fixture.** Teardown ends every process its test started and
   waits for each to be finished before it removes the run root: a process still running under a
-  removed root recreates it and keeps running unowned. Finished means the process has closed its
-  handles. On Windows the exit code is set before a killed process closes its files, and
-  `HasExited` and `WaitForExitAsync` report it gone from that moment, so the owner holds each
-  process's handle from while it runs and waits for that handle to signal. Teardown runs in
+  removed root recreates it and keeps running unowned. On Windows, `HasExited` can be true before a
+  killed child has closed its files, so the public `Process.WaitForExitAsync(CancellationToken)`
+  wait starts while the child runs, before any root deletion. The owner awaits it and keeps the
+  `Process` instance alive until disposal, so its exit status remains readable. It uses no
+  raw-handle wait. Teardown runs in
   `finally` or asynchronous disposal, after assertion failures too; it ends only owned children,
   finishes their readers and releases their files. Killing a process is a cleanup fallback, never
   an end-of-input success, and a cleanup assertion never runs after the ownership evidence it rests
   on is lost.
+  HTTP process tests force termination in teardown only; endpoint refusal proves listener release,
+  not graceful HTTP shutdown. EOF exit has a 45-second outer hang guard around the host's
+  30-second shutdown default and SDK reader cleanup. Forced cleanup has its own 15-second guard.
 - **The event decides a verdict, never the clock.** The verdict rests on an event: the call result,
   the exit after end of input, the refused connection after stop, the healthy resource. A test
   whose verdict rests on a product bound passing, or not passing, runs that bound on a test-owned

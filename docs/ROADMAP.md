@@ -16,8 +16,11 @@ are implemented. The product is a managed executable with a loopback-only Stream
 product-owned Origin validation, Host filtering, and refusal of invalid selectors before host
 creation. Real socket tests cover modern discovery/list/call, Development-only health, and refused
 connections after shutdown; bounded recorder tests cover JSON and request-scoped SSE observations.
-Source launch instructions are in the README. The next proof is the owned stdio process boundary;
-HTTP connectivity is not evidence of protocol-only process stdout or EOF cleanup.
+Source launch instructions are in the README. Owned managed-process tests cover default and
+explicit stdio, protocol-only stdout, stderr lifetime logs, selector refusals, exit zero after EOF,
+and cleanup after failures. HTTP process tests cover modern bootstrap, Development health,
+Host/Origin controls and listener release after forced teardown. These are local Windows proofs,
+not native or package evidence. The next bootstrap increment is the AppHost.
 
 Until CI and the merge queue exist, feature branches merge with the maintainer's approval.
 
@@ -30,7 +33,7 @@ Until CI and the merge queue exist, feature branches merge with the maintainer's
 3. **HTTP proof** - the real executable, the loopback-only Streamable HTTP endpoint, and the
    refusal of an invalid mode before any host starts; implemented and locally tested.
 4. **Stdio proof** - the real process over standard input and output, protocol-only standard output,
-   and owned cleanup.
+   and owned cleanup; implemented and locally tested on Windows.
 5. **AppHost** - the one-resource Aspire AppHost and its closed-box lifecycle tests
    (`architecture/hosting-and-packaging.md`).
 6. **CI** - the required CI workflow with its `CI result` check, dependency review, contribution

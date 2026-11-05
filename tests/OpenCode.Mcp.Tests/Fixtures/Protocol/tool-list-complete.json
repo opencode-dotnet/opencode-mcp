@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","tools":[{"name":"bootstrap_ping","description":"Returns pong with this server's name and version to verify connectivity; performs no external work.","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true,"idempotentHint":true,"destructiveHint":false,"openWorldHint":false}}]}}
