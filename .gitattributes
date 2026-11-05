@@ -1,0 +1,4 @@
+# All text files are stored and checked out with LF line endings on every
+# platform, so every host builds, formats and checks the same bytes; git
+# detects binaries itself, so they are unaffected.
+* text=auto eol=lf
