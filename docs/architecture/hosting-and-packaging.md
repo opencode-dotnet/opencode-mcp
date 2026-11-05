@@ -111,6 +111,14 @@ The adaptation changes names, namespaces, central package management, and real N
 necessities, never the behaviour for brevity. Registration stays wiring; behaviour and external I/O
 keep named, testable owners.
 
+`OpenCode.Mcp.ServiceDefaults.ServiceDefaultsExtensions` owns `AddServiceDefaults`,
+`ConfigureOpenTelemetry`, `AddDefaultHealthChecks`, and `MapDefaultEndpoints`. The non-packable
+shared project inherits the root target framework, declares `IsAspireSharedProject=true`, and
+references `Microsoft.AspNetCore.App`. The adapted template retains its named wiring methods and
+active registrations, adds public null guards and XML documentation, and removes the inactive
+discovery-scheme, gRPC and cloud-exporter hooks. Its derivation notice is in
+`THIRD-PARTY-NOTICES.md`.
+
 - The standard resilience handler applies to factory-created clients only. It does not inject a
   handler into the OpenCode .NET SDK's own transport, and it authorizes no blind retry of an unsafe
   OpenCode write.

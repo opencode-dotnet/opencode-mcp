@@ -4,4 +4,22 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+    <PackageReference Include="ModelContextProtocol.Core" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenCode.Mcp.ServiceDefaults\OpenCode.Mcp.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenCode.Mcp.Tests" />
+  </ItemGroup>
+
 </Project>

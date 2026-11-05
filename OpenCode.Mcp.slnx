@@ -8,6 +8,7 @@
     <File Path="nuget.config" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/OpenCode.Mcp.ServiceDefaults/OpenCode.Mcp.ServiceDefaults.csproj" />
     <Project Path="src/OpenCode.Mcp/OpenCode.Mcp.csproj" />
   </Folder>
   <Folder Name="/tests/">

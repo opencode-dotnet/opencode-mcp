@@ -32,7 +32,7 @@ that is not registered in the container (`../engineering/coding-style.md`).
 
 ## Host composition
 
-Both modes use the same production composition: one wiring owner, `McpApp`, configures logging,
+Both modes use the same production composition: one wiring owner, `McpApp.Configure`, configures logging,
 the standard ServiceDefaults, the server identity, the MCP server, and its tools for either mode.
 Overrides apply after the production registrations, so a test exercises the actual root and
 replaces only a real seam. A test-only delegate or in-memory server is no substitute for the
@@ -42,8 +42,9 @@ production registration, endpoint, and executable.
   every level written to standard error, and only then adds the standard ServiceDefaults, so the
   clearing does not remove the OpenTelemetry provider. Neither mode writes a banner or a console
   exporter's output to standard output.
-- **Identity.** The server identity is the name `opencode-mcp` and the product version from the
-  assembly's informational version, with only an optional `+` source suffix removed.
+- **Identity.** The singleton `ProductIdentity` supplies the name `opencode-mcp` and the product
+  assembly's informational version to the MCP server, with only an optional `+` source suffix
+  removed and the prerelease portion preserved; a missing informational version fails explicitly.
 - **Stdio mode** uses the generic host. It has no Kestrel listener and no web server registration.
   The MCP client owns standard input and output; standard output carries MCP protocol messages only
   (no banner, log line, or prompt). When the stdio session ends at end of input, the MCP C# SDK's
@@ -99,13 +100,16 @@ The MCP server speaks MCP revision `2026-07-28` only, through the MCP C# SDK.
   reflection-free.
 - A tool type is a sealed instance class, even when it touches no state: the MCP C# SDK constructs
   tool types through dependency injection per invocation, and later tools take collaborators.
+  `BootstrapTools.Ping` returns `pong` with the server name and version. It is an instance method
+  because the MCP C# SDK constructs tools through DI and the tool takes `ProductIdentity`.
 - Every tool carries a meaningful description and accurate annotations (read-only, idempotent,
   destructive, open-world).
 
 ### Connectivity probe
 
 `bootstrap_ping` (`BootstrapTools.Ping`) is the connectivity probe: it takes no input and returns
-the text `pong`. It is read-only, idempotent, non-destructive, and closed-world, reads no secret,
+the text `pong` followed by the server name and version (`pong {name} {version}`). It is read-only,
+idempotent, non-destructive, and closed-world, reads no secret,
 and does no outside-world work. It is a supported diagnostic that stays when OpenCode-backed tools
 arrive, not scaffolding. It proves connectivity between an MCP client and the MCP server only: it
 does not call the OpenCode .NET SDK, an OpenCode server process, or a model provider, and it is not
