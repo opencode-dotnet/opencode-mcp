@@ -28,4 +28,8 @@
     <PackageReference Include="TUnit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures/Protocol/http-complete.json" LogicalName="Fixtures.Protocol.http-complete.json" />
+  </ItemGroup>
+
 </Project>

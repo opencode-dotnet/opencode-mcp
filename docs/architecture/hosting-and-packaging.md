@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-05
+Date: 2026-11-06
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release
@@ -36,6 +36,13 @@ Every project targets `net10.0` with C# `14.0` and analysis level `10.0`; `Direc
 owns those values. The AppHost and test projects are not package artifacts. The AppHost sits
 outside the test-exemption globs, and its reference to the product is orchestration metadata.
 ServiceDefaults is not a business-model or shared-helper bucket.
+
+The product uses `Microsoft.NET.Sdk.Web` with explicit `OutputType=Exe` and `IsPackable=false`.
+The Web SDK supplies `Microsoft.AspNetCore.App` implicitly. Its top-level entry point delegates to
+the launcher; HTTP uses a slim web builder and stdio a generic builder
+(`server-and-transports.md`). The [README's source-launch commands](../../README.md#run-from-source)
+run a managed development build that needs .NET and establishes no native, package, or installation
+claim.
 
 A folder, helper, or project is created only for a consumer: there is no shared test library,
 benchmark project, generator, or additional distributed-application resource without one.

@@ -17,6 +17,31 @@ namespace OpenCode.Mcp.Tests;
 /// <summary>Checks both transports through the shared production composition.</summary>
 public sealed class McpAppTests
 {
+    private const string InvalidSelector = "Select 'stdio' or 'http' once using '--transport <value>'. (Parameter 'arguments')";
+
+    /// <summary>The caller's writer receives a selection refusal before host composition begins.</summary>
+    [Test]
+    public async Task CreateApplication_Should_Report_Refusal_Without_Composing_A_Host_When_Selection_Is_Invalid()
+    {
+        using var errors = new StringWriter(System.Globalization.CultureInfo.InvariantCulture);
+        var compositions = 0;
+        var application = McpApp.CreateApplication(errors, _ => compositions++);
+        var context = await Assert.That(TestContext.Current).IsNotNull();
+
+        await Assert.That(await application.RunAsync(["--transport", "HTTP"], context.Execution.CancellationToken)).IsEqualTo(2);
+        await Assert.That(errors.ToString()).IsEqualTo(InvalidSelector + Environment.NewLine);
+        await Assert.That(compositions).IsEqualTo(0);
+    }
+
+    /// <summary>A missing diagnostic writer fails at the composition boundary.</summary>
+    [Test]
+    public async Task CreateApplication_Should_Reject_Null_When_Error_Writer_Is_Missing()
+    {
+        // Deliberately violate the public precondition.
+        await Assert.That(() => McpApp.CreateApplication(null!)).ThrowsExactly<ArgumentNullException>()
+            .WithParameterName("errors");
+    }
+
     /// <summary>Both modes advertise the product assembly's version and the selected protocol.</summary>
     [Test]
     [Arguments(McpTransport.Stdio)]

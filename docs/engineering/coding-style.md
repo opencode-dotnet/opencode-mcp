@@ -65,8 +65,11 @@ for a pile of static steps.
   seam. A static class that performs I/O or takes a collaborator outside these two homes is a
   defect to fix, not a pattern to follow.
 - **DI-first composition.** Every executable has exactly one composition root. The MCP server's is
-  `McpApp`: it owns the launcher registrations and the host configuration of both transport modes,
-  registers each collaborator behind its seam, and applies caller overrides last. Commands, hosts
+  `McpApp`: `Configure` composes each host's container and applies caller overrides last;
+  `CreateApplication` constructs the launcher directly from the host factory, carrying the optional
+  override, and the error writer. No DI container exists outside the hosts: the launcher has two
+  collaborators, and a second container would duplicate the hosts' registrations; ASP0000 flags
+  building one in a web project. Commands, hosts
   and services receive dependencies through constructors — no service locators, no static mutable
   state, and no behavior on static classes beyond the stateless policies above. The static
   composition root is wiring only: it may construct and register concrete adapters but performs no
@@ -76,16 +79,11 @@ for a pile of static steps.
   ```csharp
   public static class McpApp
   {
-      public static ServiceCollection CreateServices(
+      public static McpApplication CreateApplication(
           TextWriter errors, Action<IServiceCollection>? overrideServices = null)
       {
           ArgumentNullException.ThrowIfNull(errors);
-          var services = new ServiceCollection();
-          services.AddSingleton(errors);
-          services.AddSingleton<IMcpHostFactory, McpHostFactory>();
-          services.AddSingleton<McpApplication>();
-          overrideServices?.Invoke(services);
-          return services;
+          return new McpApplication(new McpHostFactory(overrideServices), errors);
       }
 
       public static void Configure(

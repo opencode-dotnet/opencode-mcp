@@ -1,0 +1,7 @@
+{
+  "request": { "jsonrpc": "2.0", "id": 17, "method": "fixture/echo", "params": { "text": "quotes \"next\" and \\ slash; İstanbul 雪" } },
+  "json": "{\"jsonrpc\":\"2.0\",\"id\":17,\"result\":{\"resultType\":\"complete\",\"text\":\"quotes \\\"next\\\" and \\\\ slash; İstanbul 雪\"}}",
+  "sse": ": comment before data\r\nevent: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":17,\"result\":{\"resultType\":\"complete\",\"text\":\"quotes \\\"next\\\" and \\\\ slash; İstanbul 雪\"}}\r\n\r\n: another comment\ndata: {\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32601,\"message\":\"雪 not found\"}}\n\n",
+  "malformedJson": "{\"jsonrpc\":",
+  "malformedSse": "data: {\"jsonrpc\":\n\n"
+}

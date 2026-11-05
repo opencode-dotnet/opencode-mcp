@@ -1,6 +1,6 @@
 # Server and Transports Architecture
 
-Date: 2026-11-05
+Date: 2026-11-06
 
 Canonical current rules for transport-mode selection, host composition, the MCP protocol
 revision, local HTTP exposure, and the MCP tool surface. Projects, Aspire, Native AOT, and
@@ -38,6 +38,13 @@ Overrides apply after the production registrations, so a test exercises the actu
 replaces only a real seam. A test-only delegate or in-memory server is no substitute for the
 production registration, endpoint, and executable.
 
+The entry point hands `Console.Error` to `McpApp.CreateApplication`, which constructs the launcher
+directly from `McpHostFactory` (carrying the optional host override) and the error writer. There is
+no launcher container. `McpApplication.RunAsync` parses before calling `IMcpHostFactory.Create`;
+its `ArgumentException` catch covers only the selector, not factory creation or host execution.
+Those failures propagate. The generic-host `RunAsync` extension owns shutdown and host disposal,
+awaiting asynchronous disposal where supported; the launcher returns zero after it completes.
+
 - **Logging.** The composition clears the default logging providers, adds the console provider with
   every level written to standard error, and only then adds the standard ServiceDefaults, so the
   clearing does not remove the OpenTelemetry provider. Neither mode writes a banner or a console
@@ -46,6 +53,8 @@ production registration, endpoint, and executable.
   assembly's informational version to the MCP server, with only an optional `+` source suffix
   removed and the prerelease portion preserved; a missing informational version fails explicitly.
 - **Stdio mode** uses the generic host. It has no Kestrel listener and no web server registration.
+  `McpHostFactory.Create` uses `Host.CreateApplicationBuilder` with the remaining arguments and
+  calls the shared composition without applying HTTP endpoint policy.
   The MCP client owns standard input and output; standard output carries MCP protocol messages only
   (no banner, log line, or prompt). When the stdio session ends at end of input, the MCP C# SDK's
   hosted service stops the host and the process exits with code 0; there is no home-grown shutdown
@@ -62,17 +71,27 @@ The HTTP mode is a local development and integration endpoint. It is never a pub
 
 - **Loopback only.** The endpoint policy (`HttpEndpointPolicy`, a stateless static class) resolves
   the listening URL before Kestrel starts. The default is `http://127.0.0.1:0`, a dynamic loopback
-  port. A numeric loopback address is accepted, and `localhost` is normalized to a numeric
-  loopback address. A wildcard or non-loopback host, HTTPS, user information, a path, and any
-  configured `Kestrel:Endpoints` section are refused.
+  port. Numeric IPv4/IPv6 loopbacks retain their ports, and `localhost` is normalized to
+  `127.0.0.1`. Semicolon-separated URL entries are validated in order; explicit blanks are refused.
+  A wildcard or non-loopback host, HTTPS, user information, a non-root path, query, fragment, or
+  malformed URL is refused. A `Kestrel:Endpoints` section with a value or descendants is refused
+  before URL resolution, even when its endpoints are loopback. The boundary is enforced at startup;
+  the factory configures Kestrel endpoint configuration with `reloadOnChange: false`.
 - **Host filtering.** Requests are accepted only for the hosts `localhost`, `127.0.0.1`, and
-  `[::1]`.
+  `[::1]`. The slim host's Host-filtering startup filter applies that allow-list, with
+  `AllowEmptyHosts=false`; an untrusted or absent Host receives HTTP 400.
 - **Origin-header validation.** The MCP transport specification requires a Streamable HTTP server
   to validate the `Origin` header; host filtering and the absence of a permissive CORS policy do
   not do that. A request with an untrusted `Origin` and an otherwise valid loopback `Host` is
-  rejected. The component that enforces it (the MCP C# SDK's Streamable HTTP handler, an ASP.NET
-  Core behaviour, or product code in the HTTP host) is not yet identified; this section names it
-  once a test establishes it.
+  rejected by product middleware in `McpHostFactory`, before the MCP handler reads the body. Neither
+  the MCP C# SDK's handler nor ASP.NET Core Host filtering supplies this Origin check. The pure
+  `HttpEndpointPolicy.IsAllowedOrigin` decision accepts missing Origin for non-browser clients.
+  A present Origin must be an absolute HTTP/HTTPS origin with exactly `localhost`, `127.0.0.1`, or
+  `[::1]` as host, at any valid port; it need not share the listener's port or scheme. Empty, opaque
+  `null`, list-valued, wildcard, remote, deceptive-suffix, malformed, credential-bearing, and
+  non-origin URI values are refused with an empty HTTP 403. The check covers every request,
+  including MCP path variants and the Development health endpoints.
+  Accepting an Origin or its absence is not authentication.
 - **No CORS.** The server registers no CORS policy and sends no permissive CORS header.
 - **No production authentication** is part of the HTTP mode.
 - **Health endpoints.** `/health` and `/alive` come from the standard ServiceDefaults and exist only

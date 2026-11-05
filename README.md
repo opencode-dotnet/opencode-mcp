@@ -11,7 +11,8 @@ executable that needs no installed .NET runtime.
 ## Status
 
 **Pre-release bootstrap. Nothing is installable yet**: no package, binary, or installer is
-published, and there is no launch command to give an MCP client.
+published. A source build can run as a managed executable using the .NET SDK selected by
+[`global.json`](global.json); this is not a native or packaged launch.
 
 The bootstrap delivers an MCP server that is designed to:
 
@@ -25,6 +26,52 @@ The bootstrap delivers an MCP server that is designed to:
 
 Tools that operate on OpenCode follow the bootstrap. [`docs/ROADMAP.md`](docs/ROADMAP.md) has the
 current state and what comes next.
+
+## Run from source
+
+From the repository root, build Release:
+
+```powershell
+dotnet build OpenCode.Mcp.slnx --configuration Release
+```
+
+### Standard input and output
+
+Launch the built assembly directly, not through `dotnet run`, so build output cannot enter the
+protocol stream:
+
+```powershell
+dotnet ./src/OpenCode.Mcp/bin/Release/net10.0/OpenCode.Mcp.dll --transport stdio
+```
+
+Configure a local MCP client's command as `dotnet` and its arguments as the absolute path to that
+`OpenCode.Mcp.dll`, followed by `--transport` and `stdio`. Standard input and output belong to the
+client; diagnostic logs go to standard error. Omitting `--transport` also selects stdio.
+
+The client must support MCP revision `2026-07-28`: discover with `server/discover`, list tools, then
+call `bootstrap_ping` with no arguments. Its result is exactly `pong opencode-mcp <version>`, where
+`<version>` is the product assembly's informational version without source metadata. This verifies
+connectivity only; it does not contact OpenCode or a model provider.
+
+### Local Streamable HTTP
+
+```powershell
+dotnet ./src/OpenCode.Mcp/bin/Release/net10.0/OpenCode.Mcp.dll --transport http --urls http://127.0.0.1:0 --environment Development
+```
+
+Port `0` requests an available port. Read the actual address from the `Now listening on:` lifetime
+log on standard error and append `/mcp` for the client's Streamable HTTP endpoint. The endpoint is
+stateless and uses the same protocol and tool as stdio. `/health` and `/alive` are available only in
+Development; without that environment they return 404. Ctrl+C stops the host.
+
+HTTP is loopback-only, without authentication or a CORS policy. Host and Origin checks apply to
+every request; a missing Origin is allowed. Do not expose the endpoint through a public proxy or
+tunnel. See [local HTTP exposure](docs/architecture/server-and-transports.md#local-http-exposure)
+for accepted listening addresses and headers, defaults, and refusal responses.
+
+An invalid transport selector writes a diagnostic naming `stdio` and `http` to standard error and
+exits with code 2 before creating a host. Values are case-sensitive; use the separate-token
+`--transport http` spelling, not `--transport=http`. Other startup failures are not selector refusals.
 
 ## Developing
 

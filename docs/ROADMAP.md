@@ -1,6 +1,6 @@
 # Roadmap
 
-Date: 2026-11-05
+Date: 2026-11-06
 
 Operational state: what exists today, what is queued next, what is still open, and what is known to
 be incomplete. This file is a summary and shrinks as work lands. `../AGENTS.md` routes to the
@@ -11,22 +11,24 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 
 **Pre-release bootstrap. Nothing is installable yet, and no package or binary is published.**
 
-The engineering backbone is in progress: the engineering and architecture canon, the root build
-configuration with its analyzer wall, and the product and test project shells. The first commit
-carries this backbone and lands directly on `master` with the maintainer's approval, because no CI
-workflow or merge queue exists yet to receive a pull request. The transport-mode selector and its
-tests follow on a feature branch, which merges to `master` with the maintainer's approval until the
-merge queue exists. The product is a library at this stage; it becomes the MCP server executable in
-the next increment.
+The engineering backbone, transport selector, shared production composition, and `bootstrap_ping`
+are implemented. The product is a managed executable with a loopback-only Streamable HTTP endpoint,
+product-owned Origin validation, Host filtering, and refusal of invalid selectors before host
+creation. Real socket tests cover modern discovery/list/call, Development-only health, and refused
+connections after shutdown; bounded recorder tests cover JSON and request-scoped SSE observations.
+Source launch instructions are in the README. The next proof is the owned stdio process boundary;
+HTTP connectivity is not evidence of protocol-only process stdout or EOF cleanup.
+
+Until CI and the merge queue exist, feature branches merge with the maintainer's approval.
 
 ## Bootstrap, in order
 
-1. **Engineering backbone** - in progress, as above.
+1. **Engineering backbone** - implemented.
 2. **Production host and tool** - the production composition with the standard ServiceDefaults, the
    server identity, and the `bootstrap_ping` connectivity probe
-   (`architecture/server-and-transports.md`).
+   (`architecture/server-and-transports.md`); implemented.
 3. **HTTP proof** - the real executable, the loopback-only Streamable HTTP endpoint, and the
-   refusal of an invalid mode before any host starts.
+   refusal of an invalid mode before any host starts; implemented and locally tested.
 4. **Stdio proof** - the real process over standard input and output, protocol-only standard output,
    and owned cleanup.
 5. **AppHost** - the one-resource Aspire AppHost and its closed-box lifecycle tests
@@ -50,11 +52,6 @@ the next increment.
   submissions, each separately authorized.
 - **Product tools** - MCP tools that operate on OpenCode through the published OpenCode .NET SDK,
   after the bootstrap.
-
-## Open Questions
-
-- **Origin-header enforcement** - which component validates the `Origin` header on `/mcp` (the MCP
-  C# SDK, ASP.NET Core, or product code) is established when the HTTP proof lands.
 
 ## Known Gaps
 
