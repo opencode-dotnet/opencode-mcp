@@ -117,6 +117,11 @@ exact commands. A Native AOT publish on Windows has extra machine prerequisites,
 Contributors and coding agents start at [`AGENTS.md`](AGENTS.md), which routes each kind of work to
 its canon; [`CONTEXT.md`](CONTEXT.md) defines the terms this repository uses.
 
+See [Contributing](.github/CONTRIBUTING.md) for issues, review and pull requests. CI is designed to
+check managed Release builds and both test modules on Windows, Linux and macOS; these checks do
+not prove native or package support. [Quality gates](docs/engineering/quality-gates.md#continuous-integration)
+own the CI contract, and the roadmap records hosted verification and protection status.
+
 ## License
 
 Licensed under MIT, see [LICENSE](LICENSE) for the full text. Content derived from the OpenCode .NET

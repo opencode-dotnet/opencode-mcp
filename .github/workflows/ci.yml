@@ -1,0 +1,244 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  DOTNET_NOLOGO: "true"
+
+jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: Checkout
+        if: github.event_name != 'push'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Classify the diff
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          switch -CaseSensitive ($env:EVENT) {
+            'push' {
+              'code=true' >> $env:GITHUB_OUTPUT
+              exit 0
+            }
+            'pull_request' {
+              $base = git rev-parse HEAD^1
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the pull request base.' }
+            }
+            'merge_group' {
+              git fetch --no-tags --depth=1 origin $env:QUEUE_BASE
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch the merge group base.' }
+              $base = $env:QUEUE_BASE
+            }
+            default { throw 'Unsupported classification event.' }
+          }
+
+          # PowerShell 7.4+ preserves native stdout bytes when redirecting to a file.
+          # No rename detection: a source-to-Markdown rename still deletes a source path.
+          $diffPath = Join-Path $env:RUNNER_TEMP 'changed-paths'
+          git diff --name-only --no-renames -z $base HEAD > $diffPath
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the changed paths.' }
+          $paths = [System.IO.File]::ReadAllText($diffPath, [System.Text.UTF8Encoding]::new($false, $true))
+          $code = 'false'
+          if ($paths.Length -gt 0) {
+            if ($paths[-1] -ne [char]0) { throw 'Changed paths are not NUL-terminated.' }
+            foreach ($path in $paths.Substring(0, $paths.Length - 1).Split([char]0)) {
+              if ($path.Length -eq 0) { throw 'Changed paths contain an empty entry.' }
+              if (-not $path.EndsWith('.md', [System.StringComparison]::Ordinal) -and $path -cne 'LICENSE') {
+                $code = 'true'
+              }
+            }
+          }
+          "code=$code" >> $env:GITHUB_OUTPUT
+
+  lint:
+    name: Lint
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Initialize owned Aspire home
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $homePath = Join-Path $env:RUNNER_TEMP "opencode-mcp-aspire-$([guid]::NewGuid())"
+          $dashboardPath = Join-Path $homePath 'dashboard'
+          New-Item -ItemType Directory -Path $dashboardPath | Out-Null
+          "ASPIRE_HOME=$homePath" >> $env:GITHUB_ENV
+          "ASPIRE_DASHBOARD_DATA_DIRECTORY=$dashboardPath" >> $env:GITHUB_ENV
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Log resolved SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet --version
+          exit $LASTEXITCODE
+
+      - name: Restore local tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool restore
+          exit $LASTEXITCODE
+
+      - name: Detect slop
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool run slopwatch analyze --exclude ".scratchpad/**" --fail-on warning
+          exit $LASTEXITCODE
+
+      - name: Build with analyzers
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build OpenCode.Mcp.slnx --configuration Release
+          exit $LASTEXITCODE
+
+      - name: Verify whitespace
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet format whitespace OpenCode.Mcp.slnx --verify-no-changes --no-restore
+          exit $LASTEXITCODE
+
+      - name: Verify style
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet format style OpenCode.Mcp.slnx --verify-no-changes --no-restore --severity warn
+          exit $LASTEXITCODE
+
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Initialize owned Aspire home
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $homePath = Join-Path $env:RUNNER_TEMP "opencode-mcp-aspire-$([guid]::NewGuid())"
+          $dashboardPath = Join-Path $homePath 'dashboard'
+          New-Item -ItemType Directory -Path $dashboardPath | Out-Null
+          "ASPIRE_HOME=$homePath" >> $env:GITHUB_ENV
+          "ASPIRE_DASHBOARD_DATA_DIRECTORY=$dashboardPath" >> $env:GITHUB_ENV
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Log resolved SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet --version
+          exit $LASTEXITCODE
+
+      - name: Build
+        id: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build OpenCode.Mcp.slnx --configuration Release -p:RunAnalyzers=false
+          exit $LASTEXITCODE
+
+      - name: Test
+        id: test
+        timeout-minutes: 35
+        env:
+          TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          exit $LASTEXITCODE
+
+      - name: List tests after failure
+        if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && steps.test.outcome == 'failure' }}
+        timeout-minutes: 5
+        env:
+          TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --list-tests
+          exit $LASTEXITCODE
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: artifacts/test-results/**
+          retention-days: 7
+
+  ci-result:
+    name: CI result
+    needs: [changes, lint, build-and-test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every needed job
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          LINT: ${{ needs.lint.result }}
+          BUILD_AND_TEST: ${{ needs.build-and-test.result }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output "changes=$env:CHANGES code=$env:CODE lint=$env:LINT build-and-test=$env:BUILD_AND_TEST"
+          $errors = [System.Collections.Generic.List[string]]::new()
+          if ($env:CHANGES -cne 'success') { $errors.Add('Changes must succeed.') }
+          switch -CaseSensitive ($env:CODE) {
+            'true' {
+              if ($env:LINT -cne 'success') { $errors.Add('Code changes require successful lint.') }
+              if ($env:BUILD_AND_TEST -cne 'success') { $errors.Add('Code changes require successful build/test legs.') }
+            }
+            'false' {
+              if ($env:LINT -cne 'skipped') { $errors.Add('Documentation-only changes require skipped lint.') }
+              if ($env:BUILD_AND_TEST -cne 'skipped') { $errors.Add('Documentation-only changes require skipped build/test legs.') }
+            }
+            default { $errors.Add('Code classification must be true or false.') }
+          }
+          foreach ($message in $errors) { Write-Output "::error::$message" }
+          if ($errors.Count -gt 0) { exit 1 }

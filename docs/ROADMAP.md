@@ -22,8 +22,9 @@ and cleanup after failures. HTTP process tests cover modern bootstrap, Developme
 Host/Origin controls and listener release after forced teardown. These are local Windows proofs,
 not native or package evidence. The one-product-project Aspire AppHost and its eight closed-box
 graph, protocol, header-boundary and lifecycle tests are implemented and locally tested on Windows.
-The pinned wrapper's isolated start/wait/describe/stop path has also run locally. The next bootstrap
-increment is CI; no CI or cross-platform completion claim follows from these local proofs.
+The pinned wrapper's isolated start/wait/describe/stop path has also run locally. Non-publishing CI,
+dependency review and contribution files are written; the first green hosted run is still pending.
+No cross-platform completion claim follows from the workflow code or these local proofs.
 
 Until CI and the merge queue exist, feature branches merge with the maintainer's approval.
 
@@ -41,8 +42,8 @@ Until CI and the merge queue exist, feature branches merge with the maintainer's
    (`architecture/hosting-and-packaging.md`); implemented and locally tested on Windows, including
    assertion-killed graph and cleanup mutants and the direct wrapper lifecycle.
 6. **CI** - the required CI workflow with its `CI result` check, dependency review, contribution
-   guides, and then the merge queue and branch protection on `master`
-   (`engineering/workflow.md`).
+   guides and HangDump references are written. The first green hosted run, then merge-queue and
+   branch-protection activation on `master`, remain pending (`engineering/workflow.md`).
 7. **Native AOT** - one verified native payload for each of the six RIDs, executed in both transport
    modes, with its runtime-independence proof.
 8. **Packages** - the NuGet MCP tool package set built from those payloads, a complete local feed,
@@ -62,8 +63,8 @@ Until CI and the merge queue exist, feature branches merge with the maintainer's
 
 ## Known Gaps
 
-- **No CI yet.** Until the CI workflow exists, the local check in
-  `engineering/quality-gates.md` is the only gate, and no change can be called complete by a green
-  `CI result`.
+- **Hosted CI and protection are unverified.** The workflows exist, but no green hosted run or
+  active merge queue/branch protection is recorded. The local check in
+  `engineering/quality-gates.md` is not a hosted `CI result` or a delivery-completion claim.
 - **No native or package evidence yet.** No claim of native support, package acquisition, or
   installer support exists for any platform.

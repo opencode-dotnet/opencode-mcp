@@ -1,0 +1,104 @@
+name: Bug report
+description: OpenCode MCP behaves differently than expected
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for **OpenCode MCP**, not the OpenCode server or the OpenCode .NET SDK.
+        Read the [README](https://github.com/opencode-dotnet/opencode-mcp/blob/master/README.md)
+        and [roadmap](https://github.com/opencode-dotnet/opencode-mcp/blob/master/docs/ROADMAP.md)
+        and search existing issues first. Nothing is published yet; report the source commit you used.
+        Redact credentials, tokens, private paths and project content from all examples and logs.
+        Never attach a user profile, Aspire dashboard store, certificate or unredacted configuration.
+        [Quality gates](https://github.com/opencode-dotnet/opencode-mcp/blob/master/docs/engineering/quality-gates.md)
+        describe contributor verification; you do not need to run the suite to report a bug.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction and launch/client configuration
+      description: Include the smallest steps and redacted commands/configuration that reproduce it.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Product version or source commit
+      description: For a source build, include the full commit SHA.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: launch
+    attributes:
+      label: Launch route
+      options:
+        - Built managed assembly launched directly
+        - Aspire AppHost through the repository wrapper
+        - Other source launch (describe in reproduction)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio
+        - Streamable HTTP
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client name and version
+    validations:
+      required: true
+
+  - type: input
+    id: protocol
+    attributes:
+      label: MCP protocol revision
+      description: State unknown if the client does not expose it.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS, version and architecture
+      placeholder: Windows 11 x64 / Ubuntu 24.04 x64 / macOS 15 Arm64
+    validations:
+      required: true
+
+  - type: input
+    id: sdk
+    attributes:
+      label: .NET SDK version
+      description: The output of dotnet --version from the repository root, when applicable.
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Redacted error message or stack trace
+      description: Paste relevant errors only; state none if no error was emitted.
+      render: text
+    validations:
+      required: true

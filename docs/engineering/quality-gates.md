@@ -87,8 +87,9 @@ judged before it merges. It updates nothing.
 
 "Builds" and "works" are different claims. A pull request is ready for the merge queue when the CI
 its own head triggers is green: the lint job and the three operating-system legs run every step of
-the full gate below. The change is complete when the CI its merge commit triggers on `master` is
-green. Which changes skip those jobs, and what a merge requires, are in `workflow.md`.
+the full gate below. A green queue run permits the merge; the change is complete when the CI its
+merge commit triggers on `master` is green. Which changes skip those jobs, and what a merge
+requires, are in `workflow.md`.
 
 Every build and test command in the completion gate and local check runs with an owned
 `ASPIRE_HOME` beneath the user's temp folder. Without it, the AppHost SDK installs the Aspire
@@ -234,11 +235,17 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   ignore Markdown and `LICENSE`. A commit never carries `[skip ci]`.
 - **Changes job.** A `changes` job classifies the diff. A change limited to Markdown and `LICENSE`
   skips the lint and build/test jobs inside the run instead of skipping the run, which would leave
-  the required check missing.
+  the required check missing. Pull requests compare their synthetic merge ref with its first
+  parent; merge groups compare with their declared base, including preceding queue entries.
+  Git supplies NUL-separated paths with rename detection disabled, so a source-to-Markdown rename
+  still selects code. Only an ordinal `.md` suffix or the exact root `LICENSE` path is exempt.
 - **Lint job.** One Linux job restores the local tools, runs Slopwatch, the Release build with the
   analyzer wall, and both format passes.
 - **Aspire home input.** The CI task supplies an owned `ASPIRE_HOME` under each job's temporary
-  directory before every build and test command, and retains it through that job's tests.
+  directory before every build and test command, and retains it through that job's tests. Dashboard
+  data stays beneath that home. The AppHost SDK's normal build acquires its paired CLI bundle
+  through `DnxPinned`; no global Aspire, Docker, native compiler or certificate-trust preparation
+  is required for this HTTP-only, container-free graph. Build output is never shared between OSes.
 - **Build/test legs.** Windows, Linux and macOS legs (`windows-2025`, `ubuntu-24.04`, `macos-15`)
   build in Release with `-p:RunAnalyzers=false` and run every test project under the session timeout
   and hang dump below, with `fail-fast: false`. Each sets `TUNIT_DISABLE_ARTIFACT_UPLOAD: true` on
@@ -253,15 +260,43 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
 - **Least privilege and bounds.** The workflow has `contents: read`; a superseded pull request run
   is cancelled, a default-branch run never is; every job has a bounded timeout. The .NET SDK is set
   up from `global.json` and each job logs the version that resolved. Steps run in `pwsh` and check
-  every command's exit code.
-- **Artifacts.** Jobs upload only explicit, bounded and redacted TRX files, hang dumps and owned
-  process logs to `artifacts/test-results/`, with `if: always()` and seven-day retention; never an
-  Aspire dashboard store, its tokens, an `.aspire` directory or user profile data. A failed upload
-  never turns a failed test step green.
+  every command's exit code. Job bounds are 5 minutes for classification, 30 for lint, 55 for each
+  build/test leg and 5 for the aggregate check.
+- **Artifacts.** Each build/test leg uploads `artifacts/test-results/**` with `if: always()`, an
+  OS-specific artifact name and seven-day retention. This directory holds the test platform's TRX
+  files, TUnit HTML and JSON reports and, on a hang, hang-dump files; all are uploaded. No redaction
+  or size-processing step is needed: the workflow uses no secret, has only `contents: read`, sets
+  `TUNIT_DISABLE_ARTIFACT_UPLOAD` on every test step to prevent automatic upload without disabling
+  report generation, and runs on ephemeral hosted runners. The owned `ASPIRE_HOME`, real profile
+  and dashboard data are never beneath this path or uploaded. Test listings stay in the job log.
+  Upload failures remain blocking and never turn a failed test green; there is no `continue-on-error`.
 - **Actions.** Actions are referenced by major version tag (`actions/checkout@v7`,
   `actions/setup-dotnet@v6`, `actions/upload-artifact@v7`); a major tag is not an immutable SHA pin.
 - **Dependency review.** The `dependency-review` workflow (Dependency audit, above) runs on every
-  pull request with `contents: read`.
+  pull request with `contents: read`, using `actions/dependency-review-action@v5` without PR comments.
+  `CI result` does not cover Dependency Review; the maintainer checks it before queue entry.
+
+The matrix's exact test command is:
+
+```powershell
+dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+```
+
+After a failed test step, if the build succeeded and the run was not cancelled, a bounded diagnostic
+step runs `dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --list-tests`.
+This lists tests without executing them again. Both steps disable TUnit artifact upload.
+
+`CI result` accepts exactly these dependency states; missing, failed, cancelled or invalid states
+fail closed:
+
+| Changes result | Code output | Lint result | Build/test result | Verdict |
+|---|---|---|---|---|
+| `success` | `true` | `success` | `success` | Pass |
+| `success` | `false` | `skipped` | `skipped` | Pass |
+| Any other combination | | | | Fail |
+
+No YAML parser or actionlint tool is provisioned here. Review workflow syntax before submission;
+the first pull request's hosted run is the parse check, not evidence supplied by a local build.
 
 A prerequisite that is missing or coverage that is unavailable is a visible blocker, never a silent
 skip and never a green support claim. Native and package lanes are a separate manifest-driven
@@ -276,13 +311,13 @@ host, and a hang that stops the host's own timer stops it too. So each test step
 `timeout-minutes: 35`, which the runner enforces from outside the host: a hung step fails within 35
 minutes, before the merge queue's check timeout drops the pull request.
 
-A test host that runs for 15 minutes is taken as hung. Microsoft.Testing.Platform's hang-dump
+A test host with no activity for 15 minutes is taken as hung. Microsoft.Testing.Platform's hang-dump
 extension, whose controller is a process of its own, then lists the tests still running, writes a
 mini dump of the host into the step's results directory, which the job uploads, and ends the host.
 Every test project references the extension: `--hangdump` exits with code 5 in a module without it.
 An expired session exits with code 7 and keeps the TRX of the rows that finished, but it doesn't
 name the rows still in flight. When a test step fails, the job also writes that step's test listing
-into the results directory, and the rows in flight are among those listed but not recorded.
+to the job log, and the rows in flight are among those listed but not recorded.
 
 ## Owned processes
 
