@@ -1,6 +1,6 @@
 # Documentation
 
-Date: 2026-11-05
+Date: 2026-11-06
 
 Canonical rules for documentation ownership, authority, lifecycle, references, and lossless
 maintenance.
@@ -17,9 +17,11 @@ maintenance.
 | Operational state | `docs/ROADMAP.md` | What is done, next, open, and known to be incomplete; shrinks as work lands |
 | Consumer documentation | `README.md`, `CHANGELOG.md` | How to use the MCP server, complete on its own (Consumer documentation, below) |
 
-Plans and session operations live outside this repository. Verification evidence belongs in pull
-requests, not in documents. Canonical documentation is complete without task histories and evidence
-narratives.
+Plans, dated research, and session operations live outside this repository. Verification evidence
+belongs in pull requests, not in documents. Canonical documentation is complete without task
+histories and evidence narratives.
+
+Dated research is never current policy without following its links to the current canonical sources.
 
 Repository files and current canonical documents beat memory, dated research, transient plans, and
 handoffs. If two current canonical sources appear to disagree, do not pick a winner silently; use

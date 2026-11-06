@@ -52,7 +52,9 @@ internal sealed class NativeReceiptValidator(IFileSystem files, IUnixFileModes m
         var payload = files.Path.Combine(directory, receipt.PayloadDirectory);
         if (files.Directory.Exists(payload))
         {
-            diagnostics.AddRange((await inventory.CompareAsync(payload, receipt.Payload, token).ConfigureAwait(false)).Select(error => receipt.Rid + ": " + error));
+            var observed = await inventory.CaptureAsync(payload, token).ConfigureAwait(false);
+            diagnostics.AddRange(PayloadInventory.Compare([.. observed.Select(static file => file with { UnixMode = null })],
+                [.. receipt.Payload.Select(static file => file with { UnixMode = null })]).Select(error => receipt.Rid + ": " + error));
         }
         else
         {
@@ -69,19 +71,8 @@ internal sealed class NativeReceiptValidator(IFileSystem files, IUnixFileModes m
         }
         else
         {
-            var extracted = files.Path.Combine(files.Path.GetTempPath(), "opencode-mcp-native-" + Guid.NewGuid().ToString("N"));
-            try
-            {
-                await new PayloadArchive(files, modes, rid).ExtractAsync(archive, extracted, token).ConfigureAwait(false);
-                diagnostics.AddRange((await inventory.CompareAsync(extracted, receipt.Payload, token).ConfigureAwait(false)).Select(error => receipt.Rid + " archive: " + error));
-            }
-            finally
-            {
-                if (files.Directory.Exists(extracted))
-                {
-                    files.Directory.Delete(extracted, recursive: true);
-                }
-            }
+            var archived = await new PayloadArchive(files, modes, rid).ReadInventoryAsync(archive, token).ConfigureAwait(false);
+            diagnostics.AddRange(PayloadInventory.Compare(archived, receipt.Payload).Select(error => receipt.Rid + " archive: " + error));
         }
         return diagnostics.AsReadOnly();
     }

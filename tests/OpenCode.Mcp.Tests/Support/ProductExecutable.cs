@@ -8,12 +8,20 @@ namespace OpenCode.Mcp.Tests.Support;
 internal sealed class ProductExecutable
 {
     private readonly IFileSystem _files;
+    private readonly string _os;
+    private readonly Architecture _osArchitecture;
 
     /// <summary>Receives the filesystem used to resolve product artifacts.</summary>
-    public ProductExecutable(IFileSystem fileSystem)
+    public ProductExecutable(IFileSystem fileSystem, string? os = null, Architecture? osArchitecture = null)
     {
         ArgumentNullException.ThrowIfNull(fileSystem);
         _files = fileSystem;
+        _os = os ?? (OperatingSystem.IsWindows() ? "win" : "osx");
+        if (os is null && OperatingSystem.IsLinux())
+        {
+            _os = "linux";
+        }
+        _osArchitecture = osArchitecture ?? RuntimeInformation.OSArchitecture;
     }
 
     /// <summary>Resolves managed output or an explicit executable without fallback on invalid input.</summary>
@@ -40,12 +48,7 @@ internal sealed class ProductExecutable
             if (expectNative)
             {
                 var observed = ReadNativeIdentity(fileName);
-                var os = OperatingSystem.IsWindows() ? "win" : "osx";
-                if (OperatingSystem.IsLinux())
-                {
-                    os = "linux";
-                }
-                var expected = os + "-" + RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant();
+                var expected = _os + "-" + _osArchitecture.ToString().ToLowerInvariant();
                 if (!string.Equals(observed, expected, StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException($"Native execution needs a compatible {expected} image; observed {observed}.");

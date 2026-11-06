@@ -1,6 +1,7 @@
 using System.Formats.Tar;
 using System.IO.Abstractions;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using OpenCode.Mcp.Tools.Native.Abstractions;
 
 namespace OpenCode.Mcp.Tools.Native;
@@ -24,6 +25,27 @@ internal sealed class PayloadArchive(IFileSystem files, IUnixFileModes modes, Na
     public async Task ExtractAsync(string path, string directory, CancellationToken token)
     {
         files.Directory.CreateDirectory(directory);
+        await ReadEntriesAsync(path, (name, content, mode) => ExtractFileAsync(directory, name, content, mode, token), token).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<PayloadFile>> ReadInventoryAsync(string path, CancellationToken token)
+    {
+        var inventory = new List<PayloadFile>();
+        await ReadEntriesAsync(path, async (name, content, mode) =>
+        {
+            if (inventory.Any(file => file.Path == name))
+            {
+                throw new InvalidOperationException("Unsafe or duplicate archive path: " + name);
+            }
+            using var bytes = new MemoryStream();
+            await content.CopyToAsync(bytes, token).ConfigureAwait(false);
+            inventory.Add(new PayloadFile(name, Convert.ToHexStringLower(SHA256.HashData(bytes.ToArray())), bytes.Length, rid.IsWindows ? null : mode));
+        }, token).ConfigureAwait(false);
+        return [.. inventory.OrderBy(static file => file.Path, StringComparer.Ordinal)];
+    }
+
+    private async Task ReadEntriesAsync(string path, Func<string, Stream, int, Task> readFile, CancellationToken token)
+    {
         using var archiveBytes = new MemoryStream(await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false));
         if (path.EndsWith(".zip", StringComparison.Ordinal))
         {
@@ -35,7 +57,7 @@ internal sealed class PayloadArchive(IFileSystem files, IUnixFileModes modes, Na
                     var content = await entry.OpenAsync(token).ConfigureAwait(false);
                     await using (content.ConfigureAwait(false))
                     {
-                        await ExtractFileAsync(directory, entry.FullName, content, entry.ExternalAttributes >> 16, token).ConfigureAwait(false);
+                        await readFile(entry.FullName, content, entry.ExternalAttributes >> 16).ConfigureAwait(false);
                     }
                 }
             }
@@ -54,7 +76,7 @@ internal sealed class PayloadArchive(IFileSystem files, IUnixFileModes modes, Na
                         {
                             throw new InvalidOperationException("Unexpected archive entry: " + entry.Name);
                         }
-                        await ExtractFileAsync(directory, entry.Name, entry.DataStream, (int)entry.Mode, token).ConfigureAwait(false);
+                        await readFile(entry.Name, entry.DataStream, (int)entry.Mode).ConfigureAwait(false);
                     }
                 }
             }

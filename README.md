@@ -18,7 +18,8 @@ The server's contract is to:
 - ship as a NuGet MCP tool package and as native executables for Windows, Linux, and macOS on x64
   and Arm64.
 
-[`docs/ROADMAP.md`](docs/ROADMAP.md) records availability, current state and planned work.
+No package or binary is published or installable yet; see the [roadmap](docs/ROADMAP.md) for current
+availability and planned work.
 
 ## Run from source
 

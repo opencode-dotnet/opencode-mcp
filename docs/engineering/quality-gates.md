@@ -322,7 +322,8 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   Git supplies NUL-separated paths with rename detection disabled, so a source-to-Markdown rename
   still selects code. Only an ordinal `.md` suffix or the exact root `LICENSE` path is exempt.
 - **Lint job.** One Linux job restores the local tools, runs Slopwatch, the Release build with the
-  analyzer wall, and both format passes.
+  analyzer wall, both format passes, and the "Verify native tool entry" step (the separate file-app
+  build and empty-receipt smoke).
 - **Aspire home input.** The CI task supplies an owned `ASPIRE_HOME` under each job's temporary
   directory before every build and test command, and retains it through that job's tests. Dashboard
   data stays beneath that home. The AppHost SDK's normal build acquires its paired CLI bundle

@@ -43,7 +43,14 @@ internal sealed class NativeInspector(IFileSystem files, NativeProcesses process
             return false;
         }
         using var imageBytes = new MemoryStream(await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false));
-        using var image = new PEReader(imageBytes);
-        return image.HasMetadata;
+        try
+        {
+            using var image = new PEReader(imageBytes);
+            return image.HasMetadata;
+        }
+        catch (BadImageFormatException error)
+        {
+            throw new InvalidOperationException("Forbidden or unreadable image: " + path, error);
+        }
     }
 }

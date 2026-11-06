@@ -13,22 +13,23 @@ public sealed class ProductExecutableTests
     private readonly MockFileSystem _files = new();
 
     [Test]
+    public async Task Resolve_Should_Use_The_Os_Architecture_For_An_Emulated_Process()
+    {
+        var executable = await ArrangeNativeAsync("win", "arm64");
+        ProcessLaunch? launch = null;
+        await Assert.That(() => launch = new ProductExecutable(_files, "win", Architecture.Arm64).Resolve(Native(executable))).ThrowsNothing();
+        var selected = await Assert.That(launch).IsNotNull();
+        await Assert.That(selected.FileName).IsEqualTo(executable);
+        await Assert.That(selected.Arguments).IsEmpty();
+    }
+
+    [Test]
     public async Task Resolve_Should_Select_The_Fixed_Windows_X64_Fixture_On_An_X64_Windows_Os()
     {
         var executable = await ArrangeNativeAsync("win", "x64");
-        if (OperatingSystem.IsWindows() && RuntimeInformation.OSArchitecture == Architecture.X64)
-        {
-            ProcessLaunch? launch = null;
-            await Assert.That(() => launch = new ProductExecutable(_files).Resolve(Native(executable))).ThrowsNothing();
-            var selected = await Assert.That(launch).IsNotNull();
-            await Assert.That(selected.FileName).IsEqualTo(executable);
-            await Assert.That(selected.Arguments).IsEmpty();
-        }
-        else
-        {
-            await Assert.That(() => new ProductExecutable(_files).Resolve(Native(executable))).ThrowsExactly<InvalidOperationException>()
-                .WithMessage($"Native execution needs a compatible {HostIdentity()} image; observed win-x64.", StringComparison.Ordinal);
-        }
+        var selected = new ProductExecutable(_files, "win", Architecture.X64).Resolve(Native(executable));
+        await Assert.That(selected.FileName).IsEqualTo(executable);
+        await Assert.That(selected.Arguments).IsEmpty();
     }
 
     [Test]
@@ -37,8 +38,8 @@ public sealed class ProductExecutableTests
         var path = _files.Path.Combine(_files.Path.GetTempPath(), "managed.exe");
         _files.Directory.CreateDirectory(_files.Path.GetTempPath());
         await _files.File.WriteAllBytesAsync(path, await new RealFileSystem().File.ReadAllBytesAsync(typeof(ProductExecutable).Assembly.Location));
-        await Assert.That(() => new ProductExecutable(_files).Resolve(Native(path))).ThrowsExactly<InvalidOperationException>()
-            .WithMessage($"Native execution needs a compatible {HostIdentity()} image; observed managed.", StringComparison.Ordinal);
+        await Assert.That(() => new ProductExecutable(_files, "win", Architecture.X64).Resolve(Native(path))).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("Native execution needs a compatible win-x64 image; observed managed.", StringComparison.Ordinal);
     }
 
     [Test]
@@ -58,10 +59,8 @@ public sealed class ProductExecutableTests
     [Test]
     public async Task Resolve_Should_Select_The_Exact_Native_Executable_When_Requirements_Are_Met()
     {
-        var host = HostIdentity();
-        var executable = await ArrangeNativeAsync(host[..host.IndexOf('-', StringComparison.Ordinal)],
-            RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant());
-        var launch = new ProductExecutable(_files).Resolve(Native(executable));
+        var executable = await ArrangeNativeAsync("linux", "x64");
+        var launch = new ProductExecutable(_files, "linux", Architecture.X64).Resolve(Native(executable));
         await Assert.That(launch.FileName).IsEqualTo(executable);
         await Assert.That(launch.Arguments).IsEquivalentTo(Array.Empty<string>(), CollectionOrdering.Matching);
         await Assert.That(launch.WorkingDirectory).IsEqualTo(_files.Path.Combine(launch.OwnedRoot, "work"));
@@ -84,24 +83,19 @@ public sealed class ProductExecutableTests
     [Test]
     public async Task Resolve_Should_Refuse_An_Incompatible_Architecture_When_Native_Is_Required()
     {
-        var host = HostIdentity();
-        var os = host[..host.IndexOf('-', StringComparison.Ordinal)];
-        var architecture = RuntimeInformation.OSArchitecture == Architecture.X64 ? "arm64" : "x64";
-        var executable = await ArrangeNativeAsync(os, architecture);
-        await Assert.That(() => new ProductExecutable(_files).Resolve(Native(executable)))
+        var executable = await ArrangeNativeAsync("osx", "x64");
+        await Assert.That(() => new ProductExecutable(_files, "osx", Architecture.Arm64).Resolve(Native(executable)))
             .ThrowsExactly<InvalidOperationException>()
-            .WithMessage($"Native execution needs a compatible {host} image; observed {os}-{architecture}.", StringComparison.Ordinal);
+            .WithMessage("Native execution needs a compatible osx-arm64 image; observed osx-x64.", StringComparison.Ordinal);
     }
 
     [Test]
     public async Task Resolve_Should_Refuse_An_Incompatible_Os_When_Native_Is_Required()
     {
-        var foreignOs = OperatingSystem.IsWindows() ? "linux" : "win";
-        var architecture = RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant();
-        var executable = await ArrangeNativeAsync(foreignOs, architecture);
-        await Assert.That(() => new ProductExecutable(_files).Resolve(Native(executable)))
+        var executable = await ArrangeNativeAsync("linux", "x64");
+        await Assert.That(() => new ProductExecutable(_files, "win", Architecture.X64).Resolve(Native(executable)))
             .ThrowsExactly<InvalidOperationException>()
-            .WithMessage($"Native execution needs a compatible {HostIdentity()} image; observed {foreignOs}-{architecture}.", StringComparison.Ordinal);
+            .WithMessage("Native execution needs a compatible win-x64 image; observed linux-x64.", StringComparison.Ordinal);
     }
 
     [Test]
@@ -260,8 +254,6 @@ public sealed class ProductExecutableTests
         await _files.File.WriteAllBytesAsync(executable, image);
         return executable;
     }
-
-    private static string HostIdentity() => RuntimeInformation.RuntimeIdentifier;
 
     private static Dictionary<string, string?> Native(string path) => new(StringComparer.Ordinal)
     {

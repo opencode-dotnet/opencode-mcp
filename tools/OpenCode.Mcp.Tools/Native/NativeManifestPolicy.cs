@@ -23,6 +23,10 @@ internal static partial class NativeManifestPolicy
         {
             throw new InvalidOperationException("Manifest: runtimes must be an array.");
         }
+        if (runtimes.GetArrayLength() == 0)
+        {
+            throw new InvalidOperationException("Manifest: runtimes must contain at least one runtime.");
+        }
         var rids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var runtime in runtimes.EnumerateArray())
         {

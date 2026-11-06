@@ -9,6 +9,7 @@ namespace OpenCode.Mcp.Tools.Native;
 
 internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner runner)
 {
+    private static readonly string[] OwnedDirectories = ["publish", "payload"];
     public async Task<NativeReceipt> VerifyAsync(NativeBuildRequest request, CancellationToken token)
     {
         var host = request.Host;
@@ -17,17 +18,8 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
         NativeDiagnostics.Refuse(diagnostics);
         var processes = new NativeProcesses(runner, request.Root);
         var store = new NativeEvidenceStore(files);
-        files.Directory.CreateDirectory(request.Output);
+        await PrepareOutputAsync(request.Output, token).ConfigureAwait(false);
         var receiptPath = files.Path.Combine(request.Output, "receipt.json");
-        files.File.Delete(receiptPath);
-        foreach (var name in new[] { "publish", "payload" })
-        {
-            var directory = files.Path.Combine(request.Output, name);
-            if (files.Directory.Exists(directory))
-            {
-                files.Directory.Delete(directory, recursive: true);
-            }
-        }
         var toolchain = await new NativePrerequisites(files, processes).CheckAsync(request.Rid, host, token).ConfigureAwait(false);
         await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "toolchain.log"), toolchain.Details, token).ConfigureAwait(false);
         var source = await new NativeSourceReader(files, processes).ReadAsync(request.Root, token).ConfigureAwait(false);
@@ -92,4 +84,22 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
         return receipt;
     }
 
+    private async Task PrepareOutputAsync(string output, CancellationToken token)
+    {
+        files.Directory.CreateDirectory(output);
+        var receiptPath = files.Path.Combine(output, "receipt.json");
+        if (files.File.Exists(receiptPath))
+        {
+            await new NativeEvidenceStore(files).ReadAsync<NativeReceipt>(receiptPath, token).ConfigureAwait(false);
+        }
+        else if (files.Directory.EnumerateFileSystemEntries(output).Any())
+        {
+            throw new InvalidOperationException("Output directory is not owned by the native tool: " + output);
+        }
+        files.File.Delete(receiptPath);
+        foreach (var directory in OwnedDirectories.Select(name => files.Path.Combine(output, name)).Where(files.Directory.Exists))
+        {
+            files.Directory.Delete(directory, recursive: true);
+        }
+    }
 }

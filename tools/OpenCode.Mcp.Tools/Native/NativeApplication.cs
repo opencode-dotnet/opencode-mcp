@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO.Abstractions;
 using System.Text.Json;
+using System.Xml;
 using OpenCode.Mcp.Tools.Native.Abstractions;
 
 namespace OpenCode.Mcp.Tools.Native;
@@ -48,7 +49,7 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             return 0;
         }
         catch (Exception error) when (error is InvalidOperationException or IOException or UnauthorizedAccessException or Win32Exception
-            or OperationCanceledException or JsonException or FormatException or KeyNotFoundException)
+            or OperationCanceledException or JsonException or FormatException or KeyNotFoundException or AggregateException or XmlException or InvalidDataException)
         {
             var diagnostic = error switch
             {
@@ -56,6 +57,9 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
                 JsonException => "Malformed JSON input: " + error.Message,
                 FormatException => "Malformed toolchain or assets input: " + error.Message,
                 KeyNotFoundException => "Missing toolchain or assets field: " + error.Message,
+                AggregateException aggregate => "Native command cleanup failed:\n" + string.Join('\n', aggregate.InnerExceptions.Select(static failure => failure.GetType().Name + ": " + failure.Message)),
+                XmlException => "Malformed TRX input: " + error.Message,
+                InvalidDataException => "Invalid archive input: " + error.Message,
                 _ => error.Message,
             };
             // A cancellation refusal must still reach stderr after the caller cancels.

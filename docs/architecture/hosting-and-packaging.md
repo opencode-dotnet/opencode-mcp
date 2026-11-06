@@ -193,7 +193,8 @@ Linux means glibc; musl is not in the matrix, and there is no managed `.any` fal
   `TreatWarningsAsErrors`; `ILLinkTreatWarningsAsErrors` does not govern an AOT publish. The native
   gate asserts that `IlcTreatWarningsAsErrors` resolves to true and also scans the publish output
   for any `IL2xxx` or `IL3xxx` warning code, so a property drift cannot hide one. There is no
-  assembly rooting, no copied dependency DLL, and no suppression.
+  assembly rooting, no copied dependency DLL, and no suppression except the SDK-owned `IL2121`
+  exemption for redundant suppression warnings, which do not report unsafe code.
 - Invariant globalization removes the ICU dependency that would otherwise stop a Linux payload from
   starting on a system without `libicu`; the product has no culture-sensitive behaviour. In this
   mode, constructing a named culture throws; this is rechecked when OpenCode-backed tools arrive.
@@ -270,9 +271,10 @@ runtime dependencies, but no .NET SDK or Docker engine. PowerShell bundles a .NE
 builder is not the clean environment used for runtime-independence proof.
 
 `.github/workflows/linux-builder.yml` builds and publishes
-`ghcr.io/opencode-dotnet/opencode-mcp-linux-builder` only on manual dispatch. The two native Linux
-runners above push by digest; a dependent merge job assembles the multi-architecture index. Its only
-tag is `jammy-<yyyymmdd>-<short source sha>-<github.run_id>-<github.run_attempt>` (UTC date, seven-character
+`ghcr.io/opencode-dotnet/opencode-mcp-linux-builder` only on manual dispatch. The native Linux
+runners declared in `packaging/native-manifest.json` push by digest; a dependent merge job assembles
+the multi-architecture index. Its only tag is
+`jammy-<yyyymmdd>-<short source sha>-<github.run_id>-<github.run_attempt>` (UTC date, seven-character
 source SHA), unique to a dispatch and re-run attempt and never moved. There is no mutable tag,
 schedule, QEMU or automatic image deletion. The image carries source and revision labels. Native
 consumers pin the published index digest, not its discovery tag. The package must be public and

@@ -10,6 +10,18 @@ public sealed class NativeManifestStoreTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task ReadAsync_Should_Refuse_An_Empty_Runtime_Set(CancellationToken token)
+    {
+        var fixture = new NativeManifestFixture();
+        (fixture.Document["runtimes"]?.AsArray() ?? throw new InvalidOperationException()).Clear();
+        var files = new MockFileSystem();
+        var path = await fixture.WriteAsync(files, token);
+        await Assert.That(async () => await new NativeManifestStore(files).ReadAsync(path, token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Manifest: runtimes must contain at least one runtime.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task ReadAsync_Should_Load_The_Committed_Approved_Rid_And_Runner_Order(CancellationToken token)
     {
         var files = new RealFileSystem();

@@ -9,6 +9,23 @@ public sealed class NativeInspectorTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task InspectAsync_Should_Name_An_Unreadable_Image_During_A_Directory_Scan(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var directory = scenario.Files.Path.Combine(request.Output, "control");
+        scenario.Files.Directory.CreateDirectory(directory);
+        var unreadable = scenario.Files.Path.Combine(directory, "broken.dll");
+        scenario.Files.Initialize().WithFile(scenario.Files.Path.Combine(directory, "OpenCode.Mcp.exe"));
+        await scenario.Files.File.WriteAllBytesAsync(unreadable, [1, 2, 3], token);
+        var inspector = new NativeInspector(scenario.Files, new NativeProcesses(scenario.Runner, request.Root));
+        var toolchain = new NativeToolchain(scenario.Dumpbin, ["/exports"], request.Host.Environment, "fixture");
+        await Assert.That(async () => await inspector.InspectAsync("win-x64", directory, toolchain, token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Forbidden or unreadable image: " + unreadable, StringComparison.Ordinal);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task InspectAsync_Should_Inspect_Only_The_Selected_Image_Not_Its_Companions(CancellationToken token)
     {
         var scenario = new NativeBuildScenario();

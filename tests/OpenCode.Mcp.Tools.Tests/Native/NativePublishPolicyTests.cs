@@ -1,4 +1,5 @@
 using OpenCode.Mcp.Tools.Native;
+using OpenCode.Mcp.Tools.Tests.Native.Support;
 using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.Tools.Tests.Native;
@@ -32,6 +33,9 @@ public sealed class NativePublishPolicyTests
             ["IlcTreatWarningsAsErrors"] = "true",
             ["InvariantGlobalization"] = "true",
             ["PublishAot"] = "true",
+            ["NoWarn"] = "",
+            ["SuppressTrimAnalysisWarnings"] = "",
+            ["SuppressAotAnalysisWarnings"] = "",
         };
         if (value is null)
         {
@@ -42,6 +46,39 @@ public sealed class NativePublishPolicyTests
             properties[property] = value;
         }
         await Assert.That(NativePublishPolicy.PropertyDiagnostics(properties)).IsEquivalentTo(diagnostic.Split('\n'), CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Arguments("NoWarn")]
+    [Arguments("SuppressTrimAnalysisWarnings")]
+    [Arguments("SuppressAotAnalysisWarnings")]
+    public async Task PropertyDiagnostics_Should_Require_Queried_Suppression_Fields(string property)
+    {
+        var properties = ReceiptFixture.Create(new NativeRuntime("win-x64", "fixture")).Properties
+            .ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.Ordinal);
+        properties["NoWarn"] = "";
+        properties["SuppressTrimAnalysisWarnings"] = "";
+        properties["SuppressAotAnalysisWarnings"] = "";
+        properties.Remove(property);
+        await Assert.That(NativePublishPolicy.PropertyDiagnostics(properties))
+            .IsEquivalentTo([property + " is required."], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Arguments("IL02026", "NoWarn must not contain IL2026.")]
+    [Arguments("il2026", "NoWarn must not contain IL2026.")]
+    [Arguments("IL+2026", "NoWarn must not contain IL2026.")]
+    [Arguments("2026", "NoWarn must not contain IL2026.")]
+    [Arguments("IL2121", null)]
+    [Arguments("CS1701", null)]
+    [Arguments("IL3050,IL2121;il2026\tIL02026\r\nCS1701", "NoWarn must not contain IL2026.\nNoWarn must not contain IL3050.")]
+    public async Task PropertyDiagnostics_Should_Parse_Compiler_Warning_Numbers(string noWarn, string? diagnostic)
+    {
+        var properties = ReceiptFixture.Create(new NativeRuntime("win-x64", "fixture")).Properties
+            .ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.Ordinal);
+        properties["NoWarn"] = noWarn;
+        await Assert.That(NativePublishPolicy.PropertyDiagnostics(properties))
+            .IsEquivalentTo(diagnostic?.Split('\n') ?? [], CollectionOrdering.Matching);
     }
 
     [Test]

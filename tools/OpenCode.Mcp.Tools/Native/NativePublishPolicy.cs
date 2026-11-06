@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace OpenCode.Mcp.Tools.Native;
@@ -55,9 +56,18 @@ internal static partial class NativePublishPolicy
         {
             diagnostics.Add(name + " must not be true.");
         }
+        foreach (var name in SuppressionProperties.Prepend("NoWarn").Where(name => !properties.ContainsKey(name)))
+        {
+            diagnostics.Add(name + " is required.");
+        }
         if (properties.TryGetValue("NoWarn", out var noWarn))
         {
-            diagnostics.AddRange(WarningCode().Matches(noWarn).Select(static match => match.Value)
+            diagnostics.AddRange(noWarn.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+                .SelectMany(static word => word.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries))
+                .Select(static code => code.StartsWith("IL", StringComparison.OrdinalIgnoreCase) ? code[2..] : code)
+                .Select(static code => ushort.TryParse(code, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) ? number : 0)
+                .Where(static number => number is >= 2000 and <= 3999)
+                .Select(static number => "IL" + number.ToString(CultureInfo.InvariantCulture))
                 .Where(static code => code != SdkRedundantSuppressionWarning).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
                 .Select(static code => "NoWarn must not contain " + code + "."));
         }

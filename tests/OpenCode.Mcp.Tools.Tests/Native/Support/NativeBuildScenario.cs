@@ -31,6 +31,9 @@ internal sealed class NativeBuildScenario
         ["DebuggerSupport"] = "",
         ["Version"] = "fixture-version",
         ["NETCoreSdkVersion"] = "10.0.403",
+        ["NoWarn"] = "",
+        ["SuppressTrimAnalysisWarnings"] = "",
+        ["SuppressAotAnalysisWarnings"] = "",
     };
 
     public async Task AddStagingInputsAsync(CancellationToken token)
@@ -97,7 +100,9 @@ internal sealed class NativeBuildScenario
             await Assert.That(request.Arguments).Contains("-p:RuntimeIdentifier=win-x64");
             output = new JsonObject
             {
-                ["Properties"] = EffectiveProperties.DeepClone(),
+                ["Properties"] = new JsonObject(request.Arguments.Single(static argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal))
+                    ["-getProperty:".Length..].Split(',').Where(EffectiveProperties.ContainsKey)
+                    .Select(name => new KeyValuePair<string, JsonNode?>(name, EffectiveProperties[name]?.DeepClone()))),
             }.ToJsonString();
         }
         else if (command == "restore")

@@ -19,9 +19,18 @@ internal sealed class PayloadInventory(IFileSystem files, IUnixFileModes modes, 
         return [.. inventory.OrderBy(static file => file.Path, StringComparer.Ordinal)];
     }
 
-    public async Task<IReadOnlyList<string>> CompareAsync(string directory, IReadOnlyList<PayloadFile> expected, CancellationToken token)
+    public async Task<IReadOnlyList<string>> CompareAsync(string directory, IReadOnlyList<PayloadFile> expected, CancellationToken token) =>
+        Compare(await CaptureAsync(directory, token).ConfigureAwait(false), expected);
+
+    public static IReadOnlyList<string> Compare(IReadOnlyList<PayloadFile> observed, IReadOnlyList<PayloadFile> expected)
     {
-        var actual = (await CaptureAsync(directory, token).ConfigureAwait(false)).ToDictionary(static item => item.Path, StringComparer.Ordinal);
+        var duplicates = expected.GroupBy(static file => file.Path, StringComparer.Ordinal).Where(static group => group.Skip(1).Any())
+            .Select(static group => "Duplicate payload path: " + group.Key).Order(StringComparer.Ordinal).ToArray();
+        if (duplicates.Length != 0)
+        {
+            return duplicates;
+        }
+        var actual = observed.ToDictionary(static item => item.Path, StringComparer.Ordinal);
         var declared = expected.ToDictionary(static item => item.Path, StringComparer.Ordinal);
         var diagnostics = new List<string>();
         foreach (var path in declared.Keys.Union(actual.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal))

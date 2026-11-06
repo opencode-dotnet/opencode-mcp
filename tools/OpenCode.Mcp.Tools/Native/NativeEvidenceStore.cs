@@ -14,9 +14,17 @@ internal sealed class NativeEvidenceStore(IFileSystem files)
         await files.File.WriteAllTextAsync(path, JsonSerializer.Serialize(evidence, Options) + "\n", token).ConfigureAwait(false);
     }
 
-    public async Task<T> ReadAsync<T>(string path, CancellationToken token) =>
-        JsonSerializer.Deserialize<T>(await files.File.ReadAllTextAsync(path, token).ConfigureAwait(false), Options)
-        ?? throw new InvalidOperationException("Missing evidence: " + path);
+    public async Task<T> ReadAsync<T>(string path, CancellationToken token)
+    {
+        var evidence = JsonSerializer.Deserialize<T>(await files.File.ReadAllTextAsync(path, token).ConfigureAwait(false), Options)
+            ?? throw new InvalidOperationException("Missing evidence: " + path);
+        var missing = Options.GetTypeInfo(typeof(T)).Properties.FirstOrDefault(property => property.IsRequired && property.Get?.Invoke(evidence) is null);
+        if (missing is not null)
+        {
+            throw new InvalidOperationException("Evidence: required field " + missing.Name + " must not be null.");
+        }
+        return evidence;
+    }
 
     public async Task<string> DigestAsync(string path, CancellationToken token) =>
         Convert.ToHexStringLower(SHA256.HashData(await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false)));

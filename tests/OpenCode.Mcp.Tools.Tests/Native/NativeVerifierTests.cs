@@ -8,6 +8,25 @@ public sealed class NativeVerifierTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task VerifyAsync_Should_Refuse_An_Unowned_Nonempty_Output_Without_Deleting_Files(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var payload = scenario.Files.Path.Combine(request.Output, "payload");
+        var publish = scenario.Files.Path.Combine(request.Output, "publish");
+        scenario.Files.Directory.CreateDirectory(payload);
+        scenario.Files.Directory.CreateDirectory(publish);
+        await scenario.Files.File.WriteAllTextAsync(scenario.Files.Path.Combine(payload, "keep"), "payload", token);
+        await scenario.Files.File.WriteAllTextAsync(scenario.Files.Path.Combine(publish, "keep"), "publish", token);
+        await Assert.That(async () => await new NativeVerifier(scenario.Files, scenario.Runner).VerifyAsync(request, token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Output directory is not owned by the native tool: " + request.Output, StringComparison.Ordinal);
+        await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Files.Path.Combine(payload, "keep"), token)).IsEqualTo("payload");
+        await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Files.Path.Combine(publish, "keep"), token)).IsEqualTo("publish");
+        await Assert.That(scenario.Runner.Calls).IsEmpty();
+    }
+
+    [Test]
+    [Timeout(30_000)]
     [Arguments("1701;1702;IL2121", null)]
     [Arguments("IL2121;IL2026", "NoWarn must not contain IL2026.")]
     [Arguments("IL3050", "NoWarn must not contain IL3050.")]
@@ -56,6 +75,8 @@ public sealed class NativeVerifierTests
         var request = await scenario.PrepareAsync(token);
         var publish = scenario.Files.Path.Combine(request.Output, "publish");
         var payload = scenario.Files.Path.Combine(request.Output, "payload");
+        await new NativeEvidenceStore(scenario.Files).WriteAsync(scenario.Files.Path.Combine(request.Output, "receipt.json"),
+            ReceiptFixture.Create(request.Manifest.Runtimes[0]), token);
         scenario.Files.Directory.CreateDirectory(publish);
         scenario.Files.Directory.CreateDirectory(payload);
         scenario.Files.Initialize().WithFile(scenario.Files.Path.Combine(publish, "stale.xml"))
