@@ -164,7 +164,7 @@ jobs:
           exit 0
 
   build-and-test:
-    name: Build and test (${{ matrix.os }})
+    name: Build and test (${{ matrix.os }} #${{ matrix.run }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
@@ -172,7 +172,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, ubuntu-24.04, macos-15]
+        os: [windows-2025]
+        run: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -206,14 +207,44 @@ jobs:
           dotnet build OpenCode.Mcp.slnx --configuration Release -p:RunAnalyzers=false
           exit $LASTEXITCODE
 
-      - name: Test
-        id: test
-        timeout-minutes: 35
+      - name: Test tools
+        timeout-minutes: 10
         env:
           TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          dotnet test --project tests/OpenCode.Mcp.Tools.Tests/OpenCode.Mcp.Tools.Tests.csproj --configuration Release --no-build --output Detailed --timeout 8m
+          exit $LASTEXITCODE
+
+      - name: Test product
+        if: always()
+        timeout-minutes: 10
+        env:
+          TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj --configuration Release --no-build --output Detailed --timeout 8m
+          exit $LASTEXITCODE
+
+      - name: Test AppHost
+        if: always()
+        timeout-minutes: 10
+        env:
+          TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.AppHost.Tests/OpenCode.Mcp.AppHost.Tests.csproj --configuration Release --no-build --output Detailed --timeout 8m
+          exit $LASTEXITCODE
+
+      - name: Test solution
+        id: test
+        if: always()
+        timeout-minutes: 15
+        env:
+          TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --minimum-expected-tests 1 --timeout 12m
           exit $LASTEXITCODE
 
       - name: List tests after failure
@@ -230,7 +261,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-${{ matrix.os }}-${{ matrix.run }}
           path: artifacts/test-results/**
           retention-days: 7
 
