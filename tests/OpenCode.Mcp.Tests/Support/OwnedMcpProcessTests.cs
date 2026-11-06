@@ -322,7 +322,8 @@ public sealed class OwnedMcpProcessTests
             {
                 Arguments = OperatingSystem.IsWindows()
                     ? ["/d", "/q", "/c", " >&2 echo crit: logical=" + logicalWork + "& >&2 echo crit: physical=" + physicalWork]
-                    : ["-c", "printf '%s\\n' 'crit: logical=" + logicalWork + "' 'crit: physical=" + physicalWork + "' >&2"],
+                    // The OS reports the physical working directory; a computed path would keep /var on macOS.
+                    : ["-c", "printf '%s\\n' 'crit: logical=" + logicalWork + "' \"crit: physical=$(pwd -P)\" >&2"],
             };
             await using var owner = new OwnedMcpProcess(_files);
             using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Short child exit and diagnostic drain through linked roots.
