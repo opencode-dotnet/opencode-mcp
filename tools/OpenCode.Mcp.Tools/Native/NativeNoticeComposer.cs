@@ -9,10 +9,7 @@ internal sealed class NativeNoticeComposer(IFileSystem files)
         var notices = await files.File.ReadAllTextAsync(files.Path.Combine(root, "THIRD-PARTY-NOTICES.md"), token).ConfigureAwait(false);
         var missing = packages.Where(package => !notices.Contains($"<!-- native-package: {package.Id}/{package.Version} -->", StringComparison.Ordinal))
             .OrderBy(static package => package.Id, StringComparer.Ordinal).Select(static package => "Missing required notice: " + package.Id + "/" + package.Version).ToArray();
-        if (missing.Length != 0)
-        {
-            throw new InvalidOperationException(string.Join('\n', missing));
-        }
+        NativeDiagnostics.Refuse(missing);
         return notices;
     }
 }

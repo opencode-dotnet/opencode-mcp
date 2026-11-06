@@ -3,8 +3,14 @@ using System.Text.RegularExpressions;
 namespace OpenCode.Mcp.Tools.Native;
 
 /// <summary>Checks the publish evidence that must hold before a native claim.</summary>
-public static partial class NativePublishPolicy
+internal static partial class NativePublishPolicy
 {
+    /// <summary>
+    /// Microsoft.NET.ILLink.Tasks/10.0.14/build/Microsoft.NET.ILLink.targets:83-85 adds this default:
+    /// it reports redundant suppressions, never trim- or AOT-unsafe code.
+    /// </summary>
+    private const string SdkRedundantSuppressionWarning = "IL2121";
+    private static readonly string[] SuppressionProperties = ["SuppressTrimAnalysisWarnings", "SuppressAotAnalysisWarnings"];
     /// <summary>Checks that the invoked SDK host has the native process architecture.</summary>
     public static IReadOnlyList<string> SdkArchitectureDiagnostics(string sdkInfo, string expected)
     {
@@ -43,6 +49,17 @@ public static partial class NativePublishPolicy
         if (properties.TryGetValue("DebuggerSupport", out var debugger) && string.Equals(debugger, "false", StringComparison.OrdinalIgnoreCase))
         {
             diagnostics.Add("DebuggerSupport must not be false.");
+        }
+        foreach (var name in SuppressionProperties
+            .Where(name => properties.TryGetValue(name, out var value) && string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)))
+        {
+            diagnostics.Add(name + " must not be true.");
+        }
+        if (properties.TryGetValue("NoWarn", out var noWarn))
+        {
+            diagnostics.AddRange(WarningCode().Matches(noWarn).Select(static match => match.Value)
+                .Where(static code => code != SdkRedundantSuppressionWarning).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
+                .Select(static code => "NoWarn must not contain " + code + "."));
         }
         return diagnostics.AsReadOnly();
     }

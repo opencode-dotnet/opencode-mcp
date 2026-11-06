@@ -733,3 +733,14 @@ dotnet_diagnostic.VSTHRD111.severity = none
 
 # CA1716 judges names consumers see; test assemblies do not ship, so test namespaces keep their names
 dotnet_diagnostic.CA1716.severity = none
+
+# =============================================================================
+# FILE-BASED ENTRY ARBITRATION (MA0048)
+# =============================================================================
+# Placed after every global C# diagnostic section so the file-scoped glob never
+# narrows a later section. MA0048 (file name = type name) cannot apply to the
+# file-based tool entry: the SDK synthesizes the Program type, and the entry
+# contract pins tools/native.cs by convention. Winner: the entry contract;
+# the rule stays error for every other file.
+[tools/native.cs]
+dotnet_diagnostic.MA0048.severity = none

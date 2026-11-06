@@ -14,7 +14,7 @@ public sealed class NativeReceiptValidatorTests
     {
         var scenario = new NativeBuildScenario();
         var request = await scenario.PrepareAsync(token);
-        await Assert.That(await new NativeReceiptValidator(scenario.Files).ValidateAsync(request.Manifest, scenario.Output, token))
+        await Assert.That(await new NativeReceiptValidator(scenario.Files, scenario.Modes).ValidateAsync(request.Manifest, scenario.Output, token))
             .IsEquivalentTo(["Missing receipt: win-x64", "Missing receipt: win-arm64", "Missing receipt: linux-x64", "Missing receipt: linux-arm64",
                 "Missing receipt: osx-x64", "Missing receipt: osx-arm64"], CollectionOrdering.Matching);
     }
@@ -31,7 +31,7 @@ public sealed class NativeReceiptValidatorTests
         var request = await scenario.PrepareAsync(token);
         var published = await new NativeVerifier(scenario.Files, scenario.Runner).VerifyAsync(request, token);
         await scenario.AddStagingInputsAsync(token);
-        var receipt = await new NativeStager(scenario.Files, scenario.Runner).StageAsync(request, published.PublishDirectory, token);
+        var receipt = await new NativeStager(scenario.Files, scenario.Runner, scenario.Modes).StageAsync(request, published.PublishDirectory, token);
         var payload = scenario.Files.Path.Combine(scenario.Output, receipt.PayloadDirectory ?? throw new InvalidOperationException());
         var license = scenario.Files.Path.Combine(payload, "LICENSE");
         if (defect == "changed")
@@ -60,7 +60,7 @@ public sealed class NativeReceiptValidatorTests
             receipt = receipt with { ArchiveSha256 = Convert.ToHexStringLower(SHA256.HashData(tampered)) };
             await new NativeEvidenceStore(scenario.Files).WriteAsync(scenario.Files.Path.Combine(scenario.Output, "receipt.json"), receipt, token);
         }
-        await Assert.That(await new NativeReceiptValidator(scenario.Files).ValidateAsync(request.Manifest, scenario.Output, token))
+        await Assert.That(await new NativeReceiptValidator(scenario.Files, scenario.Modes).ValidateAsync(request.Manifest, scenario.Output, token))
             .IsEquivalentTo(["Missing receipt: win-arm64", "Missing receipt: linux-x64", "Missing receipt: linux-arm64", "Missing receipt: osx-x64",
                 "Missing receipt: osx-arm64", diagnostic], CollectionOrdering.Matching);
     }

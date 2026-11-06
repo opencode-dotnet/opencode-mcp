@@ -28,13 +28,10 @@ internal sealed record NativeReceipt
     public required IReadOnlyList<string> Warnings { get; init; }
     public required string Inspection { get; init; }
     public required NativeTestRun PublishedTests { get; init; }
-    public IReadOnlyDictionary<string, string> SourceReferences { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public IReadOnlyList<DependencyNotice> Dependencies { get; init; } = [];
     public string? BuilderImage { get; init; }
-    public string? BuilderPlatformDigest { get; init; }
     public string? RuntimeImage { get; init; }
     public string? RuntimeIndependence { get; init; }
-    public string? GlibcFloor { get; init; }
     public string? PayloadDirectory { get; init; }
     public string? PayloadManifest { get; init; }
     public IReadOnlyList<PayloadFile> Payload { get; init; } = [];

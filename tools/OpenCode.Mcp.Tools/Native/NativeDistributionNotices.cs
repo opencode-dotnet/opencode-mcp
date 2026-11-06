@@ -15,7 +15,12 @@ internal sealed class NativeDistributionNotices(IFileSystem files)
             var directory = FindPackage(folders, package.PackageDirectory);
             await AppendMaterialsAsync(notices, package, directory, token).ConfigureAwait(false);
         }
-        foreach (var framework in Frameworks(assets, rid))
+        var frameworks = Frameworks(assets, rid);
+        if (frameworks.Length == 0)
+        {
+            throw new InvalidOperationException("Missing runtime distributions: " + rid);
+        }
+        foreach (var framework in frameworks)
         {
             var directory = FindPackage(folders, framework.PackageDirectory);
             if (!files.Directory.EnumerateFiles(directory).Any(path => files.Path.GetFileName(path).StartsWith("LICENSE", StringComparison.OrdinalIgnoreCase)))

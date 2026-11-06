@@ -1,6 +1,7 @@
 using System.IO.Abstractions;
 using System.Runtime.InteropServices;
 using NSubstitute;
+using Testably.Abstractions;
 using Testably.Abstractions.Testing;
 using TUnit.Assertions.Enums;
 
@@ -10,6 +11,49 @@ namespace OpenCode.Mcp.Tests.Support;
 public sealed class ProductExecutableTests
 {
     private readonly MockFileSystem _files = new();
+
+    [Test]
+    public async Task Resolve_Should_Select_The_Fixed_Windows_X64_Fixture_On_An_X64_Windows_Os()
+    {
+        var executable = await ArrangeNativeAsync("win", "x64");
+        if (OperatingSystem.IsWindows() && RuntimeInformation.OSArchitecture == Architecture.X64)
+        {
+            ProcessLaunch? launch = null;
+            await Assert.That(() => launch = new ProductExecutable(_files).Resolve(Native(executable))).ThrowsNothing();
+            var selected = await Assert.That(launch).IsNotNull();
+            await Assert.That(selected.FileName).IsEqualTo(executable);
+            await Assert.That(selected.Arguments).IsEmpty();
+        }
+        else
+        {
+            await Assert.That(() => new ProductExecutable(_files).Resolve(Native(executable))).ThrowsExactly<InvalidOperationException>()
+                .WithMessage($"Native execution needs a compatible {HostIdentity()} image; observed win-x64.", StringComparison.Ordinal);
+        }
+    }
+
+    [Test]
+    public async Task Resolve_Should_Refuse_A_Managed_Pe_Renamed_As_An_Executable()
+    {
+        var path = _files.Path.Combine(_files.Path.GetTempPath(), "managed.exe");
+        _files.Directory.CreateDirectory(_files.Path.GetTempPath());
+        await _files.File.WriteAllBytesAsync(path, await new RealFileSystem().File.ReadAllBytesAsync(typeof(ProductExecutable).Assembly.Location));
+        await Assert.That(() => new ProductExecutable(_files).Resolve(Native(path))).ThrowsExactly<InvalidOperationException>()
+            .WithMessage($"Native execution needs a compatible {HostIdentity()} image; observed managed.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    [Arguments("yes")]
+    [Arguments("")]
+    [Arguments(null)]
+    public async Task Resolve_Should_Refuse_An_Invalid_Native_Selector(string? value)
+    {
+        ArrangeManaged();
+        await Assert.That(() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["OPENCODE_MCP_TEST_EXPECT_NATIVE"] = value,
+        })).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("OPENCODE_MCP_TEST_EXPECT_NATIVE must be true or false.", StringComparison.Ordinal);
+    }
 
     [Test]
     public async Task Resolve_Should_Select_The_Exact_Native_Executable_When_Requirements_Are_Met()
@@ -217,19 +261,7 @@ public sealed class ProductExecutableTests
         return executable;
     }
 
-    private static string HostIdentity()
-    {
-        var os = "osx";
-        if (OperatingSystem.IsWindows())
-        {
-            os = "win";
-        }
-        else if (OperatingSystem.IsLinux())
-        {
-            os = "linux";
-        }
-        return os + "-" + RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant();
-    }
+    private static string HostIdentity() => RuntimeInformation.RuntimeIdentifier;
 
     private static Dictionary<string, string?> Native(string path) => new(StringComparer.Ordinal)
     {

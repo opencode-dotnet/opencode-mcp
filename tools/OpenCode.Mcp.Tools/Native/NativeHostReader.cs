@@ -20,7 +20,7 @@ internal sealed class NativeHostReader : INativeHostReader
         {
             os = "osx";
         }
-        string[] names = ["PATH", "ProgramFiles(x86)", "RUNNER_NAME", "ImageOS", "ImageVersion", "GITHUB_EVENT_NAME", "GITHUB_SHA", "GITHUB_EVENT_PATH"];
+        string[] names = ["PATH", "ProgramFiles(x86)", "RUNNER_NAME", "ImageVersion"];
         return new NativeHost(os, RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant(), RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
             RuntimeInformation.OSDescription, names.ToDictionary(static name => name, Environment.GetEnvironmentVariable, StringComparer.Ordinal))
         {

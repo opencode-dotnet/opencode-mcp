@@ -20,8 +20,12 @@ public sealed class NativePublishPolicyTests
     [Arguments("DebuggerSupport", "false", "DebuggerSupport must not be false.")]
     [Arguments("PublishAot", "false", "PublishAot must be true.")]
     [Arguments("InvariantGlobalization", "false", "InvariantGlobalization must be true.")]
+    [Arguments("SuppressTrimAnalysisWarnings", "TRUE", "SuppressTrimAnalysisWarnings must not be true.")]
+    [Arguments("SuppressAotAnalysisWarnings", "true", "SuppressAotAnalysisWarnings must not be true.")]
+    [Arguments("NoWarn", "CS1591;IL3050;IL2026;IL3050", "NoWarn must not contain IL2026.\nNoWarn must not contain IL3050.")]
     public async Task PropertyDiagnostics_Should_Refuse_Missing_Or_Disabled_Effective_Properties(string property, string? value, string diagnostic)
     {
+        ArgumentNullException.ThrowIfNull(diagnostic);
         var properties = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["DebuggerSupport"] = "true",
@@ -37,7 +41,7 @@ public sealed class NativePublishPolicyTests
         {
             properties[property] = value;
         }
-        await Assert.That(NativePublishPolicy.PropertyDiagnostics(properties)).IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
+        await Assert.That(NativePublishPolicy.PropertyDiagnostics(properties)).IsEquivalentTo(diagnostic.Split('\n'), CollectionOrdering.Matching);
     }
 
     [Test]

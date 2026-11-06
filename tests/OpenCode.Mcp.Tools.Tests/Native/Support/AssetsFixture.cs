@@ -24,6 +24,22 @@ internal static class AssetsFixture
         },
     };
 
+    public static JsonObject WithRuntimeAssetKinds()
+    {
+        var assets = Create();
+        var target = assets["targets"]?["net10.0/win-x64"]?.AsObject() ?? throw new InvalidOperationException();
+        var libraries = assets["libraries"]?.AsObject() ?? throw new InvalidOperationException();
+        foreach (var kind in new[] { "runtimeTargets", "native", "runtime" })
+        {
+            var name = kind + "/1.0.0";
+            target[name] = new JsonObject { ["type"] = "package", [kind] = new JsonObject { ["lib/asset"] = new JsonObject() } };
+            libraries[name] = Library(kind + "/1.0.0", kind + "-content");
+        }
+        target["Placeholder/1.0.0"] = new JsonObject { ["type"] = "package", ["runtime"] = new JsonObject { ["lib/net10.0/_._"] = new JsonObject() } };
+        libraries["Placeholder/1.0.0"] = Library("placeholder/1.0.0", "placeholder-content");
+        return assets;
+    }
+
     private static JsonObject Runtime(string type) => new()
     {
         ["type"] = type,

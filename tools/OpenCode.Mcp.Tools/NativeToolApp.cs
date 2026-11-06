@@ -12,6 +12,7 @@ public static class NativeToolApp
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(errors);
-        return new NativeApplication(new RealFileSystem(), new SystemNativeProcessRunner(), new NativeHostReader(), output, errors).RunAsync(arguments, token);
+        var files = new RealFileSystem();
+        return new NativeApplication(files, new SystemNativeProcessRunner(), new NativeHostReader(), new FileUnixModes(files), output, errors).RunAsync(arguments, token);
     }
 }

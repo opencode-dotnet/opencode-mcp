@@ -143,6 +143,26 @@ jobs:
           dotnet format style OpenCode.Mcp.slnx --verify-no-changes --no-restore --severity warn
           exit $LASTEXITCODE
 
+      - name: Verify native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $emptyReceipts = Join-Path $env:RUNNER_TEMP ('native-empty-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $emptyReceipts | Out-Null
+          try {
+            $diagnostic = dotnet run tools/native.cs -- validate --receipts $emptyReceipts 2>&1
+            $exitCode = $LASTEXITCODE
+            $expected = (Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json).runtimes |
+              ForEach-Object { 'Missing receipt: ' + $_.rid }
+            if ($exitCode -ne 2 -or ($diagnostic -join "`n").Trim() -cne ($expected -join "`n")) {
+              throw ('Native entry smoke failed: ' + ($diagnostic -join "`n"))
+            }
+          } finally {
+            Remove-Item -LiteralPath $emptyReceipts -Recurse -Force
+          }
+          exit 0
+
   build-and-test:
     name: Build and test (${{ matrix.os }})
     needs: changes

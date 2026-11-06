@@ -10,8 +10,8 @@ internal sealed class NativeProjectProperties(IFileSystem files, NativeProcesses
     public async Task<IReadOnlyDictionary<string, string>> ReadAsync(NativeBuildRequest request, string sdk,
         IReadOnlyDictionary<string, string?> environment, CancellationToken token)
     {
-        var output = await processes.RequireAsync("dotnet", ["msbuild", ProductProject, "-p:Configuration=Release", "-p:RuntimeIdentifier=" + request.Rid,
-            "-getProperty:PublishAot,InvariantGlobalization,IlcTreatWarningsAsErrors,DebuggerSupport,Version,NETCoreSdkVersion"], environment, token).ConfigureAwait(false);
+        var output = await processes.RequireAsync("dotnet", ["msbuild", ProductProject, "-p:Configuration=Release", "-p:RuntimeIdentifier=" + request.Rid, "-nodeReuse:false", "-p:UseSharedCompilation=false",
+            "-getProperty:PublishAot,InvariantGlobalization,IlcTreatWarningsAsErrors,DebuggerSupport,Version,NETCoreSdkVersion,NoWarn,SuppressTrimAnalysisWarnings,SuppressAotAnalysisWarnings"], environment, token).ConfigureAwait(false);
         using var document = JsonDocument.Parse(output);
         var properties = document.RootElement.GetProperty("Properties").EnumerateObject()
             .ToDictionary(static property => property.Name, static property => property.Value.GetString() ?? "", StringComparer.Ordinal);

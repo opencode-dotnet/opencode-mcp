@@ -180,8 +180,9 @@ discovery-scheme, gRPC and cloud-exporter hooks. Its derivation notice is in
 ## Native AOT
 
 `packaging/native-manifest.json` owns the ordered native RID/runner mapping and the digest-qualified
-Linux builder and clean runtime image references. The tool rejects unknown manifest fields, a
-different ordered mapping, and image references without SHA-256 digests. Non-Linux RIDs use neither
+Linux builder and clean runtime image references. The tool rejects unknown manifest fields,
+duplicate or unknown-shape RIDs, missing runners, and image references without SHA-256 digests. A
+committed-manifest test pins the approved ordered mapping. Non-Linux RIDs use neither
 image. Packaging and acquisition consume this manifest rather than maintaining separate RID lists.
 
 Linux means glibc; musl is not in the matrix, and there is no managed `.any` fallback.
@@ -203,16 +204,7 @@ Linux means glibc; musl is not in the matrix, and there is no managed `.any` fal
 
 ### Native build and runtime independence
 
-Each RID builds and runs on a matching hosted runner:
-
-| RID | Runner |
-|---|---|
-| `win-x64` | `windows-2025` |
-| `win-arm64` | `windows-11-arm` |
-| `linux-x64` | `ubuntu-24.04` |
-| `linux-arm64` | `ubuntu-24.04-arm` |
-| `osx-x64` | `macos-15-intel` |
-| `osx-arm64` | `macos-26` |
+Each RID builds and runs on the matching hosted runner declared in `packaging/native-manifest.json`.
 
 Every native job checks the actual operating system and architecture against its RID before it
 compiles, including process and SDK architecture so emulation cannot stand in for matching-host
@@ -220,8 +212,8 @@ execution.
 
 ### Verification tool and evidence
 
-`dotnet run tools/Native.cs -- <subcommand> ...` is the case-sensitive file-based entry over the
-solution's tooling library. Its explicit `Native.Main` owns Ctrl+C through a semaphore and awaited
+`dotnet run tools/native.cs -- <subcommand> ...` is the lowercase file-based entry over the
+solution's tooling library. Its top-level entry owns Ctrl+C through a semaphore and awaited
 `CancelAsync`; the signal handler does not run cancellation callbacks. The entry uses the library's
 root namespace and disables the file-app SDK's default AOT setting: this is managed build tooling,
 not a second distributed product. The entry is compiled separately from the solution.
@@ -229,19 +221,28 @@ not a second distributed product. The entry is compiled separately from the solu
 - `verify --rid <RID> [--output <dir>]` guards the host, checks prerequisites, builds the owning
   test runner, restores the RID-specific product, and queries its effective properties. It requires
   `PublishAot=true`, `InvariantGlobalization=true`, `IlcTreatWarningsAsErrors=true`, and
-  `DebuggerSupport` not false. It captures both publish streams, preserves the exit result, scans
+  `DebuggerSupport` not false. Neither trim/AOT suppression property may be true, and `NoWarn` may
+  contain no `IL2xxx` or `IL3xxx` code except exactly `IL2121`, the pinned SDK's default for
+  redundant suppression warnings, which do not report unsafe code. The receipt preserves the
+  effective `NoWarn` value. It removes its owned publish and payload directories before
+  publishing. Child build, restore, property-query and publish commands disable node reuse and
+  shared compilation. It captures both publish streams, preserves the exit result, scans
   for trim/AOT diagnostics even on exit zero, inspects the native image, and runs `ExecutableTests`
   on that exact published path in both transport modes.
 - `stage --rid <RID> --publish-directory <dir>` requires matching successful verification and an
-  unchanged executable digest and common source inputs. It normalizes the command to
+  unchanged executable, resolved-assets digest and common source inputs. It normalizes the command to
   `opencode-mcp[.exe]`, preserves runtime assets, adds license, notices and version/RID metadata,
   inventories every payload file, tests the normalized command, archives it, extracts to an owned
   temporary directory, compares the complete inventory, and tests the extracted command.
-- `inspect --rid <RID> --path <executable-or-directory>` runs native inspection independently,
-  including for the framework-dependent negative control.
+- `inspect --rid <RID> --path <executable-or-directory>` inspects only the supplied image when the
+  path is a file. A directory also scans its companion files recursively. The framework-dependent
+  negative control uses the file path.
 - `validate --receipts <dir> [--manifest <path>]` checks the manifest's complete ordered receipt set,
-  common source/SDK/version/dependency identities, completed publish and three test runs, native
-  inspection, payload manifests, archive identities and archive contents. The manifest defaults to
+  common source/SDK/version/dependency identities, successful publish and three test runs, effective
+  properties, warning results, manifest runner/image identities, payload manifests, archive
+  identities and archive contents. Each payload must contain the command, `LICENSE`,
+  `THIRD-PARTY-NOTICES.md` and `payload.json`; the command digest must equal the verified executable
+  digest. Validation does not rerun native inspection. The manifest defaults to
   `packaging/native-manifest.json`. An incomplete local set is a refusal, never six-RID acceptance.
 
 Default evidence lives under `artifacts/native/<RID>/`: publish and toolchain logs, effective
@@ -250,7 +251,10 @@ and a ZIP on Windows or tar.gz on Unix. Symbols and build evidence stay outside 
 Receipts record actual source commit/status and common input hash, SDK and compiler package
 identities, requested runner versus actual host, executable and archive digests, resolved runtime
 packages, and published/normalized/extracted test totals. Dirty development receipts remain dirty
-development evidence; they are not relabeled as clean candidates.
+development evidence; they are not relabeled as clean candidates. Unix payload modes flow through a
+file-mode seam and the target RID: Windows payloads write no Unix mode; Unix tar entries and
+extracted files preserve their recorded modes. The real adapter guards platform APIs on the actual
+host and refuses Unix-mode writes on Windows.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
@@ -271,8 +275,8 @@ runners above push by digest; a dependent merge job assembles the multi-architec
 tag is `jammy-<yyyymmdd>-<short source sha>-<github.run_id>-<github.run_attempt>` (UTC date, seven-character
 source SHA), unique to a dispatch and re-run attempt and never moved. There is no mutable tag,
 schedule, QEMU or automatic image deletion. The image carries source and revision labels. Native
-consumers pin the published index digest, not its discovery tag. The coordinator makes the package
-public after its first publication; the workflow does not change visibility.
+consumers pin the published index digest, not its discovery tag. The package must be public and
+anonymously accessible before native verification uses it; the workflow does not change visibility.
 
 Runtime independence has its own proof. A Linux payload runs in a clean container that has no .NET
 SDK or shared runtime. A Windows or macOS payload runs on its matching runner and passes a

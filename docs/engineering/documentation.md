@@ -17,8 +17,9 @@ maintenance.
 | Operational state | `docs/ROADMAP.md` | What is done, next, open, and known to be incomplete; shrinks as work lands |
 | Consumer documentation | `README.md`, `CHANGELOG.md` | How to use the MCP server, complete on its own (Consumer documentation, below) |
 
-Dated research evidence, plans, and session operations live outside this repository; the
-canonical documentation here is complete without them and never depends on them.
+Plans and session operations live outside this repository. Verification evidence belongs in pull
+requests, not in documents. Canonical documentation is complete without task histories and evidence
+narratives.
 
 Repository files and current canonical documents beat memory, dated research, transient plans, and
 handoffs. If two current canonical sources appear to disagree, do not pick a winner silently; use
@@ -35,10 +36,9 @@ unique information in an appropriate canonical, rationale, evidence, or operatio
 passage only after proving it is an exact duplicate, obsolete without historical value, or retained
 in a more authoritative source. Git history is not a substitute for accessible, useful canon.
 
-Current-state documents describe the status quo rather than narrating their amendment history.
-Dated research preserves the history and may state decisions later superseded; it must never be
-used as current policy without following its links to current canon. ADRs record decision rationale,
-not work-queue state.
+Current-state documents contain durable rules and how-to, not task status, verification narratives
+or amendment history. Keep status only in `docs/ROADMAP.md`, as short items. ADRs record decision
+rationale, not work-queue state.
 
 ## Dates and lifecycle
 

@@ -8,6 +8,18 @@ public sealed class NativeDistributionNoticesTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task ComposeAsync_Should_Refuse_An_Empty_Runtime_Distribution_Set(CancellationToken token)
+    {
+        var fixture = new DistributionNoticeFixture();
+        await fixture.PrepareAsync(token);
+        fixture.Assets.Remove("project");
+        using var assets = JsonDocument.Parse(fixture.Assets.ToJsonString());
+        await Assert.That(async () => await new NativeDistributionNotices(fixture.Files).ComposeAsync(assets.RootElement, "win-x64", token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Missing runtime distributions: win-x64", StringComparison.Ordinal);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task ComposeAsync_Should_Include_The_Resolved_Framework_License_And_Notices(CancellationToken token)
     {
         var fixture = new DistributionNoticeFixture();

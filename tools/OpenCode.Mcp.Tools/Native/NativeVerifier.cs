@@ -12,16 +12,22 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
     public async Task<NativeReceipt> VerifyAsync(NativeBuildRequest request, CancellationToken token)
     {
         var host = request.Host;
+        var rid = new NativeRid(request.Rid);
         var diagnostics = NativePublishPolicy.HostDiagnostics(request.Rid, host.Os, host.OsArchitecture, host.ProcessArchitecture);
-        if (diagnostics.Count != 0)
-        {
-            throw new InvalidOperationException(string.Join('\n', diagnostics));
-        }
+        NativeDiagnostics.Refuse(diagnostics);
         var processes = new NativeProcesses(runner, request.Root);
         var store = new NativeEvidenceStore(files);
         files.Directory.CreateDirectory(request.Output);
         var receiptPath = files.Path.Combine(request.Output, "receipt.json");
         files.File.Delete(receiptPath);
+        foreach (var name in new[] { "publish", "payload" })
+        {
+            var directory = files.Path.Combine(request.Output, name);
+            if (files.Directory.Exists(directory))
+            {
+                files.Directory.Delete(directory, recursive: true);
+            }
+        }
         var toolchain = await new NativePrerequisites(files, processes).CheckAsync(request.Rid, host, token).ConfigureAwait(false);
         await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "toolchain.log"), toolchain.Details, token).ConfigureAwait(false);
         var source = await new NativeSourceReader(files, processes).ReadAsync(request.Root, token).ConfigureAwait(false);
@@ -29,11 +35,11 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
         var sdkInfo = await processes.RequireAsync("dotnet", ["--info"], toolchain.PublishEnvironment, token).ConfigureAwait(false);
         await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "sdk.log"), sdkInfo, token).ConfigureAwait(false);
         NativeDiagnostics.Refuse(NativePublishPolicy.SdkArchitectureDiagnostics(sdkInfo, host.ProcessArchitecture));
-        await processes.RequireAsync("dotnet", ["build", "tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj", "-c", "Release"], toolchain.PublishEnvironment, token).ConfigureAwait(false);
-        await processes.RequireAsync("dotnet", ["restore", NativeProjectProperties.ProductProject, "-r", request.Rid], toolchain.PublishEnvironment, token).ConfigureAwait(false);
+        await processes.RequireAsync("dotnet", ["build", "tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj", "-c", "Release", "-nodeReuse:false", "-p:UseSharedCompilation=false"], toolchain.PublishEnvironment, token).ConfigureAwait(false);
+        await processes.RequireAsync("dotnet", ["restore", NativeProjectProperties.ProductProject, "-r", request.Rid, "-nodeReuse:false", "-p:UseSharedCompilation=false"], toolchain.PublishEnvironment, token).ConfigureAwait(false);
         var properties = await new NativeProjectProperties(files, processes).ReadAsync(request, sdk, toolchain.PublishEnvironment, token).ConfigureAwait(false);
         var publishDirectory = files.Path.Combine(request.Output, "publish");
-        string[] publishCommand = ["publish", NativeProjectProperties.ProductProject, "-c", "Release", "-r", request.Rid, "-p:TrimmerSingleWarn=false", "-o", publishDirectory];
+        string[] publishCommand = ["publish", NativeProjectProperties.ProductProject, "-c", "Release", "-r", request.Rid, "-p:TrimmerSingleWarn=false", "-o", publishDirectory, "-nodeReuse:false", "-p:UseSharedCompilation=false"];
         var publish = await processes.RunAsync("dotnet", publishCommand, toolchain.PublishEnvironment, token).ConfigureAwait(false);
         await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "publish.log"), publish.Output, token).ConfigureAwait(false);
         var warnings = NativePublishPolicy.WarningDiagnostics(publish.Output);
@@ -42,10 +48,11 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
         {
             throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture, $"Native publish exited {publish.ExitCode}:\n{publish.Output}"));
         }
-        var executable = files.Path.Combine(publishDirectory, request.Rid.StartsWith("win-", StringComparison.Ordinal) ? "OpenCode.Mcp.exe" : "OpenCode.Mcp");
-        var inspection = await new NativeInspector(files, processes).InspectAsync(request.Rid, executable, toolchain, token).ConfigureAwait(false);
+        var executable = files.Path.Combine(publishDirectory, rid.PublishedName);
+        var inspection = await new NativeInspector(files, processes).InspectAsync(request.Rid, publishDirectory, toolchain, token).ConfigureAwait(false);
         await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "inspection.log"), inspection, token).ConfigureAwait(false);
-        using var assets = JsonDocument.Parse(await files.File.ReadAllTextAsync(files.Path.Combine(request.Root, "src", "OpenCode.Mcp", "obj", "project.assets.json"), token).ConfigureAwait(false));
+        var assetsPath = files.Path.Combine(request.Root, rid.AssetsPath);
+        using var assets = JsonDocument.Parse(await files.File.ReadAllTextAsync(assetsPath, token).ConfigureAwait(false));
         var dependencies = DependencyInventory.Read(assets.RootElement, request.Rid);
         var tests = await new NativeExecutableTests(files, processes).RunAsync(executable, files.Path.Combine(request.Root, "artifacts", "test-results", "native", request.Rid, "published"), token).ConfigureAwait(false);
         var receipt = new NativeReceipt
@@ -63,7 +70,7 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
             Os = host.Os,
             OsArchitecture = host.OsArchitecture,
             Toolchain = toolchain.Details,
-            AssetsSha256 = await store.DigestAsync(files.Path.Combine(request.Root, "src", "OpenCode.Mcp", "obj", "project.assets.json"), token).ConfigureAwait(false),
+            AssetsSha256 = await store.DigestAsync(assetsPath, token).ConfigureAwait(false),
             CompilerPackages = [.. assets.RootElement.GetProperty("libraries").EnumerateObject().Select(static property => property.Name)
                 .Where(static name => name.Contains("ILCompiler/", StringComparison.Ordinal)).Order(StringComparer.Ordinal)],
             RunnerImage = host.Environment.GetValueOrDefault("ImageVersion"),
@@ -78,8 +85,8 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
             Inspection = inspection,
             PublishedTests = tests,
             Dependencies = dependencies,
-            BuilderImage = request.Rid.StartsWith("linux-", StringComparison.Ordinal) ? request.Manifest.BuilderImage : null,
-            RuntimeImage = request.Rid.StartsWith("linux-", StringComparison.Ordinal) ? request.Manifest.RuntimeImage : null,
+            BuilderImage = rid.IsLinux ? request.Manifest.BuilderImage : null,
+            RuntimeImage = rid.IsLinux ? request.Manifest.RuntimeImage : null,
         };
         await store.WriteAsync(receiptPath, receipt, token).ConfigureAwait(false);
         return receipt;

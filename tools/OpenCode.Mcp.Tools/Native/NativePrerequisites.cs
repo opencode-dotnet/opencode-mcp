@@ -7,11 +7,12 @@ internal sealed class NativePrerequisites(IFileSystem files, NativeProcesses pro
     public async Task<NativeToolchain> CheckAsync(string rid, NativeHost host, CancellationToken token)
     {
         var environment = new Dictionary<string, string?>(StringComparer.Ordinal) { ["DOTNET_CLI_UI_LANGUAGE"] = "en-US" };
-        if (!rid.StartsWith("win-", StringComparison.Ordinal))
+        var target = new NativeRid(rid);
+        if (!target.IsWindows)
         {
             var compiler = await processes.RequireAsync("clang", ["--version"], environment, token).ConfigureAwait(false);
             var inspector = await processes.RequireAsync("nm", ["--version"], environment, token).ConfigureAwait(false);
-            return new NativeToolchain("nm", rid.StartsWith("osx-", StringComparison.Ordinal) ? ["-gU"] : ["--defined-only"], environment, compiler + "\n" + inspector);
+            return new NativeToolchain("nm", target.IsMacOS ? ["-gU"] : ["-D", "--defined-only"], environment, compiler + "\n" + inspector);
         }
         var programFiles = host.Environment.GetValueOrDefault("ProgramFiles(x86)")
             ?? throw new InvalidOperationException("Missing prerequisite: ProgramFiles(x86) for Visual Studio Installer.");

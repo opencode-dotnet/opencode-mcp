@@ -16,13 +16,13 @@ internal static class NativeReceiptPolicy
             {
                 diagnostics.Add("Duplicate receipt: " + rid);
             }
-            else if (rid.StartsWith("linux-", StringComparison.Ordinal) && string.IsNullOrEmpty(matching[0].RuntimeIndependence))
+            else if (new NativeRid(rid).IsLinux && string.IsNullOrEmpty(matching[0].RuntimeIndependence))
             {
                 diagnostics.Add("Missing Linux runtime-independence proof: " + rid);
             }
             if (matching.Length == 1)
             {
-                diagnostics.AddRange(EntryDiagnostics(matching[0]));
+                diagnostics.AddRange(EntryDiagnostics(matching[0], manifest));
             }
         }
         diagnostics.AddRange(receipts.Select(static receipt => receipt.Rid).Except(manifest.Runtimes.Select(static runtime => runtime.Rid), StringComparer.Ordinal)
@@ -35,9 +35,22 @@ internal static class NativeReceiptPolicy
         return diagnostics.AsReadOnly();
     }
 
-    private static string[] EntryDiagnostics(NativeReceipt receipt)
+    private static string[] EntryDiagnostics(NativeReceipt receipt, NativeManifest manifest)
     {
         var diagnostics = NativePublishPolicy.PropertyDiagnostics(receipt.Properties).Select(error => receipt.Rid + ": " + error).ToList();
+        var rid = new NativeRid(receipt.Rid);
+        if (receipt.RequestedRunner != manifest.Runtimes.Single(runtime => runtime.Rid == receipt.Rid).Runner)
+        {
+            diagnostics.Add(receipt.Rid + ": RequestedRunner differs from manifest.");
+        }
+        if (receipt.BuilderImage != (rid.IsLinux ? manifest.BuilderImage : null))
+        {
+            diagnostics.Add(receipt.Rid + ": BuilderImage differs from manifest.");
+        }
+        if (receipt.RuntimeImage != (rid.IsLinux ? manifest.RuntimeImage : null))
+        {
+            diagnostics.Add(receipt.Rid + ": RuntimeImage differs from manifest.");
+        }
         if (receipt.PublishExitCode != 0)
         {
             diagnostics.Add("Unsuccessful publish: " + receipt.Rid);
@@ -61,6 +74,19 @@ internal static class NativeReceiptPolicy
         if (receipt.Payload.Count == 0)
         {
             diagnostics.Add("Missing payload inventory: " + receipt.Rid);
+        }
+        else
+        {
+            foreach (var name in new[] { "LICENSE", "THIRD-PARTY-NOTICES.md", rid.CommandName, "payload.json" }
+                .Where(name => !receipt.Payload.Any(file => file.Path == name)))
+            {
+                diagnostics.Add(receipt.Rid + ": Missing required payload file: " + name);
+            }
+            var command = receipt.Payload.FirstOrDefault(file => file.Path == rid.CommandName);
+            if (command is not null && command.Sha256 != receipt.ExecutableSha256)
+            {
+                diagnostics.Add(receipt.Rid + ": Payload command digest differs from verified executable.");
+            }
         }
         if (string.IsNullOrEmpty(receipt.ArchiveSha256))
         {

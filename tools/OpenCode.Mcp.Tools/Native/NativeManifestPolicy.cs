@@ -5,12 +5,6 @@ namespace OpenCode.Mcp.Tools.Native;
 
 internal static partial class NativeManifestPolicy
 {
-    private static readonly string[] ApprovedMappings =
-    [
-        "win-x64/windows-2025", "win-arm64/windows-11-arm", "linux-x64/ubuntu-24.04",
-        "linux-arm64/ubuntu-24.04-arm", "osx-x64/macos-15-intel", "osx-arm64/macos-26",
-    ];
-
     public static void Validate(JsonElement document)
     {
         CheckFields(document, ["schemaVersion", "builderImage", "runtimeImage", "runtimes"]);
@@ -29,15 +23,23 @@ internal static partial class NativeManifestPolicy
         {
             throw new InvalidOperationException("Manifest: runtimes must be an array.");
         }
-        var mappings = new List<string>();
+        var rids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var runtime in runtimes.EnumerateArray())
         {
             CheckFields(runtime, ["rid", "runner"]);
-            mappings.Add(Text(runtime, "rid") + "/" + Text(runtime, "runner"));
-        }
-        if (!mappings.SequenceEqual(ApprovedMappings, StringComparer.Ordinal))
-        {
-            throw new InvalidOperationException("Manifest: runtimes must have the approved ordered RID/runner mapping.");
+            var rid = Text(runtime, "rid");
+            if (!RidShape().IsMatch(rid))
+            {
+                throw new InvalidOperationException("Manifest: unknown RID shape " + rid + ".");
+            }
+            if (!rids.Add(rid))
+            {
+                throw new InvalidOperationException("Manifest: duplicate RID " + rid + ".");
+            }
+            if (string.IsNullOrWhiteSpace(Text(runtime, "runner")))
+            {
+                throw new InvalidOperationException("Manifest: runner is required for " + rid + ".");
+            }
         }
     }
 
@@ -59,4 +61,7 @@ internal static partial class NativeManifestPolicy
 
     [GeneratedRegex(@"^[^\s@]+@sha256:[a-fA-F0-9]{64}$", RegexOptions.None, Timeout.Infinite)]
     private static partial Regex DigestImage();
+
+    [GeneratedRegex(@"^(?:win|linux|osx)-(?:x64|arm64)$", RegexOptions.None, Timeout.Infinite)]
+    private static partial Regex RidShape();
 }

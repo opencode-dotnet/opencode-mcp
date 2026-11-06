@@ -13,7 +13,7 @@ public sealed class PayloadInventoryTests
         var fixture = new PayloadFixture();
         await fixture.PrepareAsync(token);
         await fixture.ChangeAsync("LICENSE", "changed", token);
-        await Assert.That(await new PayloadInventory(fixture.Files).CompareAsync(fixture.Root, fixture.Inventory, token))
+        await Assert.That(await new PayloadInventory(fixture.Files, fixture.Modes, fixture.Rid).CompareAsync(fixture.Root, fixture.Inventory, token))
             .IsEquivalentTo(["Changed payload file: LICENSE"], CollectionOrdering.Matching);
     }
 
@@ -25,7 +25,7 @@ public sealed class PayloadInventoryTests
         await fixture.PrepareAsync(token);
         fixture.Remove("LICENSE");
         await fixture.ChangeAsync("unexpected", "extra", token);
-        await Assert.That(await new PayloadInventory(fixture.Files).CompareAsync(fixture.Root, fixture.Inventory, token))
+        await Assert.That(await new PayloadInventory(fixture.Files, fixture.Modes, fixture.Rid).CompareAsync(fixture.Root, fixture.Inventory, token))
             .IsEquivalentTo(["Missing payload file: LICENSE", "Unexpected payload file: unexpected"], CollectionOrdering.Matching);
     }
 }

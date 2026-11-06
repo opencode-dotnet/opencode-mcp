@@ -1,3 +1,4 @@
+using System.IO.Abstractions;
 using System.Text.Json.Nodes;
 using Testably.Abstractions.Testing;
 
@@ -5,13 +6,14 @@ namespace OpenCode.Mcp.Tools.Tests.Native.Support;
 
 internal sealed class DistributionNoticeFixture
 {
-    public MockFileSystem Files { get; } = new();
+    public IFileSystem Files { get; }
     public string Root => Files.Path.Combine(Files.Path.GetTempPath(), "packages");
     public JsonObject Assets { get; }
     public string Package => Files.Path.Combine(Root, "microsoft.netcore.app.runtime.win-x64", "10.0.14");
 
-    public DistributionNoticeFixture()
+    public DistributionNoticeFixture(IFileSystem? files = null)
     {
+        Files = files ?? new MockFileSystem();
         Assets = AssetsFixture.Create();
         Assets["packageFolders"] = new JsonObject { [Root] = new JsonObject() };
         Assets["project"] = new JsonObject

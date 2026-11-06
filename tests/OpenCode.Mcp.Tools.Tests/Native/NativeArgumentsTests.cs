@@ -5,6 +5,16 @@ namespace OpenCode.Mcp.Tools.Tests.Native;
 public sealed class NativeArgumentsTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Parse_Should_Refuse_A_Missing_Value_Before_The_Next_Option(bool followedByOption)
+    {
+        string[] arguments = followedByOption ? ["verify", "--rid", "--output", "owned"] : ["verify", "--rid"];
+        await Assert.That(() => NativeArguments.Parse(arguments)).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("Arguments: missing value for --rid.", StringComparison.Ordinal);
+    }
+
+    [Test]
     public async Task Parse_Should_Select_The_Requested_Command_And_Manifest_Without_Changing_Paths()
     {
         await Assert.That(NativeArguments.Parse(["validate", "--receipts", "receipts with spaces", "--manifest", "owned manifest.json"]))

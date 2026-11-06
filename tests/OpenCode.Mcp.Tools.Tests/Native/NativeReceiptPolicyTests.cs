@@ -9,6 +9,41 @@ public sealed class NativeReceiptPolicyTests
 {
     [Test]
     [Timeout(30_000)]
+    [Arguments("LICENSE")]
+    [Arguments("THIRD-PARTY-NOTICES.md")]
+    [Arguments("opencode-mcp.exe")]
+    [Arguments("payload.json")]
+    public async Task Diagnostics_Should_Require_Each_Payload_Content(string missing, CancellationToken token)
+    {
+        var manifest = await ManifestAsync(token);
+        var receipts = manifest.Runtimes.Select(ReceiptFixture.Create).ToArray();
+        receipts[0] = receipts[0] with { Payload = [.. receipts[0].Payload.Where(file => file.Path != missing)] };
+        await Assert.That(NativeReceiptPolicy.Diagnostics(manifest, receipts))
+            .IsEquivalentTo(["win-x64: Missing required payload file: " + missing], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    [Arguments("executable", "win-x64: Payload command digest differs from verified executable.")]
+    [Arguments("runner", "win-x64: RequestedRunner differs from manifest.")]
+    [Arguments("builder", "linux-x64: BuilderImage differs from manifest.")]
+    [Arguments("runtime", "linux-x64: RuntimeImage differs from manifest.")]
+    public async Task Diagnostics_Should_Bind_Payload_And_Platform_Identity(string defect, string diagnostic, CancellationToken token)
+    {
+        var manifest = await ManifestAsync(token);
+        var receipts = manifest.Runtimes.Select(ReceiptFixture.Create).ToArray();
+        switch (defect)
+        {
+            case "executable": receipts[0] = receipts[0] with { ExecutableSha256 = "different" }; break;
+            case "runner": receipts[0] = receipts[0] with { RequestedRunner = "different" }; break;
+            case "builder": receipts[2] = receipts[2] with { BuilderImage = "different" }; break;
+            case "runtime": receipts[2] = receipts[2] with { RuntimeImage = "different" }; break;
+        }
+        await Assert.That(NativeReceiptPolicy.Diagnostics(manifest, receipts)).IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     [Arguments("published", "Unsuccessful published tests: win-x64")]
     [Arguments("normalized", "Unsuccessful normalized tests: win-x64")]
     [Arguments("extracted", "Unsuccessful extracted tests: win-x64")]

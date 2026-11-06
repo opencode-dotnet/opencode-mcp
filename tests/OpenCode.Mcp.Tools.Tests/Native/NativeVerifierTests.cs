@@ -8,6 +8,66 @@ public sealed class NativeVerifierTests
 {
     [Test]
     [Timeout(30_000)]
+    [Arguments("1701;1702;IL2121", null)]
+    [Arguments("IL2121;IL2026", "NoWarn must not contain IL2026.")]
+    [Arguments("IL3050", "NoWarn must not contain IL3050.")]
+    public async Task VerifyAsync_Should_Allow_Only_The_Sdk_Redundant_Suppression_Default(string noWarn, string? diagnostic, CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        scenario.EffectiveProperties["NoWarn"] = noWarn;
+        var request = await scenario.PrepareAsync(token);
+        var verifier = new NativeVerifier(scenario.Files, scenario.Runner);
+        if (diagnostic is not null)
+        {
+            await Assert.That(async () => await verifier.VerifyAsync(request, token))
+                .ThrowsExactly<InvalidOperationException>().WithMessage(diagnostic, StringComparison.Ordinal);
+        }
+        else
+        {
+            await Assert.That(async () => await verifier.VerifyAsync(request, token)).ThrowsNothing();
+            var receipt = await new NativeEvidenceStore(scenario.Files)
+                .ReadAsync<NativeReceipt>(scenario.Files.Path.Combine(request.Output, "receipt.json"), token);
+            await Assert.That(receipt.Properties["NoWarn"]).IsEqualTo("1701;1702;IL2121");
+            await Assert.That(receipt.PublishedTests).IsEqualTo(new NativeTestRun(0, 12, 0, 0));
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task VerifyAsync_Should_Disable_Child_Build_Servers(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        await new NativeVerifier(scenario.Files, scenario.Runner).VerifyAsync(request, token);
+        var builds = scenario.Runner.Calls.Where(static call => call.FileName == "dotnet" && call.Arguments[0] is "build" or "restore" or "msbuild" or "publish").ToArray();
+        await Assert.That(builds.Select(static call => call.Arguments[0])).IsEquivalentTo(["build", "restore", "msbuild", "publish"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        foreach (var arguments in builds.Select(static build => build.Arguments))
+        {
+            await Assert.That(arguments).Contains("-nodeReuse:false");
+            await Assert.That(arguments).Contains("-p:UseSharedCompilation=false");
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task VerifyAsync_Should_Remove_Owned_Stale_Publish_And_Payload_Files(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var publish = scenario.Files.Path.Combine(request.Output, "publish");
+        var payload = scenario.Files.Path.Combine(request.Output, "payload");
+        scenario.Files.Directory.CreateDirectory(publish);
+        scenario.Files.Directory.CreateDirectory(payload);
+        scenario.Files.Initialize().WithFile(scenario.Files.Path.Combine(publish, "stale.xml"))
+            .WithFile(scenario.Files.Path.Combine(payload, "stale.json"));
+        await new NativeVerifier(scenario.Files, scenario.Runner).VerifyAsync(request, token);
+        await Assert.That(scenario.Files.Directory.EnumerateFiles(publish).Select(path => scenario.Files.Path.GetFileName(path) ?? ""))
+            .IsEquivalentTo(["OpenCode.Mcp.exe"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(scenario.Files.Directory.Exists(payload)).IsFalse();
+    }
+
+    [Test]
+    [Timeout(30_000)]
     [Arguments("architecture", "SDK architecture must be x64; observed arm64.")]
     [Arguments("version", "Evaluated SDK must match executed SDK: expected 10.0.403; observed 10.0.999.")]
     public async Task VerifyAsync_Should_Refuse_A_Different_Sdk_Identity_Before_Publishing(string defect, string diagnostic, CancellationToken token)

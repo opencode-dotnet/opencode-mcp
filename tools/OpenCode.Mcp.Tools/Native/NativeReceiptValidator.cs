@@ -1,8 +1,9 @@
 using System.IO.Abstractions;
+using OpenCode.Mcp.Tools.Native.Abstractions;
 
 namespace OpenCode.Mcp.Tools.Native;
 
-internal sealed class NativeReceiptValidator(IFileSystem files)
+internal sealed class NativeReceiptValidator(IFileSystem files, IUnixFileModes modes)
 {
     public async Task<IReadOnlyList<string>> ValidateAsync(NativeManifest manifest, string directory, CancellationToken token)
     {
@@ -29,7 +30,8 @@ internal sealed class NativeReceiptValidator(IFileSystem files)
     {
         var diagnostics = new List<string>();
         var store = new NativeEvidenceStore(files);
-        var inventory = new PayloadInventory(files);
+        var rid = new NativeRid(receipt.Rid);
+        var inventory = new PayloadInventory(files, modes, rid);
         if (receipt.PayloadManifest is null || receipt.PayloadDirectory is null || receipt.Archive is null)
         {
             return [receipt.Rid + ": Missing staging evidence."];
@@ -70,7 +72,7 @@ internal sealed class NativeReceiptValidator(IFileSystem files)
             var extracted = files.Path.Combine(files.Path.GetTempPath(), "opencode-mcp-native-" + Guid.NewGuid().ToString("N"));
             try
             {
-                await new PayloadArchive(files).ExtractAsync(archive, extracted, token).ConfigureAwait(false);
+                await new PayloadArchive(files, modes, rid).ExtractAsync(archive, extracted, token).ConfigureAwait(false);
                 diagnostics.AddRange((await inventory.CompareAsync(extracted, receipt.Payload, token).ConfigureAwait(false)).Select(error => receipt.Rid + " archive: " + error));
             }
             finally

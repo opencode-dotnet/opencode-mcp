@@ -3,6 +3,7 @@ using System.Xml.Linq;
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Native.Abstractions;
 using Testably.Abstractions.Testing;
+using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.Tools.Tests.Native.Support;
 
@@ -10,6 +11,7 @@ internal sealed class NativeBuildScenario
 {
     public MockFileSystem Files { get; } = new();
     public FakeNativeProcessRunner Runner { get; } = new();
+    public FakeUnixFileModes Modes { get; } = new();
     public string Root => Files.Path.Combine(Files.Path.GetTempPath(), "repository");
     public string Installer => Files.Path.Combine(Files.Path.GetTempPath(), "ProgramFiles", "Microsoft Visual Studio", "Installer");
     public string VisualStudio => Files.Path.Combine(Files.Path.GetTempPath(), "VisualStudio");
@@ -48,11 +50,9 @@ internal sealed class NativeBuildScenario
         await WriteAsync(Files.Path.Combine(Files.Path.GetDirectoryName(Dumpbin) ?? throw new InvalidOperationException(), "link.exe"), "fixture", token);
         await WriteAsync(Files.Path.Combine(WindowsSdk, "10.0.26100.0", "um", "x64", "kernel32.lib"), "fixture", token);
         await WriteAsync(Files.Path.Combine(Root, "Directory.Build.props"), "fixture-input", token);
-        var assets = AssetsFixture.Create();
-        var packages = Files.Path.Combine(Root, "packages");
-        assets["packageFolders"] = new JsonObject { [packages] = new JsonObject() };
-        Files.Directory.CreateDirectory(Files.Path.Combine(packages, "modelcontextprotocol", "2.3.1"));
-        Files.Directory.CreateDirectory(Files.Path.Combine(packages, "polly.core", "8.4.2"));
+        var distribution = new DistributionNoticeFixture(Files);
+        await distribution.PrepareAsync(token);
+        var assets = distribution.Assets;
         await WriteAsync(Files.Path.Combine(Root, "src", "OpenCode.Mcp", "obj", "project.assets.json"), assets.ToJsonString(), token);
         Runner.Response = RespondAsync;
         var manifest = await new NativeManifestStore(Files).ReadAsync(await new NativeManifestFixture().WriteAsync(Files, token), token);
@@ -94,10 +94,15 @@ internal sealed class NativeBuildScenario
         }
         else if (request.Arguments.Any(static argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
         {
+            await Assert.That(request.Arguments).Contains("-p:RuntimeIdentifier=win-x64");
             output = new JsonObject
             {
                 ["Properties"] = EffectiveProperties.DeepClone(),
             }.ToJsonString();
+        }
+        else if (command == "restore")
+        {
+            await Assert.That(request.Arguments).IsEquivalentTo(["restore", "src/OpenCode.Mcp/OpenCode.Mcp.csproj", "-r", "win-x64", "-nodeReuse:false", "-p:UseSharedCompilation=false"], CollectionOrdering.Matching);
         }
         else if (command == "publish")
         {

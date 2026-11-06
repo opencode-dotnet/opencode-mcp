@@ -1,10 +1,11 @@
 using System.Formats.Tar;
 using System.IO.Abstractions;
 using System.IO.Compression;
+using OpenCode.Mcp.Tools.Native.Abstractions;
 
 namespace OpenCode.Mcp.Tools.Native;
 
-internal sealed class PayloadArchive(IFileSystem files)
+internal sealed class PayloadArchive(IFileSystem files, IUnixFileModes modes, NativeRid rid)
 {
     public async Task CreateAsync(string directory, string path, IReadOnlyList<PayloadFile> inventory, CancellationToken token)
     {
@@ -112,9 +113,9 @@ internal sealed class PayloadArchive(IFileSystem files)
         using var bytes = new MemoryStream();
         await content.CopyToAsync(bytes, token).ConfigureAwait(false);
         await files.File.WriteAllBytesAsync(destination, bytes.ToArray(), token).ConfigureAwait(false);
-        if (!OperatingSystem.IsWindows() && mode != 0)
+        if (!rid.IsWindows && mode != 0)
         {
-            files.File.SetUnixFileMode(destination, (UnixFileMode)mode);
+            modes.Write(destination, (UnixFileMode)mode);
         }
     }
 }

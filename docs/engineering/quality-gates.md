@@ -96,23 +96,20 @@ requires, are in `workflow.md`.
 Every build and test command in the completion gate and local check runs with an owned
 `ASPIRE_HOME` beneath the user's temp folder. Without it, the AppHost SDK installs the Aspire
 bundle into the shared `%USERPROFILE%/.aspire` directory. Set it before the first build and keep
-it until all tests finish because generated metadata retains its bundle paths:
-
-```powershell
-$env:ASPIRE_HOME = Join-Path ([System.IO.Path]::GetTempPath()) 'opencode-mcp-aspire-home'
-```
+it until all tests finish because generated metadata retains its bundle paths. Set `ASPIRE_HOME`
+to an owned directory named `opencode-mcp-aspire-home` under the system temp folder.
 
 Before a pull request opens, run the local check from the repository root. It catches failures
 before they cost a CI run. A current handoff may add scope-specific checks but cannot weaken it.
 The local check builds with the analyzer wall on and runs every test module of the solution:
 
-```powershell
+```text
 dotnet tool restore
 dotnet tool run slopwatch analyze --exclude ".scratchpad/**" --fail-on warning
 dotnet build OpenCode.Mcp.slnx --configuration Release
 dotnet format whitespace OpenCode.Mcp.slnx --verify-no-changes --no-restore
 dotnet format style OpenCode.Mcp.slnx --verify-no-changes --no-restore --severity warn
-dotnet build tools/Native.cs
+dotnet build tools/native.cs
 dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1
 ```
 
@@ -120,21 +117,13 @@ The file-based entry is not part of the solution compilation. Its separate build
 analyzer wall. Also run this real CLI smoke against a new owned empty directory; require exit 2
 and the complete ordered missing-receipt diagnostic, not just any nonzero exit:
 
-```powershell
-$emptyReceipts = Join-Path ([System.IO.Path]::GetTempPath()) ('opencode-mcp-native-empty-' + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $emptyReceipts | Out-Null
-try {
-    $diagnostic = dotnet run tools/Native.cs -- validate --receipts $emptyReceipts 2>&1
-    $exitCode = $LASTEXITCODE
-    $expected = (Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json).runtimes |
-        ForEach-Object { 'Missing receipt: ' + $_.rid }
-    if ($exitCode -ne 2 -or ($diagnostic -join "`n").Trim() -cne ($expected -join "`n")) {
-        throw ('Native entry smoke failed: ' + ($diagnostic -join "`n"))
-    }
-} finally {
-    Remove-Item -LiteralPath $emptyReceipts -Recurse -Force
-}
+```text
+dotnet run tools/native.cs -- validate --receipts "<owned-empty-receipt-directory>"
 ```
+
+Create that empty directory under system temp before the smoke. Compare the output to one
+`Missing receipt: <RID>` line for each manifest entry, in manifest order. Remove only that owned
+directory afterwards. The CI lint job performs the same assertion automatically.
 
 Every compiler, analyzer, style and test step must succeed, and every test module must execute
 tests; a module that runs none fails the gate. MSBuild task warnings are errors too
@@ -198,10 +187,10 @@ of their own, never beside the managed pass:
 
 On an otherwise idle matching host, after the managed local check, run:
 
-```powershell
-dotnet run tools/Native.cs -- verify --rid win-x64
-dotnet run tools/Native.cs -- stage --rid win-x64 --publish-directory artifacts/native/win-x64/publish
-dotnet run tools/Native.cs -- validate --receipts artifacts/native
+```text
+dotnet run tools/native.cs -- verify --rid win-x64
+dotnet run tools/native.cs -- stage --rid win-x64 --publish-directory artifacts/native/win-x64/publish
+dotnet run tools/native.cs -- validate --receipts artifacts/native
 ```
 
 Use the manifest RID matching the actual OS, OS architecture, process and SDK architecture. The
@@ -211,11 +200,12 @@ the other five missing receipts in manifest order; only a complete hosted set ma
 `--output <dir>` selects verify's owned evidence directory; stage uses the publish directory's
 parent. Keep the framework-dependent control outside `artifacts/native/`:
 
-```powershell
-$control = Join-Path ([System.IO.Path]::GetTempPath()) ('opencode-mcp-native-control-' + [Guid]::NewGuid().ToString('N'))
-dotnet publish src/OpenCode.Mcp/OpenCode.Mcp.csproj -c Release -r win-x64 --self-contained false -p:PublishAot=false -o $control
-dotnet run tools/Native.cs -- inspect --rid win-x64 --path (Join-Path $control 'OpenCode.Mcp.exe')
+```text
+dotnet publish src/OpenCode.Mcp/OpenCode.Mcp.csproj -c Release -r win-x64 --self-contained false -p:PublishAot=false -o "<owned-control-directory>" -nodeReuse:false -p:UseSharedCompilation=false
+dotnet run tools/native.cs -- inspect --rid win-x64 --path "<owned-control-directory>/OpenCode.Mcp.exe"
 ```
+
+Choose a new owned control directory under system temp for both commands.
 
 Require publish exit zero and inspection exit 2 naming the missing `DotNetRuntimeDebugHeader`
 export, then remove only the owned control directory. Inspect the executable path, not just the
@@ -241,9 +231,9 @@ The builder recipe and publication contract are owned by
 `../architecture/hosting-and-packaging.md`. On a local amd64 Docker host, verify the recipe once
 without registry login or push:
 
-```powershell
+```text
 docker buildx build --load --platform linux/amd64 -f docker/linux-builder.Dockerfile -t opencode-mcp-linux-builder:local-check .
-docker run --rm opencode-mcp-linux-builder:local-check pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+docker run --rm opencode-mcp-linux-builder:local-check pwsh -NoProfile -Version
 docker image rm opencode-mcp-linux-builder:local-check
 ```
 
@@ -252,7 +242,7 @@ checks the architecture, glibc 2.35, compiler, linker, pinned PowerShell version
 failed probe fails the build. The separate container command must return the recipe's PowerShell
 version. This check proves only the local amd64 builder, not arm64 or native product execution.
 
-After an approved merge, the coordinator dispatches `linux-builder.yml` on `master`. Its build
+Dispatch `linux-builder.yml` only from approved source on `master`. Its build
 matrix checks OS/process architecture and `uname -m` before native builds; both legs must succeed
 before index merge. Only the build and merge jobs have `packages: write`, alongside `contents: read`;
 the workflow default is `contents: read`. Build jobs are bounded to 30 minutes and merge to 5 minutes.
@@ -268,7 +258,7 @@ This dispatch is separate from `CI result` and does not change that check's depe
 Focused managed-process verification uses the actual Release product, not `dotnet run` or the
 AppHost:
 
-```powershell
+```text
 dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --treenode-filter "/*/*/(WireTranscriptTests|ProductExecutableTests|RecordingDuplexStreamTests|OwnedMcpProcessTests)/*" --minimum-expected-tests 1
 dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --treenode-filter "/*/*/ExecutableTests/*" --minimum-expected-tests 1
 dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --treenode-filter "/*/*/(McpAppTests|HttpTransportTests)/*" --minimum-expected-tests 1
@@ -287,7 +277,7 @@ Keep it until all consumers of the generated bundle paths finish. Bundle acquisi
 backchannel/certificate effects and the limits of `--isolated` are defined in
 `../architecture/hosting-and-packaging.md`. No global Aspire installation is needed.
 
-```powershell
+```text
 dotnet test --project tests/OpenCode.Mcp.AppHost.Tests/OpenCode.Mcp.AppHost.Tests.csproj -c Release --treenode-filter "/*/*/(AppHostTests|OwnedAppHostTests)/*" --minimum-expected-tests 1
 ```
 
@@ -300,7 +290,7 @@ existing run targets this exact AppHost path: `start` can stop an existing insta
 `stop --apphost` is path-scoped, not session-ID-scoped. Under the same owned Aspire home, set
 `ASPIRE_DASHBOARD_DATA_DIRECTORY` beneath it, then run:
 
-```powershell
+```text
 dotnet tool run aspire start --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --isolated --format Json --non-interactive
 dotnet tool run aspire wait mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --status healthy --timeout 120 --non-interactive
 dotnet tool run aspire describe mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --format Json --non-interactive
@@ -311,7 +301,7 @@ resource JSON in memory without retaining dashboard login URLs. Retain the start
 and the discovered endpoint. Always stop the exact owned run in `finally`, inspect the exit code,
 await retained exits, and require a refused fresh connection:
 
-```powershell
+```text
 dotnet tool run aspire stop --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --non-interactive
 ```
 
@@ -371,7 +361,7 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
 
 The matrix's exact test command is:
 
-```powershell
+```text
 dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
 ```
 
@@ -388,8 +378,8 @@ fail closed:
 | `success` | `false` | `skipped` | `skipped` | Pass |
 | Any other combination | | | | Fail |
 
-No YAML parser or actionlint tool is provisioned here. Review workflow syntax before submission;
-the first pull request's hosted run is the parse check, not evidence supplied by a local build.
+Review workflow syntax before submission and require hosted parse validation; a local build does
+not parse workflow YAML.
 
 A prerequisite that is missing or coverage that is unavailable is a visible blocker, never a silent
 skip and never a green support claim. Native and package lanes are a separate manifest-driven

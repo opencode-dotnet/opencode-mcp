@@ -21,8 +21,12 @@ internal sealed class ProductExecutable
     {
         ArgumentNullException.ThrowIfNull(environment);
         var inputs = new Dictionary<string, string?>(environment, StringComparer.OrdinalIgnoreCase);
-        var expectNative = inputs.Remove("OPENCODE_MCP_TEST_EXPECT_NATIVE", out var native)
-            && string.Equals(native, "true", StringComparison.OrdinalIgnoreCase);
+        var hasNativeSelector = inputs.Remove("OPENCODE_MCP_TEST_EXPECT_NATIVE", out var native);
+        var expectNative = string.Equals(native, "true", StringComparison.OrdinalIgnoreCase);
+        if (hasNativeSelector && !expectNative && !string.Equals(native, "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("OPENCODE_MCP_TEST_EXPECT_NATIVE must be true or false.");
+        }
         string fileName;
         string[] arguments;
         if (inputs.Remove("OPENCODE_MCP_TEST_EXECUTABLE", out var executable))

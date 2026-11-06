@@ -1,9 +1,10 @@
 using System.IO.Abstractions;
 using System.Security.Cryptography;
+using OpenCode.Mcp.Tools.Native.Abstractions;
 
 namespace OpenCode.Mcp.Tools.Native;
 
-internal sealed class PayloadInventory(IFileSystem files)
+internal sealed class PayloadInventory(IFileSystem files, IUnixFileModes modes, NativeRid rid)
 {
     public async Task<IReadOnlyList<PayloadFile>> CaptureAsync(string directory, CancellationToken token)
     {
@@ -13,7 +14,7 @@ internal sealed class PayloadInventory(IFileSystem files)
             var bytes = await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
             inventory.Add(new PayloadFile(files.Path.GetRelativePath(directory, path).Replace('\\', '/'),
                 Convert.ToHexStringLower(SHA256.HashData(bytes)), bytes.LongLength,
-                OperatingSystem.IsWindows() ? null : (int)files.File.GetUnixFileMode(path)));
+                rid.IsWindows ? null : (int?)modes.Read(path)));
         }
         return [.. inventory.OrderBy(static file => file.Path, StringComparer.Ordinal)];
     }
