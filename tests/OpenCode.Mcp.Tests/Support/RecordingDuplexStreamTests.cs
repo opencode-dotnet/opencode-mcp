@@ -7,6 +7,19 @@ namespace OpenCode.Mcp.Tests.Support;
 public sealed class RecordingDuplexStreamTests
 {
     [Test]
+    public async Task DisposeAsync_Should_Clear_Capabilities_Even_When_The_Inner_Stream_Retains_Them()
+    {
+        await using var recorder = new RecordingDuplexStream(Stream.Null, new WireTranscript(), fromServer: false);
+        await Assert.That(recorder.CanRead).IsTrue();
+        await Assert.That(recorder.CanWrite).IsTrue();
+        await Assert.That(recorder.CanSeek).IsFalse();
+        await recorder.DisposeAsync();
+        await Assert.That(recorder.CanRead).IsFalse();
+        await Assert.That(recorder.CanWrite).IsFalse();
+        await Assert.That(recorder.CanSeek).IsFalse();
+    }
+
+    [Test]
     public async Task ReadAsync_Should_Record_Only_Returned_Bytes_When_A_Buffer_Is_Larger_Than_The_Frame()
     {
         var frame = await WireTranscriptTests.LoadAsync("tool-list-complete.json");

@@ -95,8 +95,21 @@ public sealed class ExecutableTests
         await using var process = new OwnedMcpProcess(_files);
         using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Selector refusal without closing stdin.
         await process.StartAsync(Launch(arguments), guard.Token);
-        await process.StandardInput.WriteAsync(WireTranscriptTests.Request(ProtocolData.ListMethod).AsMemory(), guard.Token);
-        await Assert.That(await process.WaitForExitAsync(guard.Token)).IsEqualTo(2);
+        IOException? writeFailure = null;
+        try
+        {
+            await process.StandardInput.WriteAsync(WireTranscriptTests.Request(ProtocolData.ListMethod).AsMemory(), guard.Token);
+        }
+        catch (IOException failure)
+        {
+            writeFailure = failure;
+        }
+        var exitCode = await process.WaitForExitAsync(guard.Token);
+        if (exitCode != 2 && writeFailure is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(writeFailure);
+        }
+        await Assert.That(exitCode).IsEqualTo(2);
         await Assert.That(process.Transcript.ServerByteCount).IsEqualTo(0);
         await Assert.That(process.StandardError).IsEquivalentTo(
             ["Select 'stdio' or 'http' once using '--transport <value>'. (Parameter 'arguments')"], CollectionOrdering.Matching);

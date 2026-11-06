@@ -35,6 +35,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     private Task? _stdoutDrain;
     private Task? _dispose;
     private string? _root;
+    private string[] _diagnosticRoots = [];
     private bool _started;
     private bool _startAttempted;
 
@@ -112,6 +113,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             _input = new RecordingDuplexStream(_process.StandardInput.BaseStream, Transcript, fromServer: false);
             _output = new RecordingDuplexStream(_process.StandardOutput.BaseStream, Transcript, fromServer: true);
             _stderr = _process.StandardError;
+            _diagnosticRoots = [root, ResolvePhysicalPath(root)];
             _drain = DrainAsync(_stderr);
             cancellationToken.ThrowIfCancellationRequested();
         }
@@ -369,7 +371,29 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             }
             sensitiveName = separator < 0 && IsSensitive(name);
         }
-        return string.Concat(tokens).Replace(_root ?? throw new InvalidOperationException("No owned run root."), "<run>", StringComparison.OrdinalIgnoreCase);
+        var redacted = string.Concat(tokens);
+        foreach (var root in _diagnosticRoots.OrderByDescending(static value => value.Length))
+        {
+            redacted = redacted.Replace(root, "<run>", StringComparison.OrdinalIgnoreCase);
+        }
+        return redacted;
+    }
+
+    private string ResolvePhysicalPath(string path)
+    {
+        var root = _files.Path.GetPathRoot(path);
+        Debug.Assert(root is not null);
+        var resolved = root;
+        foreach (var component in path[root.Length..].Split([_files.Path.DirectorySeparatorChar, _files.Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            resolved = _files.Path.Combine(resolved, component);
+            var target = _files.Directory.ResolveLinkTarget(resolved, returnFinalTarget: true);
+            if (target is not null)
+            {
+                resolved = ResolvePhysicalPath(target.FullName);
+            }
+        }
+        return resolved;
     }
 
     private static bool IsSensitive(string name) => SensitiveNames.Any(part => name.Contains(part, StringComparison.OrdinalIgnoreCase));

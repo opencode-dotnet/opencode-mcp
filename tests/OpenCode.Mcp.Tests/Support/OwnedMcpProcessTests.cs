@@ -303,6 +303,50 @@ public sealed class OwnedMcpProcessTests
     }
 
     [Test]
+    public async Task StartAsync_Should_Redact_Both_Owned_Root_Spellings_Through_Ancestor_Links()
+    {
+        var launch = DiagnosticLaunch("exit /b 0", "exit 0");
+        var physicalContainer = launch.OwnedRoot + "-physical";
+        var parent = _files.Path.Combine(physicalContainer, "longer-parent");
+        var ancestor = _files.Path.Combine(physicalContainer, "link");
+        var physicalRoot = _files.Path.Combine(parent, "child");
+        _files.Directory.CreateDirectory(physicalRoot);
+        _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+        try
+        {
+            await CreateDirectoryLinkAsync(ancestor, parent);
+            await CreateDirectoryLinkAsync(launch.OwnedRoot, _files.Path.Combine(ancestor, "child"));
+            var logicalWork = launch.WorkingDirectory;
+            var physicalWork = _files.Path.Combine(physicalRoot, "work");
+            launch = launch with
+            {
+                Arguments = OperatingSystem.IsWindows()
+                    ? ["/d", "/q", "/c", " >&2 echo crit: logical=" + logicalWork + "& >&2 echo crit: physical=" + physicalWork]
+                    : ["-c", "printf '%s\\n' 'crit: logical=" + logicalWork + "' 'crit: physical=" + physicalWork + "' >&2"],
+            };
+            await using var owner = new OwnedMcpProcess(_files);
+            using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Short child exit and diagnostic drain through linked roots.
+            await owner.StartAsync(launch, guard.Token);
+            await Assert.That(await owner.WaitForExitAsync(guard.Token)).IsEqualTo(0);
+            await Assert.That(owner.StandardError).IsEquivalentTo(
+                ["crit: logical=<run>" + _files.Path.DirectorySeparatorChar + "work", "crit: physical=<run>" + _files.Path.DirectorySeparatorChar + "work"],
+                CollectionOrdering.Matching);
+        }
+        finally
+        {
+            if (_files.Directory.Exists(launch.OwnedRoot))
+            {
+                _files.Directory.Delete(launch.OwnedRoot);
+            }
+            if (_files.DirectoryInfo.New(ancestor).LinkTarget is not null)
+            {
+                _files.Directory.Delete(ancestor);
+            }
+            _files.Directory.Delete(physicalContainer, recursive: true);
+        }
+    }
+
+    [Test]
     public async Task StartAsync_Should_Drain_And_Redact_Selected_Stderr_After_The_Retention_Cap()
     {
         var launch = DiagnosticLaunch(
@@ -347,6 +391,31 @@ public sealed class OwnedMcpProcessTests
     }
 
     private ProcessLaunch Launch() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal));
+
+    private async Task CreateDirectoryLinkAsync(string link, string target)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // Expand quoted paths in cmd, after ProcessStartInfo has encoded its argument list.
+            var launch = DiagnosticLaunch("mklink /J %MCP_LINK% %MCP_TARGET%", "exit 0") with
+            {
+                Environment = new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["MCP_LINK"] = "\"" + link + "\"",
+                    ["MCP_TARGET"] = "\"" + target + "\"",
+                },
+            };
+            await using var owner = new OwnedMcpProcess(_files);
+            using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Junction creation by the owned command interpreter.
+            await owner.StartAsync(launch, guard.Token);
+            await Assert.That(await owner.WaitForExitAsync(guard.Token)).IsEqualTo(0);
+        }
+        else
+        {
+            _files.Directory.CreateSymbolicLink(link, target);
+        }
+        await Assert.That(_files.DirectoryInfo.New(link).LinkTarget).IsNotNull();
+    }
 
     private ProcessLaunch DiagnosticLaunch(string windowsCommand, string unixCommand) => Launch() with
     {

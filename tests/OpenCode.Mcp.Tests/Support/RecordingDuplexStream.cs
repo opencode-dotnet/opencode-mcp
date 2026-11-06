@@ -20,11 +20,11 @@ internal sealed class RecordingDuplexStream : Stream
     }
 
     /// <inheritdoc />
-    public override bool CanRead => _inner.CanRead;
+    public override bool CanRead => !_disposed && _inner.CanRead;
     /// <inheritdoc />
     public override bool CanSeek => false;
     /// <inheritdoc />
-    public override bool CanWrite => _inner.CanWrite;
+    public override bool CanWrite => !_disposed && _inner.CanWrite;
     /// <inheritdoc />
     public override long Length => throw new NotSupportedException();
     /// <inheritdoc />
