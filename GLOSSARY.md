@@ -1,7 +1,5 @@
 # OpenCode MCP
 
-Date: 2026-10-07
-
 Shared vocabulary for the OpenCode MCP adapter. These terms distinguish its MCP boundary, the upstream OpenCode domain and product delivery.
 
 ## Language

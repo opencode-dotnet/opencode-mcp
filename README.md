@@ -138,7 +138,7 @@ exact commands. A Native AOT publish on Windows has extra machine prerequisites,
 [`docs/architecture/hosting-and-packaging.md`](docs/architecture/hosting-and-packaging.md).
 
 Contributors and coding agents start at [`AGENTS.md`](AGENTS.md), which routes each kind of work to
-its canon; [`CONTEXT.md`](CONTEXT.md) defines the terms this repository uses.
+its canon; [`GLOSSARY.md`](GLOSSARY.md) defines the terms this repository uses.
 
 See [Contributing](.github/CONTRIBUTING.md) for issues, review and pull requests. CI must
 check managed Release builds and all test modules on Windows, Linux and macOS; these checks do
