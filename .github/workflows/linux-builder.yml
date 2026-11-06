@@ -1,0 +1,174 @@
+name: Linux builder
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  IMAGE: ghcr.io/opencode-dotnet/opencode-mcp-linux-builder
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            host-arch: X64
+            machine: x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            host-arch: Arm64
+            machine: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Require the native runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.host-arch }}
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          $processArch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          $machine = uname -m
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the runner architecture.' }
+          Write-Output "OS=$osArch process=$processArch machine=$machine"
+          if ($osArch -cne $env:EXPECTED_ARCH -or $processArch -cne $env:EXPECTED_ARCH -or $machine -cne $env:EXPECTED_MACHINE) {
+            throw "A native $env:EXPECTED_ARCH runner is required."
+          }
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/linux-builder.Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          build-args: SOURCE_REVISION=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export the build digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:DIGEST -cnotmatch '^sha256:[0-9a-f]{64}$') { throw 'The build returned an invalid digest.' }
+          $directory = Join-Path $env:RUNNER_TEMP 'builder-digests'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $directory $env:ARCH) -Value $env:DIGEST
+
+      - name: Upload the build digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: builder-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/builder-digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 7
+
+  merge:
+    name: Merge and record the index
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download the build digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/builder-digests
+          pattern: builder-digest-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge, inspect and record
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'builder-digests'
+          $references = foreach ($arch in 'amd64', 'arm64') {
+            $digest = (Get-Content -LiteralPath (Join-Path $directory $arch) -Raw).Trim()
+            if ($digest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "Invalid $arch build digest." }
+            "$env:IMAGE@$digest"
+          }
+          $date = [DateTime]::UtcNow.ToString('yyyyMMdd')
+          $sha = $env:GITHUB_SHA.Substring(0, 7)
+          $tag = "jammy-$date-$sha-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $reference = "${env:IMAGE}:$tag"
+          docker buildx imagetools create --tag $reference @references
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot merge the builder index.' }
+
+          $json = docker buildx imagetools inspect $reference --format '{{json .Manifest}}'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the builder index descriptors.' }
+          $index = ($json -join "`n") | ConvertFrom-Json
+          if ($index.digest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw 'Invalid index digest.' }
+          # Provenance descriptors remain in the index; record the two Linux runtime manifests.
+          $platforms = @($index.manifests | Where-Object { $_.platform.os -ceq 'linux' } | Sort-Object { $_.platform.architecture })
+          if (($platforms.platform.architecture -join ',') -cne 'amd64,arm64') {
+            throw 'The index must contain exactly linux/amd64 and linux/arm64 runtime manifests.'
+          }
+          $inspection = docker buildx imagetools inspect "$env:IMAGE@$($index.digest)"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the published builder index.' }
+          $evidence = @(
+            '## Linux builder'
+            "Source commit: $env:GITHUB_SHA"
+            "Tag: $reference"
+            "Index digest: $($index.digest)"
+            foreach ($platform in $platforms) {
+              "linux/$($platform.platform.architecture) digest: $($platform.digest)"
+            }
+            ''
+            '```text'
+            $inspection
+            '```'
+          ) -join "`n"
+          Write-Output $evidence
+          $evidence >> $env:GITHUB_STEP_SUMMARY
+          $evidenceDirectory = Join-Path $env:RUNNER_TEMP 'builder-evidence'
+          New-Item -ItemType Directory -Path $evidenceDirectory | Out-Null
+          Set-Content -LiteralPath (Join-Path $evidenceDirectory 'evidence.md') -Value $evidence
+
+      - name: Upload run evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-builder-evidence
+          path: ${{ runner.temp }}/builder-evidence/evidence.md
+          if-no-files-found: error
+          retention-days: 7

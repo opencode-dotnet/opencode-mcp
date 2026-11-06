@@ -45,7 +45,12 @@ Until the merge queue and `master` protection are active, feature branches merge
    guides and HangDump references are written. The first green hosted run, then merge-queue and
    branch-protection activation on `master`, remain pending (`engineering/workflow.md`).
 7. **Native AOT** - one verified native payload for each of the six RIDs, executed in both transport
-   modes, with its runtime-independence proof.
+   modes, with its runtime-independence proof. The Ubuntu 22.04 builder recipe and manual
+   `linux-builder.yml` publication workflow are written. The recipe passed a local amd64 Docker build,
+   including its toolchain smoke and a separate PowerShell container check, on Windows. Approved
+   merge, dispatch, hosted amd64/arm64 evidence, public GHCR visibility and a real index digest remain
+   pending; no builder image is recorded as published. The native manifest and native verification
+   workflow are not implemented.
 8. **Packages** - the NuGet MCP tool package set built from those payloads, a complete local feed,
    and the first `CHANGELOG.md` entry.
 9. **Acquisition** - isolated acquisition and packaged startup on each RID, then a package
