@@ -13,7 +13,7 @@ maintenance.
 | Current architecture | `docs/architecture/` | Normative current technical decisions |
 | Current engineering practice | `docs/engineering/` | Normative current authoring, quality, workflow, and documentation rules |
 | Decision rationale | `docs/adr/` | Accepted decision context, trade-offs, consequences, and reversal triggers |
-| Domain vocabulary | `CONTEXT.md` | Current terms and explicitly avoided synonyms |
+| Domain vocabulary | `GLOSSARY.md` | Current terms and explicitly avoided synonyms |
 | Operational state | `docs/ROADMAP.md` | What is done, next, open, and known to be incomplete; shrinks as work lands |
 | Consumer documentation | `README.md`, `CHANGELOG.md` | How to use the MCP server, complete on its own (Consumer documentation, below) |
 
@@ -62,7 +62,7 @@ References point one way: documentation may cite code, but code artifacts never 
 Comments in source, project files, `.editorconfig`, workflows, and scripts explain the status quo
 locally; they do not point to movable prose or narrate decision history.
 
-Canonical documents — architecture, engineering, ADRs, and `CONTEXT.md` — never point at the paths
+Canonical documents — architecture, engineering, ADRs, and `GLOSSARY.md` — never point at the paths
 or numbering of material kept outside this repository (research questions, sessions, document
 numbers) or at `docs/ROADMAP.md` content, which moves as work lands. Dated evidence is cited inline
 by date and title, in the form: internal research, YYYY-MM-DD, "Title". Naming the ROADMAP as the
