@@ -45,6 +45,12 @@ sized to need:
 - `OpenCode.Mcp.Tests` mirrors `src/OpenCode.Mcp/`; the tests of the ServiceDefaults project live
   in it under `ServiceDefaults/`. `OpenCode.Mcp.AppHost.Tests` holds the closed-box AppHost tests
   and their own `Support/`.
+- `OpenCode.Mcp.Tools.Tests` mirrors the native tooling library. Its collaborators use
+  `MockFileSystem` fixtures and a fake process runner to check ordered receipt diagnostics,
+  whole-payload equality, graph-derived notices, publish properties and warning scans, host and
+  prerequisite refusals, and native inspection. These tests run in managed CI without publishing.
+  Native process proof reuses the product project's `ExecutableTests`, not a copied protocol suite;
+  the separate pass and selector contract live in `quality-gates.md`.
 - A helper or fixture used by one slice lives in that slice's `Support/` or `Fixtures/`. Helpers
   and fixtures used by several slices stay in the test project's root `Support/` and `Fixtures/`.
   Embedded fixtures retain their `Fixtures.` resource-name prefix through explicit `LogicalName`
@@ -189,8 +195,7 @@ cannot own its server fails.
   after it has retained 200 selected lines. Each selected line is limited to 2,000 characters;
   oversized lines carry a truncation marker. Lifetime-category lines, selector refusals, and the
   first line of fail/critical entries are retained after sensitive token values and owned paths
-  are redacted. Retaining the selector-refusal line is an approved deviation from the original
-  category-only selection policy: invalid-CLI tests need its full diagnostic assertion.
+  are redacted. Retain selector-refusal lines so invalid-CLI tests can assert their full diagnostics.
   A sensitive separator at the end of a token also redacts the next whitespace-separated token.
   A valid numeric loopback listening announcement completes endpoint discovery even
   when diagnostic retention is full.
@@ -271,11 +276,9 @@ the modern discovery probe uses the existing infinite-probe setting with a bound
 The whole-test token links the phase guards without changing the parameterless test signatures.
 
 DCP process exit is not asserted: the owner retains product processes only.
-The cancellation test cancels before the AppHost starts; cancellation during a running startup is
-not covered.
 The tests launch the product's Release apphost directly through the testing builder's executable
 annotation rather than `dotnet run`; the `dotnet tool run aspire` lifecycle check covers the `dotnet run`
-path, and the maintainer accepts this exact-ownership trade-off.
+path while the direct annotation permits exact product-process ownership.
 
 ## 7. Anti-patterns (never)
 

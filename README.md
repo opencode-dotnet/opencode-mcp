@@ -8,13 +8,7 @@ client, such as a coding assistant or an editor, connects to it over the Model C
 and uses its MCP tools. It is a thin adapter over the OpenCode .NET SDK, built to ship as a native
 executable that needs no installed .NET runtime.
 
-## Status
-
-**Pre-release bootstrap. Nothing is installable yet**: no package, binary, or installer is
-published. A source build can run as a managed executable using the .NET SDK selected by
-[`global.json`](global.json); this is not a native or packaged launch.
-
-The bootstrap delivers an MCP server that is designed to:
+The server's contract is to:
 
 - run over standard input and output by default, or as a loopback-only Streamable HTTP endpoint on
   request;
@@ -24,17 +18,18 @@ The bootstrap delivers an MCP server that is designed to:
 - ship as a NuGet MCP tool package and as native executables for Windows, Linux, and macOS on x64
   and Arm64.
 
-Tools that operate on OpenCode follow the bootstrap. [`docs/ROADMAP.md`](docs/ROADMAP.md) has the
-current state and what comes next.
+No package or binary is published or installable yet; see the [roadmap](docs/ROADMAP.md) for current
+availability and planned work.
 
 ## Run from source
 
 From the repository root, build Release. Run every build and test command with an owned
 `ASPIRE_HOME` under your temp folder, and keep it until the tests finish: without it, the AppHost
 SDK installs the Aspire bundle into the shared `%USERPROFILE%/.aspire` directory.
+Set `ASPIRE_HOME` to an owned directory named `opencode-mcp-aspire-home` under your system temp
+folder before the first build.
 
-```powershell
-$env:ASPIRE_HOME = Join-Path ([System.IO.Path]::GetTempPath()) 'opencode-mcp-aspire-home'
+```text
 dotnet build OpenCode.Mcp.slnx --configuration Release
 ```
 
@@ -43,7 +38,7 @@ dotnet build OpenCode.Mcp.slnx --configuration Release
 Launch the built assembly directly, not through `dotnet run`, so build output cannot enter the
 protocol stream:
 
-```powershell
+```text
 dotnet ./src/OpenCode.Mcp/bin/Release/net10.0/OpenCode.Mcp.dll --transport stdio
 ```
 
@@ -61,7 +56,7 @@ connectivity only; it does not contact OpenCode or a model provider.
 
 ### Local Streamable HTTP
 
-```powershell
+```text
 dotnet ./src/OpenCode.Mcp/bin/Release/net10.0/OpenCode.Mcp.dll --transport http --urls http://127.0.0.1:0 --environment Development
 ```
 
@@ -79,16 +74,44 @@ An invalid transport selector writes a diagnostic naming `stdio` and `http` to s
 exits with code 2 before creating a host. Values are case-sensitive; use the separate-token
 `--transport http` spelling, not `--transport=http`. Other startup failures are not selector refusals.
 
+## Build and run a local native executable
+
+You can build a local native payload from source with the
+repository-selected .NET SDK. Keep the owned `ASPIRE_HOME` from the source-build instructions.
+On Windows x64, install Visual Studio or Build Tools with **Desktop development with C++**, MSVC
+x64 tools and a Windows SDK first. The tool checks the standard Installer `vswhere.exe`, component,
+SDK libraries, linker and export inspector; it adds the Installer folder only to its publish
+child's `PATH`, not your machine settings. It installs no prerequisite.
+
+From the repository root on Windows x64:
+
+```text
+dotnet run tools/native.cs -- verify --rid win-x64
+dotnet run tools/native.cs -- stage --rid win-x64 --publish-directory artifacts/native/win-x64/publish
+```
+
+Use the lowercase `tools/native.cs` spelling. `verify` publishes and
+tests the native product; `stage` tests the normalized payload and its extracted ZIP. Both must
+exit zero. Receipts, logs, symbols and the payload inventory are build evidence outside the
+runtime payload. The archive is `artifacts/native/win-x64/opencode-mcp-win-x64.zip`; extract all
+its files together, including license, notices and metadata. Launch the extracted `opencode-mcp.exe`
+directly with `--transport stdio`, or with
+`--transport http --urls http://127.0.0.1:0 --environment Development` for HTTP.
+
+For a local MCP client, set the command to the absolute extracted `opencode-mcp.exe` path and the
+arguments to `--transport`, `stdio`. Native execution needs no installed .NET runtime; building
+and verification still need the SDK. The transports, protocol and HTTP restrictions are the same
+as above. A source-built Windows payload is not six-platform support or an official release.
+
 ## Developing
 
 Building the repository needs the .NET SDK version that [`global.json`](global.json) selects.
 
 For orchestrated HTTP development, use the repository's pinned Aspire local tool from the root.
 Give its bundle, CLI state and dashboard data an owned directory before the first build:
+set `ASPIRE_HOME` as above and `ASPIRE_DASHBOARD_DATA_DIRECTORY` to its `dashboard` subdirectory.
 
-```powershell
-$env:ASPIRE_HOME = Join-Path ([System.IO.Path]::GetTempPath()) 'opencode-mcp-aspire-home'
-$env:ASPIRE_DASHBOARD_DATA_DIRECTORY = Join-Path $env:ASPIRE_HOME 'dashboard'
+```text
 dotnet tool restore
 dotnet tool run aspire start --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --isolated --format Json --non-interactive
 dotnet tool run aspire wait mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --status healthy --timeout 120 --non-interactive
@@ -98,7 +121,7 @@ dotnet tool run aspire describe mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.
 Use the discovered `http` authority plus `/mcp`; no port is fixed. This starts only the MCP product,
 not OpenCode or a model provider. Stop the run you started when finished:
 
-```powershell
+```text
 dotnet tool run aspire stop --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --non-interactive
 ```
 
@@ -117,8 +140,8 @@ exact commands. A Native AOT publish on Windows has extra machine prerequisites,
 Contributors and coding agents start at [`AGENTS.md`](AGENTS.md), which routes each kind of work to
 its canon; [`CONTEXT.md`](CONTEXT.md) defines the terms this repository uses.
 
-See [Contributing](.github/CONTRIBUTING.md) for issues, review and pull requests. CI is designed to
-check managed Release builds and both test modules on Windows, Linux and macOS; these checks do
+See [Contributing](.github/CONTRIBUTING.md) for issues, review and pull requests. CI must
+check managed Release builds and all test modules on Windows, Linux and macOS; these checks do
 not prove native or package support. [Quality gates](docs/engineering/quality-gates.md#continuous-integration)
 own the CI contract, and the roadmap records hosted verification and protection status.
 

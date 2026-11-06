@@ -143,6 +143,26 @@ jobs:
           dotnet format style OpenCode.Mcp.slnx --verify-no-changes --no-restore --severity warn
           exit $LASTEXITCODE
 
+      - name: Verify native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $emptyReceipts = Join-Path $env:RUNNER_TEMP ('native-empty-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $emptyReceipts | Out-Null
+          try {
+            $diagnostic = dotnet run tools/native.cs -- validate --receipts $emptyReceipts 2>&1
+            $exitCode = $LASTEXITCODE
+            $expected = (Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json).runtimes |
+              ForEach-Object { 'Missing receipt: ' + $_.rid }
+            if ($exitCode -ne 2 -or ($diagnostic -join "`n").Trim() -cne ($expected -join "`n")) {
+              throw ('Native entry smoke failed: ' + ($diagnostic -join "`n"))
+            }
+          } finally {
+            Remove-Item -LiteralPath $emptyReceipts -Recurse -Force
+          }
+          exit 0
+
   build-and-test:
     name: Build and test (${{ matrix.os }})
     needs: changes
@@ -212,6 +232,28 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}
           path: artifacts/test-results/**
+          retention-days: 7
+      - name: Record processes after tests
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'process-snapshot'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          $now = Get-Date
+          $lines = Get-Process | Sort-Object -Property CPU -Descending | ForEach-Object {
+            $started = try { $_.StartTime } catch { $null }
+            $age = if ($started) { [int]($now - $started).TotalSeconds } else { -1 }
+            '{0}|{1}|cpu={2:N1}s|ws={3}MB|age={4}s|{5}' -f $_.Id, $_.ProcessName, $_.CPU, [int]($_.WorkingSet64 / 1MB), $age, $_.CommandLine
+          }
+          $lines | Set-Content -LiteralPath (Join-Path $directory 'processes.txt')
+          $lines | Select-Object -First 25 | Write-Output
+
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: process-snapshot-${{ matrix.os }}
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
           retention-days: 7
 
   ci-result:

@@ -6,7 +6,7 @@ starting work beyond a small fix; describe the use case before proposing an API.
 
 ## Develop from source
 
-You need Git, PowerShell (`pwsh`) and the .NET SDK selected by [`global.json`](../global.json).
+You need Git and the .NET SDK selected by [`global.json`](../global.json), on Windows, Linux or macOS.
 Follow the [README's source-development route](../README.md#developing), including its owned
 `ASPIRE_HOME` setup before the first build. The AppHost SDK acquires its paired Aspire CLI bundle
 during the normal build; no global Aspire installation is needed. Bootstrap tests require no
