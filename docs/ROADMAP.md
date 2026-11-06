@@ -26,7 +26,7 @@ The pinned wrapper's isolated start/wait/describe/stop path has also run locally
 dependency review and contribution files are written; the first green hosted run is still pending.
 No cross-platform completion claim follows from the workflow code or these local proofs.
 
-Until CI and the merge queue exist, feature branches merge with the maintainer's approval.
+Until the merge queue and `master` protection are active, feature branches merge with the maintainer's approval.
 
 ## Bootstrap, in order
 

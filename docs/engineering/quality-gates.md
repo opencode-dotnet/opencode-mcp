@@ -81,7 +81,9 @@ or an audit override.
 Build-time audit judges the advisories that exist when the build runs. The other half is the
 `dependency-review` workflow on pull requests: it reads the pull request's dependency diff and fails
 on a newly introduced package with an advisory of moderate severity or above, so a new package is
-judged before it merges. It updates nothing.
+judged before it merges. It updates nothing. GitHub's dependency graph does not read
+`Directory.Packages.props`, so the review sees a new package's name but not its centrally managed
+version (it reports `>= 0`); the version-level advisory gate is the restore audit above.
 
 ## Completion gate
 
@@ -258,7 +260,8 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
 - **Merge queue.** Everything lands on the default branch through the merge queue, which requires
   the `CI result` check (`workflow.md`).
 - **Least privilege and bounds.** The workflow has `contents: read`; a superseded pull request run
-  is cancelled, a default-branch run never is; every job has a bounded timeout. The .NET SDK is set
+  is cancelled, while each default-branch push has a per-commit concurrency group so a newer commit
+  does not cancel its pending or running workflow; every job has a bounded timeout. The .NET SDK is set
   up from `global.json` and each job logs the version that resolved. Steps run in `pwsh` and check
   every command's exit code. Job bounds are 5 minutes for classification, 30 for lint, 55 for each
   build/test leg and 5 for the aggregate check.

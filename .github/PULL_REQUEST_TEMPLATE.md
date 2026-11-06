@@ -15,7 +15,7 @@ Describe client-visible changes, affected transports and MCP protocol compatibil
 - Commands run, test counts and results:
 - Managed / AppHost / native / package evidence (state what was not run):
 
-- [ ] The [local check](../docs/engineering/quality-gates.md#completion-gate) passed, or this change
+- [ ] The [local check](https://github.com/opencode-dotnet/opencode-mcp/blob/master/docs/engineering/quality-gates.md#completion-gate) passed, or this change
       is limited to Markdown and `LICENSE`.
 - [ ] No tests were skipped, weakened, retried or deleted to make checks pass.
 
@@ -29,12 +29,12 @@ List affected documentation and updates, or explain why no update is needed.
 
 List every added, moved or removed suppression: rule, file, channel and reason. State none if empty.
 
-- [ ] Suppression changes follow the [suppression policy](../docs/engineering/slop-review.md#suppression-policy)
+- [ ] Suppression changes follow the [suppression policy](https://github.com/opencode-dotnet/opencode-mcp/blob/master/docs/engineering/slop-review.md#suppression-policy)
       and have maintainer approval; no warning or audit protection was weakened.
-- [ ] The change passes the [slop-review rubric](../docs/engineering/slop-review.md#rubric).
+- [ ] The change passes the [slop-review rubric](https://github.com/opencode-dotnet/opencode-mcp/blob/master/docs/engineering/slop-review.md#rubric).
 - [ ] Commit messages use Conventional Commits; commits and this body have no AI-attribution
       trailers, co-author lines or session links.
-- [ ] This contribution is licensed under the [MIT License](../LICENSE).
+- [ ] This contribution is licensed under the [MIT License](https://github.com/opencode-dotnet/opencode-mcp/blob/master/LICENSE).
 
 ## Reviewer focus
 

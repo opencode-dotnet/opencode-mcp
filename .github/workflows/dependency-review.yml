@@ -6,10 +6,6 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    shell: pwsh
-
 jobs:
   dependency-review:
     name: Dependency Review

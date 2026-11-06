@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: "${{ github.workflow }}-${{ github.ref }}"
+  group: "${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}"
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -90,11 +90,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Initialize owned Aspire home
         run: |
           $ErrorActionPreference = 'Stop'
-          $homePath = Join-Path $env:RUNNER_TEMP "opencode-mcp-aspire-$([guid]::NewGuid())"
+          $homePath = Join-Path $env:RUNNER_TEMP 'aspire-home'
           $dashboardPath = Join-Path $homePath 'dashboard'
           New-Item -ItemType Directory -Path $dashboardPath | Out-Null
           "ASPIRE_HOME=$homePath" >> $env:GITHUB_ENV
@@ -154,11 +156,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Initialize owned Aspire home
         run: |
           $ErrorActionPreference = 'Stop'
-          $homePath = Join-Path $env:RUNNER_TEMP "opencode-mcp-aspire-$([guid]::NewGuid())"
+          $homePath = Join-Path $env:RUNNER_TEMP 'aspire-home'
           $dashboardPath = Join-Path $homePath 'dashboard'
           New-Item -ItemType Directory -Path $dashboardPath | Out-Null
           "ASPIRE_HOME=$homePath" >> $env:GITHUB_ENV
