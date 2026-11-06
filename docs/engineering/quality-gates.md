@@ -112,7 +112,28 @@ dotnet tool run slopwatch analyze --exclude ".scratchpad/**" --fail-on warning
 dotnet build OpenCode.Mcp.slnx --configuration Release
 dotnet format whitespace OpenCode.Mcp.slnx --verify-no-changes --no-restore
 dotnet format style OpenCode.Mcp.slnx --verify-no-changes --no-restore --severity warn
+dotnet build tools/Native.cs
 dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1
+```
+
+The file-based entry is not part of the solution compilation. Its separate build retains the
+analyzer wall. Also run this real CLI smoke against a new owned empty directory; require exit 2
+and the complete ordered missing-receipt diagnostic, not just any nonzero exit:
+
+```powershell
+$emptyReceipts = Join-Path ([System.IO.Path]::GetTempPath()) ('opencode-mcp-native-empty-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $emptyReceipts | Out-Null
+try {
+    $diagnostic = dotnet run tools/Native.cs -- validate --receipts $emptyReceipts 2>&1
+    $exitCode = $LASTEXITCODE
+    $expected = (Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json).runtimes |
+        ForEach-Object { 'Missing receipt: ' + $_.rid }
+    if ($exitCode -ne 2 -or ($diagnostic -join "`n").Trim() -cne ($expected -join "`n")) {
+        throw ('Native entry smoke failed: ' + ($diagnostic -join "`n"))
+    }
+} finally {
+    Remove-Item -LiteralPath $emptyReceipts -Recurse -Force
+}
 ```
 
 Every compiler, analyzer, style and test step must succeed, and every test module must execute
@@ -172,6 +193,47 @@ of their own, never beside the managed pass:
 
 `../architecture/hosting-and-packaging.md` owns the native and package contract;
 `../ROADMAP.md` records which of these passes exist today.
+
+### Native verification and staging
+
+On an otherwise idle matching host, after the managed local check, run:
+
+```powershell
+dotnet run tools/Native.cs -- verify --rid win-x64
+dotnet run tools/Native.cs -- stage --rid win-x64 --publish-directory artifacts/native/win-x64/publish
+dotnet run tools/Native.cs -- validate --receipts artifacts/native
+```
+
+Use the manifest RID matching the actual OS, OS architecture, process and SDK architecture. The
+Windows prerequisites are in the architecture canon. No prerequisite is installed by the tool.
+`verify` and `stage` must exit zero. The last command must exit 2 for a local one-RID set, naming
+the other five missing receipts in manifest order; only a complete hosted set may exit zero.
+`--output <dir>` selects verify's owned evidence directory; stage uses the publish directory's
+parent. Keep the framework-dependent control outside `artifacts/native/`:
+
+```powershell
+$control = Join-Path ([System.IO.Path]::GetTempPath()) ('opencode-mcp-native-control-' + [Guid]::NewGuid().ToString('N'))
+dotnet publish src/OpenCode.Mcp/OpenCode.Mcp.csproj -c Release -r win-x64 --self-contained false -p:PublishAot=false -o $control
+dotnet run tools/Native.cs -- inspect --rid win-x64 --path (Join-Path $control 'OpenCode.Mcp.exe')
+```
+
+Require publish exit zero and inspection exit 2 naming the missing `DotNetRuntimeDebugHeader`
+export, then remove only the owned control directory. Inspect the executable path, not just the
+directory: companion-file detection alone does not prove the image check rejects an apphost.
+
+The tool supplies `OPENCODE_MCP_TEST_EXECUTABLE` and `OPENCODE_MCP_TEST_EXPECT_NATIVE=true` to the
+existing owning project's `ExecutableTests`; the resolver strips both from each product child's
+environment and never substitutes managed output. Each of the published, normalized and extracted
+runs uses `--no-build --treenode-filter "/*/*/ExecutableTests/*" --minimum-expected-tests 1`, TRX
+under `artifacts/test-results/native/<RID>/`, `TUNIT_DISABLE_ARTIFACT_UPLOAD=true`, and the session
+timeout/hang-dump options below. Test-runner preparation and native compilation are sequential.
+
+Review the warning scan, effective properties, native export inspection, executable digest,
+complete payload inventory, archive round trip and all three test totals. Native acceptance before
+queue entry requires all six same-run manifest receipts, matching common build inputs and the
+two Linux runtime-independence proofs. It is separate from `CI result`; it adds no required check
+or dependency to that job. Local Windows evidence proves neither hosted execution nor Linux/macOS
+support, package acquisition or installation.
 
 ### Linux builder verification
 

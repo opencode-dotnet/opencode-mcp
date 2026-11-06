@@ -1,4 +1,6 @@
 using System.IO.Abstractions;
+using System.Reflection.PortableExecutable;
+using System.Runtime.InteropServices;
 
 namespace OpenCode.Mcp.Tests.Support;
 
@@ -19,6 +21,8 @@ internal sealed class ProductExecutable
     {
         ArgumentNullException.ThrowIfNull(environment);
         var inputs = new Dictionary<string, string?>(environment, StringComparer.OrdinalIgnoreCase);
+        var expectNative = inputs.Remove("OPENCODE_MCP_TEST_EXPECT_NATIVE", out var native)
+            && string.Equals(native, "true", StringComparison.OrdinalIgnoreCase);
         string fileName;
         string[] arguments;
         if (inputs.Remove("OPENCODE_MCP_TEST_EXECUTABLE", out var executable))
@@ -29,10 +33,28 @@ internal sealed class ProductExecutable
                 throw new InvalidOperationException("The explicit product executable must exist and must not be a DLL: " + executable);
             }
             fileName = _files.Path.GetFullPath(executable);
+            if (expectNative)
+            {
+                var observed = ReadNativeIdentity(fileName);
+                var os = OperatingSystem.IsWindows() ? "win" : "osx";
+                if (OperatingSystem.IsLinux())
+                {
+                    os = "linux";
+                }
+                var expected = os + "-" + RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant();
+                if (!string.Equals(observed, expected, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException($"Native execution needs a compatible {expected} image; observed {observed}.");
+                }
+            }
             arguments = [];
         }
         else
         {
+            if (expectNative)
+            {
+                throw new InvalidOperationException("Native execution requires OPENCODE_MCP_TEST_EXECUTABLE; managed fallback is forbidden.");
+            }
             fileName = inputs.TryGetValue("DOTNET_HOST_PATH", out var host) && !string.IsNullOrEmpty(host) ? host : "dotnet";
             arguments = [ResolveManaged()];
         }
@@ -41,6 +63,42 @@ internal sealed class ProductExecutable
         var work = _files.Path.Combine(root, "work");
         _files.Directory.CreateDirectory(work);
         return new ProcessLaunch { FileName = fileName, Arguments = arguments, Environment = inputs, OwnedRoot = root, WorkingDirectory = work };
+    }
+
+    private string ReadNativeIdentity(string path)
+    {
+        using var reader = new BinaryReader(_files.File.OpenRead(path));
+        var stream = reader.BaseStream;
+        var magic = reader.ReadUInt32();
+        if ((magic & 0xffff) == 0x5a4d)
+        {
+            stream.Position = 0;
+            using var image = new PEReader(stream);
+            if (image.PEHeaders.CorHeader is not null)
+            {
+                return "managed";
+            }
+            var architecture = "unknown";
+            if (image.PEHeaders.CoffHeader.Machine == Machine.Amd64)
+            {
+                architecture = "x64";
+            }
+            else if (image.PEHeaders.CoffHeader.Machine == Machine.Arm64)
+            {
+                architecture = "arm64";
+            }
+            return "win-" + architecture;
+        }
+        if (magic == 0x464c457f)
+        {
+            stream.Position = 18;
+            return "linux-" + (reader.ReadUInt16() switch { 62 => "x64", 183 => "arm64", _ => "unknown" });
+        }
+        if (magic == 0xfeedfacf)
+        {
+            return "osx-" + (reader.ReadUInt32() switch { 0x01000007 => "x64", 0x0100000c => "arm64", _ => "unknown" });
+        }
+        return "unknown";
     }
 
     private string ResolveManaged()

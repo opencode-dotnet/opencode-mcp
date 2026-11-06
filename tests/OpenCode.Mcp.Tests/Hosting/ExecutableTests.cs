@@ -163,6 +163,11 @@ public sealed class ExecutableTests
         {
             environment.Add("OPENCODE_MCP_TEST_EXECUTABLE", executable);
         }
+        var expectNative = Environment.GetEnvironmentVariable("OPENCODE_MCP_TEST_EXPECT_NATIVE");
+        if (expectNative is not null)
+        {
+            environment.Add("OPENCODE_MCP_TEST_EXPECT_NATIVE", expectNative);
+        }
         var launch = new ProductExecutable(_files).Resolve(environment);
         return launch with { Arguments = [.. launch.Arguments, .. arguments] };
     }

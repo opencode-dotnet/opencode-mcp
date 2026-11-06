@@ -1,4 +1,5 @@
 using System.IO.Abstractions;
+using System.Runtime.InteropServices;
 using NSubstitute;
 using Testably.Abstractions.Testing;
 using TUnit.Assertions.Enums;
@@ -9,6 +10,66 @@ namespace OpenCode.Mcp.Tests.Support;
 public sealed class ProductExecutableTests
 {
     private readonly MockFileSystem _files = new();
+
+    [Test]
+    public async Task Resolve_Should_Select_The_Exact_Native_Executable_When_Requirements_Are_Met()
+    {
+        var host = HostIdentity();
+        var executable = await ArrangeNativeAsync(host[..host.IndexOf('-', StringComparison.Ordinal)],
+            RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant());
+        var launch = new ProductExecutable(_files).Resolve(Native(executable));
+        await Assert.That(launch.FileName).IsEqualTo(executable);
+        await Assert.That(launch.Arguments).IsEquivalentTo(Array.Empty<string>(), CollectionOrdering.Matching);
+        await Assert.That(launch.WorkingDirectory).IsEqualTo(_files.Path.Combine(launch.OwnedRoot, "work"));
+        await Assert.That(_files.Directory.EnumerateFileSystemEntries(launch.WorkingDirectory)).IsEmpty();
+        await Assert.That(launch.Environment).IsEmpty();
+    }
+
+    [Test]
+    public async Task Resolve_Should_Remove_Native_Test_Selectors_When_Preparing_The_Child()
+    {
+        var executable = await ArrangeNativeAsync("win", "x64");
+        var environment = Explicit(executable);
+        environment.Add("OPENCODE_MCP_TEST_EXPECT_NATIVE", "false");
+        environment.Add("kept", "value");
+        var launch = new ProductExecutable(_files).Resolve(environment);
+        await Assert.That(launch.Environment.Select(static item => item.Key + "=" + item.Value))
+            .IsEquivalentTo(["kept=value"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Resolve_Should_Refuse_An_Incompatible_Architecture_When_Native_Is_Required()
+    {
+        var host = HostIdentity();
+        var os = host[..host.IndexOf('-', StringComparison.Ordinal)];
+        var architecture = RuntimeInformation.OSArchitecture == Architecture.X64 ? "arm64" : "x64";
+        var executable = await ArrangeNativeAsync(os, architecture);
+        await Assert.That(() => new ProductExecutable(_files).Resolve(Native(executable)))
+            .ThrowsExactly<InvalidOperationException>()
+            .WithMessage($"Native execution needs a compatible {host} image; observed {os}-{architecture}.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    public async Task Resolve_Should_Refuse_An_Incompatible_Os_When_Native_Is_Required()
+    {
+        var foreignOs = OperatingSystem.IsWindows() ? "linux" : "win";
+        var architecture = RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant();
+        var executable = await ArrangeNativeAsync(foreignOs, architecture);
+        await Assert.That(() => new ProductExecutable(_files).Resolve(Native(executable)))
+            .ThrowsExactly<InvalidOperationException>()
+            .WithMessage($"Native execution needs a compatible {HostIdentity()} image; observed {foreignOs}-{architecture}.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    public async Task Resolve_Should_Refuse_Managed_Fallback_When_Native_Is_Required_Without_An_Executable()
+    {
+        ArrangeManaged();
+        await Assert.That(() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["OPENCODE_MCP_TEST_EXPECT_NATIVE"] = "true",
+        })).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("Native execution requires OPENCODE_MCP_TEST_EXECUTABLE; managed fallback is forbidden.", StringComparison.Ordinal);
+    }
 
     [Test]
     public async Task Resolve_Should_Select_The_Product_Dll_When_No_Explicit_Executable_Is_Supplied()
@@ -114,6 +175,67 @@ public sealed class ProductExecutableTests
         }
         return _files.Path.Combine(output, "OpenCode.Mcp.dll");
     }
+
+    private async Task<string> ArrangeNativeAsync(string os, string architecture)
+    {
+        var executable = _files.Path.Combine(_files.Path.GetTempPath(), "native with spaces", "opencode-mcp.exe");
+        _files.Directory.CreateDirectory(_files.Path.GetDirectoryName(executable) ?? throw new InvalidOperationException());
+        var image = new byte[512];
+        if (os == "win")
+        {
+            image[0] = 0x4d;
+            image[1] = 0x5a;
+            image[0x3c] = 0x80;
+            image[0x80] = 0x50;
+            image[0x81] = 0x45;
+            image[0x84] = 0x64;
+            image[0x85] = architecture == "x64" ? (byte)0x86 : (byte)0xaa;
+            image[0x94] = 240;
+            image[0x98] = 0x0b;
+            image[0x99] = 0x02;
+        }
+        else if (os == "linux")
+        {
+            image[0] = 0x7f;
+            image[1] = 0x45;
+            image[2] = 0x4c;
+            image[3] = 0x46;
+            image[4] = 2;
+            image[5] = 1;
+            image[18] = architecture == "x64" ? (byte)62 : (byte)183;
+        }
+        else
+        {
+            image[0] = 0xcf;
+            image[1] = 0xfa;
+            image[2] = 0xed;
+            image[3] = 0xfe;
+            image[4] = architecture == "x64" ? (byte)7 : (byte)12;
+            image[7] = 1;
+        }
+        await _files.File.WriteAllBytesAsync(executable, image);
+        return executable;
+    }
+
+    private static string HostIdentity()
+    {
+        var os = "osx";
+        if (OperatingSystem.IsWindows())
+        {
+            os = "win";
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            os = "linux";
+        }
+        return os + "-" + RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant();
+    }
+
+    private static Dictionary<string, string?> Native(string path) => new(StringComparer.Ordinal)
+    {
+        ["OPENCODE_MCP_TEST_EXECUTABLE"] = path,
+        ["OPENCODE_MCP_TEST_EXPECT_NATIVE"] = "true",
+    };
 
     private static Dictionary<string, string?> Explicit(string path) => new(StringComparer.Ordinal)
     {

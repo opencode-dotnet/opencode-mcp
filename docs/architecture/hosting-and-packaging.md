@@ -31,6 +31,8 @@ unregistered listing candidate, not a registered identity.
 | `src/OpenCode.Mcp.AppHost` | The Aspire development orchestrator, non-packable |
 | `tests/OpenCode.Mcp.Tests` | Product tests, starting from the production composition |
 | `tests/OpenCode.Mcp.AppHost.Tests` | Closed-box AppHost integration tests |
+| `tools/OpenCode.Mcp.Tools` | Non-packable native verification and staging collaborators |
+| `tests/OpenCode.Mcp.Tools.Tests` | In-process tool contract tests; no native compilation |
 
 Every project targets `net10.0` with C# `14.0` and analysis level `10.0`; `Directory.Build.props`
 owns those values. The AppHost and test projects are not package artifacts. The AppHost sits
@@ -177,11 +179,10 @@ discovery-scheme, gRPC and cloud-exporter hooks. Its derivation notice is in
 
 ## Native AOT
 
-The native matrix is:
-
-```text
-win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64
-```
+`packaging/native-manifest.json` owns the ordered native RID/runner mapping and the digest-qualified
+Linux builder and clean runtime image references. The tool rejects unknown manifest fields, a
+different ordered mapping, and image references without SHA-256 digests. Non-Linux RIDs use neither
+image. Packaging and acquisition consume this manifest rather than maintaining separate RID lists.
 
 Linux means glibc; musl is not in the matrix, and there is no managed `.any` fallback.
 
@@ -214,7 +215,42 @@ Each RID builds and runs on a matching hosted runner:
 | `osx-arm64` | `macos-26` |
 
 Every native job checks the actual operating system and architecture against its RID before it
-compiles.
+compiles, including process and SDK architecture so emulation cannot stand in for matching-host
+execution.
+
+### Verification tool and evidence
+
+`dotnet run tools/Native.cs -- <subcommand> ...` is the case-sensitive file-based entry over the
+solution's tooling library. Its explicit `Native.Main` owns Ctrl+C through a semaphore and awaited
+`CancelAsync`; the signal handler does not run cancellation callbacks. The entry uses the library's
+root namespace and disables the file-app SDK's default AOT setting: this is managed build tooling,
+not a second distributed product. The entry is compiled separately from the solution.
+
+- `verify --rid <RID> [--output <dir>]` guards the host, checks prerequisites, builds the owning
+  test runner, restores the RID-specific product, and queries its effective properties. It requires
+  `PublishAot=true`, `InvariantGlobalization=true`, `IlcTreatWarningsAsErrors=true`, and
+  `DebuggerSupport` not false. It captures both publish streams, preserves the exit result, scans
+  for trim/AOT diagnostics even on exit zero, inspects the native image, and runs `ExecutableTests`
+  on that exact published path in both transport modes.
+- `stage --rid <RID> --publish-directory <dir>` requires matching successful verification and an
+  unchanged executable digest and common source inputs. It normalizes the command to
+  `opencode-mcp[.exe]`, preserves runtime assets, adds license, notices and version/RID metadata,
+  inventories every payload file, tests the normalized command, archives it, extracts to an owned
+  temporary directory, compares the complete inventory, and tests the extracted command.
+- `inspect --rid <RID> --path <executable-or-directory>` runs native inspection independently,
+  including for the framework-dependent negative control.
+- `validate --receipts <dir> [--manifest <path>]` checks the manifest's complete ordered receipt set,
+  common source/SDK/version/dependency identities, completed publish and three test runs, native
+  inspection, payload manifests, archive identities and archive contents. The manifest defaults to
+  `packaging/native-manifest.json`. An incomplete local set is a refusal, never six-RID acceptance.
+
+Default evidence lives under `artifacts/native/<RID>/`: publish and toolchain logs, effective
+properties in `receipt.json`, native inspection, `payload-manifest.json`, the normalized `payload/`,
+and a ZIP on Windows or tar.gz on Unix. Symbols and build evidence stay outside the runtime payload.
+Receipts record actual source commit/status and common input hash, SDK and compiler package
+identities, requested runner versus actual host, executable and archive digests, resolved runtime
+packages, and published/normalized/extracted test totals. Dirty development receipts remain dirty
+development evidence; they are not relabeled as clean candidates.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
@@ -242,8 +278,13 @@ Runtime independence has its own proof. A Linux payload runs in a clean containe
 SDK or shared runtime. A Windows or macOS payload runs on its matching runner and passes a
 native-image inspection: the payload holds no managed assemblies, runtime configuration, dependency
 manifest, or host and runtime libraries (`hostfxr`, `hostpolicy`, `coreclr`), and the executable
-exports the Native AOT `DotNetRuntimeDebugHeader` symbol. Import lists alone cannot tell a Native
-AOT image from a framework-dependent apphost and are supplementary only.
+exports the Native AOT `DotNetRuntimeDebugHeader` symbol (`_DotNetRuntimeDebugHeader` on macOS).
+`DebuggerSupport` must not be false. A real framework-dependent apphost is the negative control:
+inspection of the image itself must refuse it, independently of its companion files. Import lists
+alone cannot tell a Native AOT image from a framework-dependent apphost and are supplementary only.
+This Windows/macOS standard is inspection plus matching-host execution, not an SDK-free-machine
+claim. Linux receipts additionally require clean-container runtime-independence evidence and the
+measured glibc floor; builder execution alone does not supply either.
 
 ### Windows prerequisites
 
@@ -256,8 +297,11 @@ calls `vswhere.exe` by its bare name from the Visual Studio Installer folder. A 
 that sets `NoDefaultCurrentDirectoryInExePath` and has no Installer folder on `PATH` fails with
 "'vswhere.exe' is not recognized" inside the linker command and then MSB3073: put
 `C:\Program Files (x86)\Microsoft Visual Studio\Installer` on that process's `PATH` rather than
-clearing the variable. The native verification script checks both prerequisites and fails with the
-name of the missing one.
+clearing the variable. The tool locates `vswhere.exe` at that standard path and puts the Installer
+folder on the publish child's `PATH` only; it changes no machine or user setting. Before publishing,
+it checks `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (the ARM64 tools for `win-arm64`),
+Windows SDK libraries, linker and export inspector, and records their actual versions. A missing
+prerequisite fails with its name, without an install or alternate-runner fallback.
 
 ## NuGet MCP tool package
 
@@ -320,4 +364,8 @@ surface is a separate delivery increment after native and package proof, never a
 
 The repository uses the MIT license in `LICENSE`; `THIRD-PARTY-NOTICES.md` carries the notices of
 derived content. A native payload carries `LICENSE` and the notices of the code it embeds, derived
-from the resolved publish graph, and a test compares that notice set with the graph.
+from the product/ServiceDefaults runtime graph in the RID-restored `project.assets.json`, not the
+test/AppHost graph. The tool records package IDs, versions and content identities, requires each
+resolved runtime package's notice marker in `THIRD-PARTY-NOTICES.md`, and appends the actual package
+and .NET/ASP.NET Core runtime distribution license/notice material. Missing required material is a
+refusal. Polly's BSD-3-Clause copyright, conditions and disclaimer remain in the payload notices.

@@ -45,6 +45,12 @@ sized to need:
 - `OpenCode.Mcp.Tests` mirrors `src/OpenCode.Mcp/`; the tests of the ServiceDefaults project live
   in it under `ServiceDefaults/`. `OpenCode.Mcp.AppHost.Tests` holds the closed-box AppHost tests
   and their own `Support/`.
+- `OpenCode.Mcp.Tools.Tests` mirrors the native tooling library. Its collaborators use
+  `MockFileSystem` fixtures and a fake process runner to check ordered receipt diagnostics,
+  whole-payload equality, graph-derived notices, publish properties and warning scans, host and
+  prerequisite refusals, and native inspection. These tests run in managed CI without publishing.
+  Native process proof reuses the product project's `ExecutableTests`, not a copied protocol suite;
+  the separate pass and selector contract live in `quality-gates.md`.
 - A helper or fixture used by one slice lives in that slice's `Support/` or `Fixtures/`. Helpers
   and fixtures used by several slices stay in the test project's root `Support/` and `Fixtures/`.
   Embedded fixtures retain their `Fixtures.` resource-name prefix through explicit `LogicalName`

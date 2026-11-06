@@ -1,0 +1,43 @@
+using System.IO.Abstractions;
+using System.Security.Cryptography;
+
+namespace OpenCode.Mcp.Tools.Native;
+
+internal sealed class PayloadInventory(IFileSystem files)
+{
+    public async Task<IReadOnlyList<PayloadFile>> CaptureAsync(string directory, CancellationToken token)
+    {
+        var inventory = new List<PayloadFile>();
+        foreach (var path in files.Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            var bytes = await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
+            inventory.Add(new PayloadFile(files.Path.GetRelativePath(directory, path).Replace('\\', '/'),
+                Convert.ToHexStringLower(SHA256.HashData(bytes)), bytes.LongLength,
+                OperatingSystem.IsWindows() ? null : (int)files.File.GetUnixFileMode(path)));
+        }
+        return [.. inventory.OrderBy(static file => file.Path, StringComparer.Ordinal)];
+    }
+
+    public async Task<IReadOnlyList<string>> CompareAsync(string directory, IReadOnlyList<PayloadFile> expected, CancellationToken token)
+    {
+        var actual = (await CaptureAsync(directory, token).ConfigureAwait(false)).ToDictionary(static item => item.Path, StringComparer.Ordinal);
+        var declared = expected.ToDictionary(static item => item.Path, StringComparer.Ordinal);
+        var diagnostics = new List<string>();
+        foreach (var path in declared.Keys.Union(actual.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        {
+            if (!actual.TryGetValue(path, out var file))
+            {
+                diagnostics.Add("Missing payload file: " + path);
+            }
+            else if (!declared.TryGetValue(path, out var original))
+            {
+                diagnostics.Add("Unexpected payload file: " + path);
+            }
+            else if (file != original)
+            {
+                diagnostics.Add("Changed payload file: " + path);
+            }
+        }
+        return diagnostics.AsReadOnly();
+    }
+}
