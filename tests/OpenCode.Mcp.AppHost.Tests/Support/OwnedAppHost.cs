@@ -37,13 +37,32 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(builder);
         _files = fileSystem;
         _builder = builder;
-        var product = builder.CreateResourceBuilder(builder.Resources.OfType<ProjectResource>().Single());
-        var executable = ResolveProductExecutable(product.Resource);
-        OwnedRoot = _files.Path.Combine(_files.Path.GetTempPath(), "opencode-mcp-" + Guid.NewGuid().ToString("N"));
-        var work = _files.Path.Combine(OwnedRoot, "work");
-        _files.Directory.CreateDirectory(work);
-        product.WithAnnotation(new ExecutableAnnotation { Command = executable, WorkingDirectory = work })
-            .WithEnvironment(PrepareChildEnvironment);
+        try
+        {
+            var product = builder.CreateResourceBuilder(builder.Resources.OfType<ProjectResource>().Single());
+            var executable = ResolveProductExecutable(product.Resource);
+            OwnedRoot = _files.Path.Combine(_files.Path.GetTempPath(), "opencode-mcp-" + Guid.NewGuid().ToString("N"));
+            var work = _files.Path.Combine(OwnedRoot, "work");
+            _files.Directory.CreateDirectory(work);
+            product.WithAnnotation(new ExecutableAnnotation { Command = executable, WorkingDirectory = work })
+                .WithEnvironment(PrepareChildEnvironment);
+        }
+        catch (Exception original)
+        {
+            try
+            {
+                builder.Dispose();
+            }
+            catch (Exception cleanup)
+            {
+                throw new AggregateException(original, cleanup);
+            }
+            finally
+            {
+                _observation.Dispose();
+            }
+            throw;
+        }
     }
 
     /// <summary>Gets the allocated HTTP authority after successful readiness.</summary>
@@ -93,6 +112,7 @@ internal sealed class OwnedAppHost : IAsyncDisposable
             }
             catch (Exception cleanup)
             {
+                _dispose = Task.CompletedTask; // Startup reports both failures; later disposal must not replace them.
                 throw new AggregateException(original, cleanup);
             }
             throw;
@@ -143,13 +163,13 @@ internal sealed class OwnedAppHost : IAsyncDisposable
                 try
                 {
                     _ = process.SafeHandle;
+                    _processes.Add(process, process.StartTime);
                 }
                 catch (System.ComponentModel.Win32Exception error)
                 {
                     process.Dispose();
                     throw new InvalidOperationException("Cannot retain the observed product PID " + pid.ToString(CultureInfo.InvariantCulture), error);
                 }
-                _processes.Add(process, process.StartTime);
                 // Ownership outlives startup cancellation; cleanup observes every exit task.
                 _exits.Add(process.WaitForExitAsync(CancellationToken.None));
                 _productObserved.TrySetResult();
@@ -159,31 +179,22 @@ internal sealed class OwnedAppHost : IAsyncDisposable
 
     private async Task CleanupAsync()
     {
-        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(60)); // Host disposal and observer completion.
         var failures = new List<Exception>();
+        if (_app is not null)
+        {
+            await AwaitCleanupStepAsync(() => _app.DisposeAsync().AsTask(), TimeSpan.FromSeconds(60),
+                "AppHost disposal did not finish within 60 s.", failures);
+        }
+        await AwaitCleanupStepAsync(() => _builder.DisposeAsync().AsTask(), TimeSpan.FromSeconds(30),
+            "AppHost builder disposal did not finish within 30 s.", failures);
+        var exited = await StopProductsAsync(failures);
         try
         {
-            if (_app is not null)
+            if (!exited)
             {
-                await _app.DisposeAsync().AsTask().WaitAsync(cleanup.Token);
+                failures.Add(new InvalidOperationException("Product exit waits did not complete; kept owned root: " + OwnedRoot));
             }
-        }
-        catch (Exception error)
-        {
-            failures.Add(error);
-        }
-        try
-        {
-            await _builder.DisposeAsync().AsTask().WaitAsync(cleanup.Token);
-        }
-        catch (Exception error)
-        {
-            failures.Add(error);
-        }
-        await StopProductsAsync(failures, cleanup.Token);
-        try
-        {
-            if (_files.Directory.Exists(OwnedRoot))
+            else if (_files.Directory.Exists(OwnedRoot))
             {
                 _files.Directory.Delete(OwnedRoot, recursive: true);
             }
@@ -198,30 +209,44 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
     }
 
-    private async Task StopProductsAsync(List<Exception> failures, CancellationToken token)
+    private async Task<bool> StopProductsAsync(List<Exception> failures)
     {
-        try
+        using (var observerJoin = new CancellationTokenSource(TimeSpan.FromSeconds(10))) // Independent resource-observer join.
         {
-            await _observation.CancelAsync();
-            await _observer.WaitAsync(token);
+            try
+            {
+                await _observation.CancelAsync();
+                await _observer.WaitAsync(observerJoin.Token);
+            }
+            catch (OperationCanceledException error) when (observerJoin.IsCancellationRequested)
+            {
+                failures.Add(new TimeoutException("AppHost observer join did not finish within 10 s.", error));
+            }
+            catch (Exception error)
+            {
+                failures.Add(error);
+            }
         }
-        catch (Exception error)
+        KeyValuePair<Process, DateTime>[] processes;
+        Task[] exits;
+        lock (_gate)
         {
-            failures.Add(error);
+            processes = [.. _processes];
+            exits = [.. _exits];
         }
-        foreach (var process in ProductProcesses)
+        foreach (var (process, startTime) in processes)
         {
             try
             {
                 if (!process.HasExited)
                 {
                     using var current = Process.GetProcessById(process.Id);
-                    if (current.StartTime != _processes[process])
+                    if (current.StartTime != startTime)
                     {
                         throw new InvalidOperationException("The recorded product PID now belongs to a different process.");
                     }
-                    process.Kill(); // The product has no children; never kill a PID's process tree.
                     failures.Add(new InvalidOperationException("AppHost disposal left a recorded product process running."));
+                    process.Kill(); // The product has no children; never kill a PID's process tree.
                 }
             }
             catch (Exception error)
@@ -231,21 +256,35 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
         try
         {
-            using var exits = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // Product exits after fallback, independent of host disposal.
-            await Task.WhenAll(_exits).WaitAsync(exits.Token);
-        }
-        catch (Exception error)
-        {
-            failures.Add(error);
+            return await AwaitCleanupStepAsync(() => Task.WhenAll(exits), TimeSpan.FromSeconds(30),
+                "Product exit waits did not finish within 30 s.", failures);
         }
         finally
         {
-            foreach (var process in ProductProcesses)
+            foreach (var (process, _) in processes)
             {
                 process.Dispose();
             }
             _observation.Dispose();
         }
+    }
+
+    private static async Task<bool> AwaitCleanupStepAsync(Func<Task> action, TimeSpan bound, string timeoutMessage, List<Exception> failures)
+    {
+        try
+        {
+            await action().WaitAsync(bound);
+            return true;
+        }
+        catch (TimeoutException error)
+        {
+            failures.Add(new TimeoutException(timeoutMessage, error));
+        }
+        catch (Exception error)
+        {
+            failures.Add(error);
+        }
+        return false;
     }
 
     private void PrepareChildEnvironment(EnvironmentCallbackContext context)
@@ -260,8 +299,9 @@ internal sealed class OwnedAppHost : IAsyncDisposable
             }
         }
         context.EnvironmentVariables["NO_PROXY"] = "localhost,127.0.0.1,::1";
-        context.EnvironmentVariables["ASPIRE_HOME"] = Environment.GetEnvironmentVariable("ASPIRE_HOME")
-            ?? throw new InvalidOperationException("AppHost tests require an owned ASPIRE_HOME before building or testing.");
+        var aspireHome = Environment.GetEnvironmentVariable("ASPIRE_HOME");
+        context.EnvironmentVariables["ASPIRE_HOME"] = !string.IsNullOrEmpty(aspireHome) ? aspireHome
+            : throw new InvalidOperationException("AppHost tests require an owned ASPIRE_HOME before building or testing.");
     }
 
     private string ResolveProductExecutable(ProjectResource product)

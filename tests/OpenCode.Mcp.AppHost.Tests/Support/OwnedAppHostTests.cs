@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
 using Microsoft.Win32.SafeHandles;
@@ -22,7 +23,19 @@ public sealed class OwnedAppHostTests
     {
         using var wholeTest = new CancellationTokenSource(TimeSpan.FromMinutes(20)); // Product environment preparation and observation.
         var builder = await CreateBuilderAsync(wholeTest.Token);
-        var authored = await ReadAuthoredEnvironmentAsync(builder, wholeTest.Token);
+        Dictionary<string, object> authored;
+        try
+        {
+            builder.CreateResourceBuilder(builder.Resources.OfType<ProjectResource>().Single())
+                .WithEnvironment("OTEL_RESOURCE_ATTRIBUTES", "service.instance.id=authored-instance")
+                .WithEnvironment("OTEL_SERVICE_NAME", "authored-product");
+            authored = await ReadAuthoredEnvironmentAsync(builder, wholeTest.Token);
+        }
+        catch
+        {
+            await builder.DisposeAsync();
+            throw;
+        }
         await using var owner = new OwnedAppHost(_files, builder);
         var environment = await ReadAuthoredEnvironmentAsync(builder, wholeTest.Token);
         foreach (var group in OwnedAppHost.IsolationGroups)
@@ -63,6 +76,13 @@ public sealed class OwnedAppHostTests
         }
         await Assert.That(observed.Single(static variable => variable.Name == "ASPIRE_HOME").Value)
             .IsEqualTo(Environment.GetEnvironmentVariable("ASPIRE_HOME"));
+        var ownedNames = OwnedAppHost.IsolationGroups.SelectMany(static group => group.Skip(1))
+            .Concat(["NO_PROXY", "ASPIRE_HOME"]).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in authored.Where(entry => !ownedNames.Contains(entry.Key)))
+        {
+            var expected = value is IValueProvider provider ? await provider.GetValueAsync(wholeTest.Token) : value.ToString();
+            await Assert.That(observed.Single(variable => variable.Name == name).Value).IsEqualTo(expected);
+        }
     }
 
     /// <summary>Disposal ends recorded products, closes owner handles and releases the discovered listener.</summary>
@@ -92,6 +112,10 @@ public sealed class OwnedAppHostTests
             }
             catch (Exception error)
             {
+                if (endpoint is null)
+                {
+                    throw;
+                }
                 disposalFailure = error;
             }
             await Assert.That(independent).IsNotEmpty();
@@ -111,20 +135,14 @@ public sealed class OwnedAppHostTests
         }
         finally
         {
-            foreach (var process in independent)
-            {
-                KillIfRunning(process);
-            }
-            await Task.WhenAll(exits).WaitAsync(wholeTest.Token);
-            foreach (var process in independent)
-            {
-                process.Dispose();
-            }
             foreach (var handle in handles)
             {
                 handle.Dispose();
             }
-            RemoveOwnedFiles(owner);
+            if (endpoint is not null)
+            {
+                await ReleaseEvidenceAsync(owner, independent, exits, wholeTest.Token);
+            }
         }
     }
 
@@ -162,8 +180,7 @@ public sealed class OwnedAppHostTests
             }
             finally
             {
-                await ReleaseEvidenceAsync(independent, exits, wholeTest.Token);
-                RemoveOwnedFiles(owner);
+                await ReleaseEvidenceAsync(owner, independent, exits, wholeTest.Token);
             }
         });
     }
@@ -204,9 +221,7 @@ public sealed class OwnedAppHostTests
         {
             if (independent is not null)
             {
-                KillIfRunning(independent);
-                await exit.WaitAsync(wholeTest.Token);
-                independent.Dispose();
+                await ReleaseEvidenceAsync(owner, [independent], [exit], wholeTest.Token);
             }
         }
     }
@@ -258,12 +273,11 @@ public sealed class OwnedAppHostTests
             }
             finally
             {
-                await ReleaseEvidenceAsync(independent, exits, wholeTest.Token);
                 foreach (var handle in handles)
                 {
                     handle.Dispose();
                 }
-                RemoveOwnedFiles(owner);
+                await ReleaseEvidenceAsync(owner, independent, exits, wholeTest.Token);
             }
         });
     }
@@ -306,17 +320,42 @@ public sealed class OwnedAppHostTests
         }
     }
 
-    private static async Task ReleaseEvidenceAsync(IReadOnlyList<Process> processes,
+    private async Task ReleaseEvidenceAsync(OwnedAppHost owner, IReadOnlyList<Process> processes,
         IReadOnlyList<Task> exits, CancellationToken token)
     {
+        var failures = new List<Exception>();
         foreach (var process in processes)
         {
-            KillIfRunning(process);
+            TryCleanup(() => KillIfRunning(process), failures);
         }
-        await Task.WhenAll(exits).WaitAsync(token);
+        try
+        {
+            await Task.WhenAll(exits).WaitAsync(token);
+            TryCleanup(() => RemoveOwnedFiles(owner), failures);
+        }
+        catch (Exception error)
+        {
+            failures.Add(error);
+        }
         foreach (var process in processes)
         {
-            process.Dispose();
+            TryCleanup(process.Dispose, failures);
+        }
+        if (failures.Count != 0)
+        {
+            throw new AggregateException(failures);
+        }
+    }
+
+    private static void TryCleanup(Action action, List<Exception> failures)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception error)
+        {
+            failures.Add(error);
         }
     }
 

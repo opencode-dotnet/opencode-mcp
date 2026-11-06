@@ -153,10 +153,12 @@ inputs exercise observation and fragmentation; they are not a protocol conforman
 
 ## 6. Owned processes are hermetic
 
-A process test runs against an MCP server process its fixture owns, and that process may read
-nothing the fixture did not put there. No test, and no developer running `dotnet test`, exports
-anything to make that true; the fixture hands the boundary to the child process it starts. The same
-boundary covers an OpenCode server process a later fixture starts. A test never connects to, starts,
+A direct-launch process test runs against an MCP server process its fixture owns, and that process
+may read nothing the fixture did not put there. The AppHost product inherits the ambient environment
+except the isolation groups, `NO_PROXY` and `ASPIRE_HOME`.
+No test, and no developer running `dotnet test`, exports anything to make the direct-launch boundary
+true; the fixture hands the boundary to the child process it starts. The same boundary covers an
+OpenCode server process a later fixture starts. A test never connects to, starts,
 stops or reuses the user's own OpenCode server process or shared OpenCode service; a fixture that
 cannot own its server fails.
 
@@ -244,11 +246,14 @@ fire-and-forget. Dispose MCP clients before disposing AppHost and its builder. W
 exits and the watcher, close the retained handles, then delete only the owner's root. Startup
 failure preserves the original error before any cleanup error; forced termination of a recorded
 product is a failed cleanup, not successful AppHost disposal.
-Join the observer in its own guarded step, attempt cleanup of every recorded product independently,
-and await exits under a fresh 30-second bound that the disposal timeout cannot cancel. Before a
-fallback kill, check the retained handle's exit state and compare the current PID's start identity
+Give app disposal, builder disposal and observer joining independent bounds, snapshot recorded
+processes and exit waits under the ownership lock, attempt cleanup of every recorded product
+independently, and await exits under a fresh 30-second bound that earlier timeouts cannot cancel.
+Before a fallback kill, check the retained handle's exit state and compare the current PID's start identity
 with the one retained at observation; kill only that process, never its tree. Root deletion failures
-join the ordered failure list instead of replacing earlier failures.
+join the ordered failure list instead of replacing earlier failures. If exit waits fail, retain and
+name the owned root instead of deleting it. Later disposal does not repeat a cleanup failure already
+reported with a startup failure.
 
 Cleanup tests hold independent process handles and capture the owner's safe handles before
 disposal. Assert `HasExited` before waiting, then assert the captured handles are closed, a fresh
@@ -259,9 +264,9 @@ resource-ready callback failure, explicit cancellation and repeated disposal eac
 
 AppHost phase hang guards are: entry-point builder resolution 360 seconds; DCP/application startup
 180 seconds; resource health and ready callbacks 120 seconds; MCP connection 45 seconds; each
-HTTP/MCP request 30 seconds; host disposal and observer completion 60 seconds; fallback product
-exits a fresh 30 seconds; whole test 20 minutes. Each guard names
-the event it awaits. HTTP clients have infinite timeouts, so request tokens own the request bounds;
+HTTP/MCP request 30 seconds; app disposal 60 seconds; builder disposal 30 seconds; observer join
+10 seconds; fallback product exits a fresh 30 seconds; whole test 20 minutes. Each guard names the
+event it awaits. HTTP clients have infinite timeouts, so request tokens own the request bounds;
 the modern discovery probe uses the existing infinite-probe setting with a bounded connection.
 The whole-test token links the phase guards without changing the parameterless test signatures.
 
