@@ -154,8 +154,8 @@ inputs exercise observation and fragmentation; they are not a protocol conforman
 ## 6. Owned processes are hermetic
 
 A direct-launch process test runs against an MCP server process its fixture owns, and that process
-may read nothing the fixture did not put there. The AppHost product inherits the ambient environment
-except the isolation groups, `NO_PROXY` and `ASPIRE_HOME`.
+may read nothing the fixture did not put there. The AppHost product inherits the ambient environment;
+the isolation groups, `NO_PROXY` and `ASPIRE_HOME` are overridden.
 No test, and no developer running `dotnet test`, exports anything to make the direct-launch boundary
 true; the fixture hands the boundary to the child process it starts. The same boundary covers an
 OpenCode server process a later fixture starts. A test never connects to, starts,
@@ -251,7 +251,7 @@ processes and exit waits under the ownership lock, attempt cleanup of every reco
 independently, and await exits under a fresh 30-second bound that earlier timeouts cannot cancel.
 Before a fallback kill, check the retained handle's exit state and compare the current PID's start identity
 with the one retained at observation; kill only that process, never its tree. Root deletion failures
-join the ordered failure list instead of replacing earlier failures. If exit waits fail, retain and
+join the ordered failure list instead of replacing earlier failures. If any cleanup step fails, retain and
 name the owned root instead of deleting it. Later disposal does not repeat a cleanup failure already
 reported with a startup failure.
 
@@ -274,7 +274,7 @@ DCP process exit is not asserted: the owner retains product processes only.
 The cancellation test cancels before the AppHost starts; cancellation during a running startup is
 not covered.
 The tests launch the product's Release apphost directly through the testing builder's executable
-annotation rather than `dotnet run`; the `tools/aspire.ps1` lifecycle check covers the `dotnet run`
+annotation rather than `dotnet run`; the `dotnet tool run aspire` lifecycle check covers the `dotnet run`
 path, and the maintainer accepts this exact-ownership trade-off.
 
 ## 7. Anti-patterns (never)

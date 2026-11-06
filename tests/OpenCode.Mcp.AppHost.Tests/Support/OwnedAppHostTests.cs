@@ -6,7 +6,6 @@ using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
 using Microsoft.Win32.SafeHandles;
 using Testably.Abstractions;
-using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.AppHost.Tests.Support;
 
@@ -47,10 +46,10 @@ public sealed class OwnedAppHostTests
         }
         await Assert.That(environment["NO_PROXY"]).IsEqualTo("localhost,127.0.0.1,::1");
         await Assert.That(environment["ASPIRE_HOME"]).IsEqualTo(Environment.GetEnvironmentVariable("ASPIRE_HOME"));
-        await Assert.That(environment.Keys.Except(authored.Keys, StringComparer.OrdinalIgnoreCase)
-            .Except(OwnedAppHost.IsolationGroups.SelectMany(static group => group.Skip(1)), StringComparer.OrdinalIgnoreCase)
-            .Except(["NO_PROXY", "ASPIRE_HOME"], StringComparer.OrdinalIgnoreCase))
-            .IsEquivalentTo(Array.Empty<string>(), CollectionOrdering.Matching);
+        var ownedNames = OwnedAppHost.IsolationGroups.SelectMany(static group => group.Skip(1))
+            .Concat(["NO_PROXY", "ASPIRE_HOME"]).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var expectedNames = authored.Keys.Concat(ownedNames).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        await Assert.That(environment.Keys).IsEquivalentTo(expectedNames).Using(StringComparer.OrdinalIgnoreCase);
         IReadOnlyList<EnvironmentVariableSnapshot>? childEnvironment = null;
         builder.Eventing.Subscribe<ResourceReadyEvent>(builder.Resources.OfType<ProjectResource>().Single(), (ready, _) =>
         {
@@ -66,6 +65,8 @@ public sealed class OwnedAppHostTests
         await owner.StartAsync(wholeTest.Token);
         await Assert.That(childEnvironment).IsNotNull();
         var observed = childEnvironment ?? throw new InvalidOperationException("The ready product's environment was not observed.");
+        await Assert.That(expectedNames.Except(observed.Select(static variable => variable.Name), StringComparer.OrdinalIgnoreCase))
+            .IsEmpty();
         foreach (var group in OwnedAppHost.IsolationGroups)
         {
             foreach (var name in group.Skip(1))
@@ -76,8 +77,6 @@ public sealed class OwnedAppHostTests
         }
         await Assert.That(observed.Single(static variable => variable.Name == "ASPIRE_HOME").Value)
             .IsEqualTo(Environment.GetEnvironmentVariable("ASPIRE_HOME"));
-        var ownedNames = OwnedAppHost.IsolationGroups.SelectMany(static group => group.Skip(1))
-            .Concat(["NO_PROXY", "ASPIRE_HOME"]).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, value) in authored.Where(entry => !ownedNames.Contains(entry.Key)))
         {
             var expected = value is IValueProvider provider ? await provider.GetValueAsync(wholeTest.Token) : value.ToString();

@@ -165,7 +165,7 @@ internal sealed class OwnedAppHost : IAsyncDisposable
                     _ = process.SafeHandle;
                     _processes.Add(process, process.StartTime);
                 }
-                catch (System.ComponentModel.Win32Exception error)
+                catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
                 {
                     process.Dispose();
                     throw new InvalidOperationException("Cannot retain the observed product PID " + pid.ToString(CultureInfo.InvariantCulture), error);
@@ -187,12 +187,12 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
         await AwaitCleanupStepAsync(() => _builder.DisposeAsync().AsTask(), TimeSpan.FromSeconds(30),
             "AppHost builder disposal did not finish within 30 s.", failures);
-        var exited = await StopProductsAsync(failures);
+        await StopProductsAsync(failures);
         try
         {
-            if (!exited)
+            if (failures.Count != 0)
             {
-                failures.Add(new InvalidOperationException("Product exit waits did not complete; kept owned root: " + OwnedRoot));
+                failures.Add(new InvalidOperationException("AppHost cleanup failed; kept owned root: " + OwnedRoot));
             }
             else if (_files.Directory.Exists(OwnedRoot))
             {
@@ -209,7 +209,7 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
     }
 
-    private async Task<bool> StopProductsAsync(List<Exception> failures)
+    private async Task StopProductsAsync(List<Exception> failures)
     {
         using (var observerJoin = new CancellationTokenSource(TimeSpan.FromSeconds(10))) // Independent resource-observer join.
         {
@@ -256,7 +256,7 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
         try
         {
-            return await AwaitCleanupStepAsync(() => Task.WhenAll(exits), TimeSpan.FromSeconds(30),
+            await AwaitCleanupStepAsync(() => Task.WhenAll(exits), TimeSpan.FromSeconds(30),
                 "Product exit waits did not finish within 30 s.", failures);
         }
         finally
@@ -269,14 +269,15 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
     }
 
-    private static async Task<bool> AwaitCleanupStepAsync(Func<Task> action, TimeSpan bound, string timeoutMessage, List<Exception> failures)
+    private static async Task AwaitCleanupStepAsync(Func<Task> action, TimeSpan bound, string timeoutMessage, List<Exception> failures)
     {
+        var task = Task.CompletedTask;
         try
         {
-            await action().WaitAsync(bound);
-            return true;
+            task = action();
+            await task.WaitAsync(bound);
         }
-        catch (TimeoutException error)
+        catch (TimeoutException error) when (!task.IsCompleted)
         {
             failures.Add(new TimeoutException(timeoutMessage, error));
         }
@@ -284,7 +285,6 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         {
             failures.Add(error);
         }
-        return false;
     }
 
     private void PrepareChildEnvironment(EnvironmentCallbackContext context)

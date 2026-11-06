@@ -65,11 +65,19 @@ public sealed class AppHostTests
         using var wholeTest = new CancellationTokenSource(TimeSpan.FromMinutes(20)); // Complete closed-box bootstrap.
         var builder = await OwnedAppHostTests.CreateBuilderAsync(wholeTest.Token);
         string? readyResource = null;
-        builder.Eventing.Subscribe<ResourceReadyEvent>((resourceEvent, _) =>
+        try
         {
-            readyResource = resourceEvent.Resource.Name;
-            return Task.CompletedTask;
-        });
+            builder.Eventing.Subscribe<ResourceReadyEvent>((resourceEvent, _) =>
+            {
+                readyResource = resourceEvent.Resource.Name;
+                return Task.CompletedTask;
+            });
+        }
+        catch
+        {
+            await builder.DisposeAsync();
+            throw;
+        }
         await using var owner = new OwnedAppHost(_files, builder);
         await owner.StartAsync(wholeTest.Token);
         await Assert.That(readyResource).IsEqualTo("mcp");
