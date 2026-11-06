@@ -202,24 +202,24 @@ Record the resolved package graph, SDK, generated `Projects.*` metadata, bundle 
 version. The test builder runs the entry point in-process; its product runs closed-box under DCP.
 The focused tests do not replace the local check, native proof or package proof.
 
-The direct wrapper also needs a real lifecycle check on an otherwise idle host. First confirm no
+The local Aspire tool also needs a real lifecycle check on an otherwise idle host. First confirm no
 existing run targets this exact AppHost path: `start` can stop an existing instance, and
 `stop --apphost` is path-scoped, not session-ID-scoped. Under the same owned Aspire home, set
 `ASPIRE_DASHBOARD_DATA_DIRECTORY` beneath it, then run:
 
 ```powershell
-pwsh -NoProfile -File tools/aspire.ps1 start --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --isolated --format Json --non-interactive
-pwsh -NoProfile -File tools/aspire.ps1 wait mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --status healthy --timeout 120 --non-interactive
-pwsh -NoProfile -File tools/aspire.ps1 describe mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --format Json --non-interactive
+dotnet tool run aspire start --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --isolated --format Json --non-interactive
+dotnet tool run aspire wait mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --status healthy --timeout 120 --non-interactive
+dotnet tool run aspire describe mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --format Json --non-interactive
 ```
 
-Bound the foreground wrapper processes, drain stdout/stderr concurrently, and parse launch and
+Bound the foreground CLI processes, drain stdout/stderr concurrently, and parse launch and
 resource JSON in memory without retaining dashboard login URLs. Retain the started process handles
 and the discovered endpoint. Always stop the exact owned run in `finally`, inspect the exit code,
 await retained exits, and require a refused fresh connection:
 
 ```powershell
-pwsh -NoProfile -File tools/aspire.ps1 stop --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --non-interactive
+dotnet tool run aspire stop --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --non-interactive
 ```
 
 Never use `--force` or stop another session. Record the actual bundle and outside-repository writes;

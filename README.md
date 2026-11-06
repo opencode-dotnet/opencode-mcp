@@ -83,25 +83,26 @@ exits with code 2 before creating a host. Values are case-sensitive; use the sep
 
 Building the repository needs the .NET SDK version that [`global.json`](global.json) selects.
 
-For orchestrated HTTP development, use the repository's pinned Aspire wrapper from the root.
+For orchestrated HTTP development, use the repository's pinned Aspire local tool from the root.
 Give its bundle, CLI state and dashboard data an owned directory before the first build:
 
 ```powershell
 $env:ASPIRE_HOME = Join-Path ([System.IO.Path]::GetTempPath()) 'opencode-mcp-aspire-home'
 $env:ASPIRE_DASHBOARD_DATA_DIRECTORY = Join-Path $env:ASPIRE_HOME 'dashboard'
-pwsh -NoProfile -File tools/aspire.ps1 start --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --isolated --format Json --non-interactive
-pwsh -NoProfile -File tools/aspire.ps1 wait mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --status healthy --timeout 120 --non-interactive
-pwsh -NoProfile -File tools/aspire.ps1 describe mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --format Json --non-interactive
+dotnet tool restore
+dotnet tool run aspire start --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --isolated --format Json --non-interactive
+dotnet tool run aspire wait mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --status healthy --timeout 120 --non-interactive
+dotnet tool run aspire describe mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --format Json --non-interactive
 ```
 
 Use the discovered `http` authority plus `/mcp`; no port is fixed. This starts only the MCP product,
 not OpenCode or a model provider. Stop the run you started when finished:
 
 ```powershell
-pwsh -NoProfile -File tools/aspire.ps1 stop --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --non-interactive
+dotnet tool run aspire stop --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --non-interactive
 ```
 
-Do not start this exact AppHost path over somebody else's run. The wrapper acquires the CLI paired
+Do not start this exact AppHost path over somebody else's run. The local tool pins the CLI paired
 with the AppHost SDK rather than using a global Aspire installation. `--isolated` isolates ports,
 not the machine profile: hosting still uses the real `.aspire/cli/bch` and `.aspire/dev-certs` paths
 and can use the developer-certificate store. The full state boundary is documented in

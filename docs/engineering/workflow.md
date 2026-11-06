@@ -45,6 +45,7 @@ evidence, not records.
 
 Package versions live in `Directory.Packages.props`, the .NET SDK in `global.json`, the Aspire
 AppHost SDK in the AppHost project's SDK reference, and repository tooling in `dotnet-tools.json`.
+The Aspire CLI pin in `dotnet-tools.json` and the AppHost SDK version in `src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj` move together in the product-dependencies commit.
 A refresh takes the latest stable versions; a prerelease arrives only with the work that needs it.
 It lands as one pull request with one commit per class, in this order, so a class can be reverted
 alone, and the pull request passes the full gate:

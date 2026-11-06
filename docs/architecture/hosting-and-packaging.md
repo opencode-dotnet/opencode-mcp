@@ -110,13 +110,13 @@ service. Endpoints are discovered, not hardcoded.
 The AppHost uses the Aspire CLI bundle (`AspireUseCliBundle=true`) with
 `AspireCliInvocationMode=DnxPinned`, so an SDK-mediated launch runs the CLI version paired with the
 pinned AppHost SDK, never an unversioned or newer global `aspire` command. A direct lifecycle
-command also goes through a named, pinned entry point: a repository script that reads the AppHost
-SDK version from the AppHost project and runs `dotnet dnx Aspire.Cli@<that version>`, so
-`global.json` selects the .NET SDK. Repository tooling lives in the root `dotnet-tools.json`; no
+command also goes through `dotnet tool run aspire`, pinned by the `Aspire.Cli` entry in the root
+`dotnet-tools.json`, so `global.json` selects the .NET SDK. Repository tooling lives in that
+manifest; no
 duplicate `.config` manifest exists.
 
-`tools/aspire.ps1` is that direct entry point: it forwards arguments unchanged and preserves the
-CLI exit code. `DnxPinned` pins the CLI, not an independently selected bundle. Build-time bundle
+Run `dotnet tool restore` before using the local tool. `DnxPinned` pins the CLI, not an independently
+selected bundle. Build-time bundle
 discovery can select an existing newer bundle; if no bundle exists, the SDK can acquire the pinned
 CLI through DNX and run its setup before any lifecycle command runs. Set an owned `ASPIRE_HOME`
 before building and keep it through the tests: generated AppHost assembly metadata retains the
