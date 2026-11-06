@@ -239,12 +239,12 @@ jobs:
       - name: Test solution
         id: test
         if: always()
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --minimum-expected-tests 1 --timeout 12m
+          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 12m --hangdump --hangdump-timeout 10m --hangdump-type Mini
           exit $LASTEXITCODE
 
       - name: List tests after failure
