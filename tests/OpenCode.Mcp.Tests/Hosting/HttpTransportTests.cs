@@ -36,7 +36,7 @@ public sealed class HttpTransportTests
         await Assert.That(async () =>
         {
             await using var host = (WebApplication)new McpHostFactory().Create(
-                TransportSelector.Parse(["--transport", "http", "--urls", "http://0.0.0.0:0"]));
+                TransportSelector.Parse(HostArguments(arguments: ["--urls", "http://0.0.0.0:0"])));
         }).ThrowsExactly<InvalidOperationException>().WithMessage(
             "HTTP URLs must use HTTP and a loopback host, without user information, a path, query or fragment.", StringComparison.Ordinal);
 
@@ -46,19 +46,19 @@ public sealed class HttpTransportTests
         await Assert.That(async () =>
         {
             await using var host = (WebApplication)new McpHostFactory().Create(TransportSelector.Parse(
-                ["--transport", "http", $"--Kestrel:Endpoints:A:Url={DynamicLoopbackUrl}"]));
+                HostArguments(arguments: [$"--Kestrel:Endpoints:A:Url={DynamicLoopbackUrl}"])));
         }).ThrowsExactly<InvalidOperationException>().WithMessage(
             "Configure HTTP endpoints with 'urls'; 'Kestrel:Endpoints' is not supported.", StringComparison.Ordinal);
 
-    /// <summary>Without URL arguments the actual listener binds numeric loopback on an allocated port.</summary>
+    /// <summary>The pinned URL binds numeric loopback on an allocated port.</summary>
     [Test]
-    public async Task Create_Should_Bind_Dynamic_Loopback_When_Urls_Are_Unset() =>
+    public async Task Create_Should_Bind_Dynamic_Loopback_When_Urls_Are_Pinned() =>
         await WithApplicationAsync(async (_, endpoint, token) =>
         {
             await Assert.That(endpoint.Host).IsEqualTo("127.0.0.1");
             await Assert.That(endpoint.Port).IsNotEqualTo(0);
             await WithClientAsync(endpoint, AssertBootstrapAsync, token);
-        }, arguments: ["--transport", "http", "--environment", "Development"]);
+        });
 
     /// <summary>The real client sees identity, metadata and a successful connectivity probe.</summary>
     [Test]
@@ -190,7 +190,7 @@ public sealed class HttpTransportTests
     {
         IServiceCollection? registrations = null;
         var host = new McpHostFactory(services => registrations = services)
-            .Create(TransportSelector.Parse(["--urls", "http://0.0.0.0:0"]));
+            .Create(TransportSelector.Parse(HostArguments(transport: "stdio", arguments: ["--urls", "http://0.0.0.0:0"])));
         try
         {
             await Assert.That(host.Services.GetService<IServer>()).IsNull();
@@ -233,7 +233,7 @@ public sealed class HttpTransportTests
                 observed = server;
                 lifetime.ApplicationStarted.Register(() => started.TrySetResult());
             }));
-        var run = application.RunAsync(["--transport", "http", "--urls", DynamicLoopbackUrl], stopping.Token);
+        var run = application.RunAsync(HostArguments(), stopping.Token);
         try
         {
             var server = await Assert.That(observed).IsNotNull();
@@ -294,11 +294,12 @@ public sealed class HttpTransportTests
         }
     }
 
-    private static async Task WithApplicationAsync(Func<WebApplication, Uri, CancellationToken, Task> action, string environment = "Development",
-        string[]? arguments = null)
+    private static string[] HostArguments(string transport = "http", string environment = "Development", string[]? arguments = null) =>
+        ["--transport", transport, "--environment", environment, "--urls", DynamicLoopbackUrl, "--OTEL_EXPORTER_OTLP_ENDPOINT=", .. arguments ?? []];
+
+    private static async Task WithApplicationAsync(Func<WebApplication, Uri, CancellationToken, Task> action, string environment = "Development")
     {
-        var app = (WebApplication)new McpHostFactory().Create(TransportSelector.Parse(
-            arguments ?? ["--transport", "http", "--urls", DynamicLoopbackUrl, "--environment", environment]));
+        var app = (WebApplication)new McpHostFactory().Create(TransportSelector.Parse(HostArguments(environment: environment)));
         try
         {
             using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45));

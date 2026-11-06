@@ -38,6 +38,11 @@ Overrides apply after the production registrations, so a test exercises the actu
 replaces only a real seam. A test-only delegate or in-memory server is no substitute for the
 production registration, endpoint, and executable.
 
+Both hosts use `AppContext.BaseDirectory` as their content root, never the launch directory, so an
+MCP client's project `appsettings.json` cannot configure our listeners or redirect telemetry. The
+product ships no `appsettings.json`; configuration comes only from environment variables and
+command-line arguments.
+
 The entry point hands `Console.Error` to `McpApp.CreateApplication`, which constructs the launcher
 directly from `McpHostFactory` (carrying the optional host override) and the error writer. There is
 no launcher container. `McpApplication.RunAsync` parses before calling `IMcpHostFactory.Create`;

@@ -23,12 +23,20 @@ public sealed class McpHostFactory : IMcpHostFactory
         ArgumentNullException.ThrowIfNull(options);
         if (options.Transport == McpTransport.Stdio)
         {
-            var host = Host.CreateApplicationBuilder([.. options.HostArguments]);
+            var host = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+            {
+                Args = [.. options.HostArguments],
+                ContentRootPath = AppContext.BaseDirectory,
+            });
             McpApp.Configure(host, McpTransport.Stdio, _overrideServices);
             return host.Build();
         }
 
-        var builder = WebApplication.CreateSlimBuilder([.. options.HostArguments]);
+        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+        {
+            Args = [.. options.HostArguments],
+            ContentRootPath = AppContext.BaseDirectory,
+        });
         var addresses = HttpEndpointPolicy.ResolveUrls(builder.Configuration);
         builder.WebHost.UseUrls(string.Join(';', addresses.Select(static address => address.GetLeftPart(UriPartial.Authority))));
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Configure(builder.Configuration.GetSection("Kestrel"), reloadOnChange: false));

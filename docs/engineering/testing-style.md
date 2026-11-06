@@ -126,6 +126,9 @@ inputs exercise observation and fragmentation; they are not a protocol conforman
   that would repeat structure goes through a builder (§3).
 - TUnit creates a fresh instance per test: setup belongs in the constructor or
   `[Before(Test)]`; no state carried between tests, no shared mutable fields.
+- In-process host tests pin their decisive configuration on the command line, including the
+  environment name, listening URLs, and an empty `OTEL_EXPORTER_OTLP_ENDPOINT`, so those values win
+  over the developer's environment.
 - Assertions state intent in the test body. Behavior tests never snapshot; the repository has no
   snapshot package, and a snapshot use is a maintainer decision with its own reviewed baseline.
 - TUnit runs tests in parallel by default. Parallel keys and `[NotInParallel]` order tests inside

@@ -23,6 +23,46 @@ public sealed class ExecutableTests
     private static readonly string[] HealthPaths = ["/health", "/alive"];
 
     [Test]
+    [Arguments("http")]
+    [Arguments("stdio")]
+    public async Task StartAsync_Should_Ignore_Project_Configuration_When_Launched_In_A_Project_Directory(string transport)
+    {
+        await using var process = new OwnedMcpProcess(_files);
+        using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Listening or early exit, then modern bootstrap.
+        var launch = Launch(["--transport", transport, "--environment", "Development"]);
+        await _files.File.WriteAllTextAsync(_files.Path.Combine(launch.WorkingDirectory, "appsettings.json"),
+            """{"Kestrel":{"Endpoints":{"A":{"Url":"http://0.0.0.0:5099"}}},"OTEL_EXPORTER_OTLP_ENDPOINT":"http://127.0.0.1:1"}""", guard.Token);
+        await process.StartAsync(launch, guard.Token);
+        if (string.Equals(transport, "http", StringComparison.Ordinal))
+        {
+            await Assert.That(async () =>
+            {
+                try
+                {
+                    await process.WaitForHttpEndpointAsync(guard.Token);
+                }
+                catch (InvalidOperationException)
+                {
+                    await process.WaitForExitAsync(guard.Token);
+                    throw;
+                }
+            }).ThrowsNothing();
+            await WithHttpClientAsync(process, static (_, _, _, _) => Task.CompletedTask, guard.Token);
+        }
+        else
+        {
+            var client = await process.ConnectStdioAsync(guard.Token);
+            await AssertBootstrapAsync(client, guard.Token);
+            await process.CloseInputAsync();
+            await Assert.That(await process.WaitForExitAsync(guard.Token)).IsEqualTo(0);
+            await Assert.That(process.Transcript.Methods).IsEquivalentTo(ModernMethods, CollectionOrdering.Matching);
+            await AssertResultsAsync(process.Transcript.Results);
+            var artifact = launch.Arguments.FirstOrDefault(static argument => argument.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) ?? launch.FileName;
+            await Assert.That(process.StandardError).Contains("      Content root path: " + _files.Path.GetDirectoryName(artifact) + _files.Path.DirectorySeparatorChar);
+        }
+    }
+
+    [Test]
     [Arguments((object)new string[0])]
     [Arguments((object)new[] { "--transport", "stdio" })]
     [Arguments((object)new[] { "--urls", "not an HTTP listener" })]
@@ -119,7 +159,14 @@ public sealed class ExecutableTests
         await using var process = new OwnedMcpProcess(_files);
         using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Listening announcement and modern bootstrap.
         await process.StartAsync(Launch(["--transport", "http", "--environment", "Development"]), guard.Token);
-        var address = await process.WaitForHttpEndpointAsync(guard.Token);
+        await WithHttpClientAsync(process, observation, guard.Token);
+        // HTTP has no portable graceful-stop seam here. The owner forces termination only in teardown.
+    }
+
+    private static async Task WithHttpClientAsync(OwnedMcpProcess process, Func<Uri, RecordingHttpHandler, HttpClient, CancellationToken, Task> observation,
+        CancellationToken token)
+    {
+        var address = await process.WaitForHttpEndpointAsync(token);
         await Assert.That(address.Host).IsEqualTo("127.0.0.1");
         await Assert.That(address.Port).IsGreaterThan(0);
         var endpoint = new Uri(address, "/mcp");
@@ -137,8 +184,8 @@ public sealed class ExecutableTests
             ProtocolVersion = ProtocolData.Revision,
             DiscoverProbeTimeout = TimeSpan.FromSeconds(30),
             InitializationTimeout = TimeSpan.FromSeconds(30),
-        }, cancellationToken: guard.Token);
-        await AssertBootstrapAsync(client, guard.Token);
+        }, cancellationToken: token);
+        await AssertBootstrapAsync(client, token);
         await Assert.That(recorder.Requests.Select(static frame => frame.GetProperty("method").GetString()))
             .IsEquivalentTo(ModernMethods, CollectionOrdering.Matching);
         await AssertResultsAsync([.. recorder.Responses.Select(static frame => frame.GetProperty("result"))]);
@@ -147,8 +194,7 @@ public sealed class ExecutableTests
             await Assert.That(headers.Keys).DoesNotContain("Mcp-Session-Id", StringComparer.OrdinalIgnoreCase);
             await Assert.That(headers.Keys).DoesNotContain("Access-Control-Allow-Origin", StringComparer.OrdinalIgnoreCase);
         }
-        await observation(endpoint, recorder, http, guard.Token);
-        // HTTP has no portable graceful-stop seam here. The owner forces termination only in teardown.
+        await observation(endpoint, recorder, http, token);
     }
 
     private static async Task AssertBootstrapAsync(McpClient client, CancellationToken token)
