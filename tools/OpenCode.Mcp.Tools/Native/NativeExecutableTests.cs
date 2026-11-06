@@ -1,10 +1,11 @@
 using System.Globalization;
 using System.IO.Abstractions;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace OpenCode.Mcp.Tools.Native;
 
-internal sealed class NativeExecutableTests(IFileSystem files, NativeProcesses processes)
+internal sealed class NativeExecutableTests(IFileSystem files, NativeProcesses processes, NativeRid rid)
 {
     public async Task<NativeTestRun> RunAsync(string executable, string results, CancellationToken token)
     {
@@ -27,8 +28,15 @@ internal sealed class NativeExecutableTests(IFileSystem files, NativeProcesses p
         var counters = new List<XElement>();
         foreach (var report in reports)
         {
-            var document = XDocument.Parse(await files.File.ReadAllTextAsync(report, token).ConfigureAwait(false));
-            counters.Add(document.Descendants().Single(static element => element.Name.LocalName == "Counters"));
+            try
+            {
+                var document = XDocument.Parse(await files.File.ReadAllTextAsync(report, token).ConfigureAwait(false));
+                counters.Add(document.Descendants().Single(static element => element.Name.LocalName == "Counters"));
+            }
+            catch (XmlException error)
+            {
+                throw new InvalidOperationException("Malformed TRX input: " + rid.Value + ": " + report, error);
+            }
         }
         var run = new NativeTestRun(result.ExitCode, Sum(counters, "passed"), Sum(counters, "failed"), Sum(counters, "notExecuted"));
         if (!run.Succeeded)

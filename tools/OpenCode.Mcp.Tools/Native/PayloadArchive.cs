@@ -46,40 +46,47 @@ internal sealed class PayloadArchive(IFileSystem files, IUnixFileModes modes, Na
 
     private async Task ReadEntriesAsync(string path, Func<string, Stream, int, Task> readFile, CancellationToken token)
     {
-        using var archiveBytes = new MemoryStream(await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false));
-        if (path.EndsWith(".zip", StringComparison.Ordinal))
+        try
         {
-            var archive = new ZipArchive(archiveBytes, ZipArchiveMode.Read);
-            await using (archive.ConfigureAwait(false))
+            using var archiveBytes = new MemoryStream(await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false));
+            if (path.EndsWith(".zip", StringComparison.Ordinal))
             {
-                foreach (var entry in archive.Entries)
+                var archive = new ZipArchive(archiveBytes, ZipArchiveMode.Read);
+                await using (archive.ConfigureAwait(false))
                 {
-                    var content = await entry.OpenAsync(token).ConfigureAwait(false);
-                    await using (content.ConfigureAwait(false))
+                    foreach (var entry in archive.Entries)
                     {
-                        await readFile(entry.FullName, content, entry.ExternalAttributes >> 16).ConfigureAwait(false);
+                        var content = await entry.OpenAsync(token).ConfigureAwait(false);
+                        await using (content.ConfigureAwait(false))
+                        {
+                            await readFile(entry.FullName, content, entry.ExternalAttributes >> 16).ConfigureAwait(false);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                var compressed = new GZipStream(archiveBytes, CompressionMode.Decompress);
+                await using (compressed.ConfigureAwait(false))
+                {
+                    var reader = new TarReader(compressed);
+                    await using (reader.ConfigureAwait(false))
+                    {
+                        while (await reader.GetNextEntryAsync(cancellationToken: token).ConfigureAwait(false) is { } entry)
+                        {
+                            if (entry.EntryType != TarEntryType.RegularFile || entry.DataStream is null)
+                            {
+                                throw new InvalidOperationException("Unexpected archive entry: " + entry.Name);
+                            }
+                            await readFile(entry.Name, entry.DataStream, (int)entry.Mode).ConfigureAwait(false);
+                        }
                     }
                 }
             }
         }
-        else
+        catch (InvalidDataException error)
         {
-            var compressed = new GZipStream(archiveBytes, CompressionMode.Decompress);
-            await using (compressed.ConfigureAwait(false))
-            {
-                var reader = new TarReader(compressed);
-                await using (reader.ConfigureAwait(false))
-                {
-                    while (await reader.GetNextEntryAsync(cancellationToken: token).ConfigureAwait(false) is { } entry)
-                    {
-                        if (entry.EntryType != TarEntryType.RegularFile || entry.DataStream is null)
-                        {
-                            throw new InvalidOperationException("Unexpected archive entry: " + entry.Name);
-                        }
-                        await readFile(entry.Name, entry.DataStream, (int)entry.Mode).ConfigureAwait(false);
-                    }
-                }
-            }
+            throw new InvalidOperationException("Invalid archive input: " + rid.Value + ": " + path, error);
         }
     }
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Xml.Linq;
+using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Native.Abstractions;
 using TUnit.Assertions.Enums;
 
@@ -7,6 +8,29 @@ namespace OpenCode.Mcp.Tools.Tests.Native.Support;
 
 public sealed class NativeBuildScenarioTests
 {
+    [Test]
+    [Timeout(30_000)]
+    [Arguments(false, 493)]
+    [Arguments(true, 420)]
+    public async Task PrepareUnixPayloadAsync_Should_Supply_A_Complete_Payload_And_The_Selected_Archive_Mode(bool changedMode, int commandMode, CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var manifestPath = await scenario.PrepareUnixPayloadAsync(request, changedMode, token);
+        var store = new NativeEvidenceStore(scenario.Files);
+        var manifest = await new NativeManifestStore(scenario.Files).ReadAsync(manifestPath, token);
+        await Assert.That(manifest.Runtimes.Select(static runtime => runtime.Rid)).IsEquivalentTo(["linux-x64"], CollectionOrdering.Matching);
+        var payload = scenario.Files.Path.Combine(scenario.Output, "payload");
+        await Assert.That(scenario.Files.Directory.EnumerateFiles(payload).Select(path => scenario.Files.Path.GetFileName(path)).Order(StringComparer.Ordinal))
+            .IsEquivalentTo(["LICENSE", "THIRD-PARTY-NOTICES.md", "opencode-mcp", "payload.json"], CollectionOrdering.Matching);
+        await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Files.Path.Combine(payload, "opencode-mcp"), token)).IsEqualTo("opencode-mcp");
+        var receipt = await store.ReadAsync<NativeReceipt>(scenario.Files.Path.Combine(scenario.Output, "receipt.json"), token);
+        await Assert.That(receipt.Payload.Select(static file => file.UnixMode)).IsEquivalentTo(new int?[] { 493, 493, 493, 493 }, CollectionOrdering.Matching);
+        var archived = await new PayloadArchive(scenario.Files, scenario.Modes, new NativeRid("linux-x64"))
+            .ReadInventoryAsync(scenario.Files.Path.Combine(scenario.Output, "payload.tar.gz"), token);
+        await Assert.That(archived.Single(static file => file.Path == "opencode-mcp").UnixMode).IsEqualTo(commandMode);
+    }
+
     [Test]
     [Timeout(30_000)]
     public async Task PrepareAsync_Should_Provide_An_Isolated_Windows_Build_And_Complete_Assets(CancellationToken token)

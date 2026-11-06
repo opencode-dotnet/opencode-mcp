@@ -13,7 +13,7 @@ public sealed class ProductExecutableTests
     private readonly MockFileSystem _files = new();
 
     [Test]
-    public async Task Resolve_Should_Use_The_Os_Architecture_For_An_Emulated_Process()
+    public async Task Resolve_Should_Select_The_Fixed_Windows_Arm64_Fixture_On_An_Arm64_Windows_Os()
     {
         var executable = await ArrangeNativeAsync("win", "arm64");
         ProcessLaunch? launch = null;

@@ -10,6 +10,58 @@ public sealed class NativeApplicationTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task RunAsync_Should_Name_The_Broken_Trx_Path_And_Rid(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var manifest = await new NativeManifestFixture().WriteAsync(scenario.Files, token);
+        var report = scenario.Files.Path.Combine(request.Root, "artifacts", "test-results", "native", "win-x64", "published", "fixture.trx");
+        scenario.Files.Directory.CreateDirectory(scenario.Files.Path.Combine(request.Root, "packaging"));
+        scenario.Files.File.Copy(manifest, scenario.Files.Path.Combine(request.Root, "packaging", "native-manifest.json"));
+        var respond = scenario.Runner.Response;
+        scenario.Runner.Response = async (call, cancellation) =>
+        {
+            var result = await respond(call, cancellation);
+            if (call.Arguments[0] == "test")
+            {
+                await scenario.Files.File.WriteAllTextAsync(report, "not XML", cancellation);
+            }
+            return result;
+        };
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(scenario.Files, scenario.Runner, new FixtureHostReader(request.Host with { WorkingDirectory = request.Root }), scenario.Modes, output, errors);
+        var exit = await application.RunAsync(["verify", "--rid", "win-x64", "--output", scenario.Output], token);
+        await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo("Malformed TRX input: win-x64: " + report);
+        await Assert.That(exit).IsEqualTo(2);
+        await Assert.That(output.ToString()).IsEmpty();
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task RunAsync_Should_Name_The_Broken_Archive_Path_And_Rid(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var manifest = await new NativeManifestFixture().WriteAsync(scenario.Files, token);
+        var published = await new NativeVerifier(scenario.Files, scenario.Runner).VerifyAsync(request, token);
+        await scenario.AddStagingInputsAsync(token);
+        var receipt = await new NativeStager(scenario.Files, scenario.Runner, scenario.Modes).StageAsync(request, published.PublishDirectory, token);
+        var archive = scenario.Files.Path.Combine(scenario.Output, receipt.Archive ?? throw new InvalidOperationException());
+        await scenario.Files.File.WriteAllTextAsync(archive, "not a ZIP archive", token);
+        var store = new NativeEvidenceStore(scenario.Files);
+        await store.WriteAsync(scenario.Files.Path.Combine(scenario.Output, "receipt.json"), receipt with { ArchiveSha256 = await store.DigestAsync(archive, token) }, token);
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(scenario.Files, scenario.Runner, new FixtureHostReader(request.Host with { WorkingDirectory = request.Root }), scenario.Modes, output, errors);
+        var exit = await application.RunAsync(["validate", "--receipts", scenario.Output, "--manifest", manifest], token);
+        await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo("Invalid archive input: win-x64: " + archive);
+        await Assert.That(exit).IsEqualTo(2);
+        await Assert.That(output.ToString()).IsEmpty();
+    }
+
+    [Test]
+    [Timeout(30_000)]
     [Arguments("timeout", "Native command timed out.")]
     [Arguments("cancel", "Native command cancelled (Ctrl+C).")]
     [Arguments("json", "Malformed JSON input: fixture")]
@@ -55,7 +107,12 @@ public sealed class NativeApplicationTests
 
     [Test]
     [Timeout(30_000)]
-    public async Task RunAsync_Should_Name_A_Null_Required_Receipt_Field(CancellationToken token)
+    [Arguments("rid")]
+    [Arguments("payload")]
+    [Arguments("path")]
+    [Arguments("properties")]
+    [Arguments("payload element")]
+    public async Task RunAsync_Should_Name_A_Null_Required_Receipt_Field(string field, CancellationToken token)
     {
         var scenario = new NativeBuildScenario();
         var request = await scenario.PrepareAsync(token);
@@ -63,7 +120,25 @@ public sealed class NativeApplicationTests
         scenario.Files.Directory.CreateDirectory(scenario.Output);
         var receipt = JsonSerializer.SerializeToNode(ReceiptFixture.Create(request.Manifest.Runtimes[0]), JsonSerializerOptions.Web)
             ?? throw new InvalidOperationException();
-        receipt["rid"] = null;
+        if (field == "path")
+        {
+            var entry = receipt["payload"]?[0] ?? throw new InvalidOperationException();
+            entry["path"] = null;
+        }
+        else if (field == "properties")
+        {
+            var properties = receipt["properties"] ?? throw new InvalidOperationException();
+            properties["PublishAot"] = null;
+        }
+        else if (field == "payload element")
+        {
+            var payload = receipt["payload"] ?? throw new InvalidOperationException();
+            payload[0] = null;
+        }
+        else
+        {
+            receipt[field] = null;
+        }
         await scenario.Files.File.WriteAllTextAsync(scenario.Files.Path.Combine(scenario.Output, "receipt.json"), receipt.ToJsonString(), token);
         using var output = new StringWriter(CultureInfo.InvariantCulture);
         using var errors = new StringWriter(CultureInfo.InvariantCulture);
@@ -71,7 +146,8 @@ public sealed class NativeApplicationTests
         int? result = null;
         await Assert.That(async () => result = await application.RunAsync(["validate", "--receipts", scenario.Output, "--manifest", manifest], token)).ThrowsNothing();
         await Assert.That(result).IsEqualTo(2);
-        await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo("Evidence: required field rid must not be null.");
+        await Assert.That(errors.ToString()).StartsWith("Malformed JSON input: ");
+        await Assert.That(errors.ToString()).Contains(field == "payload element" ? "payload" : field);
         await Assert.That(output.ToString()).IsEmpty();
     }
 

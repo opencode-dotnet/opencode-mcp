@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Xml.Linq;
 using OpenCode.Mcp.Tools.Native;
@@ -43,6 +45,33 @@ internal sealed class NativeBuildScenario
         await WriteAsync(Files.Path.Combine(Root, "LICENSE"), "fixture license", token);
         await WriteAsync(Files.Path.Combine(Root, "THIRD-PARTY-NOTICES.md"),
             "<!-- native-package: ModelContextProtocol/2.3.1 -->\nMCP fixture notice\n<!-- native-package: Polly.Core/8.4.2 -->\nPolly fixture notice\n", token);
+    }
+
+    public async Task<string> PrepareUnixPayloadAsync(NativeBuildRequest request, bool changedMode, CancellationToken token)
+    {
+        var runtime = request.Manifest.Runtimes.Single(static runtime => runtime.Rid == "linux-x64");
+        var manifest = request.Manifest with { Runtimes = [runtime] };
+        var store = new NativeEvidenceStore(Files);
+        var manifestPath = Files.Path.Combine(request.Root, "manifest.json");
+        await store.WriteAsync(manifestPath, manifest, token);
+        var payload = Files.Path.Combine(Output, "payload");
+        Files.Directory.CreateDirectory(payload);
+        var receipt = ReceiptFixture.Create(runtime);
+        var inventory = new List<PayloadFile>();
+        foreach (var file in receipt.Payload)
+        {
+            var bytes = Encoding.UTF8.GetBytes(file.Path);
+            await Files.File.WriteAllBytesAsync(Files.Path.Combine(payload, file.Path), bytes, token);
+            inventory.Add(file with { Sha256 = Convert.ToHexStringLower(SHA256.HashData(bytes)), Size = bytes.LongLength, UnixMode = 493 });
+        }
+        receipt = receipt with { Payload = inventory, Archive = "payload.tar.gz", ExecutableSha256 = inventory.Single(static file => file.Path == "opencode-mcp").Sha256 };
+        await store.WriteAsync(Files.Path.Combine(Output, "payload-manifest.json"), inventory, token);
+        var archivePath = Files.Path.Combine(Output, receipt.Archive);
+        var archiveInventory = inventory.Select(file => changedMode && file.Path == "opencode-mcp" ? file with { UnixMode = 420 } : file).ToArray();
+        await new PayloadArchive(Files, Modes, new NativeRid(runtime.Rid)).CreateAsync(payload, archivePath, archiveInventory, token);
+        receipt = receipt with { ArchiveSha256 = await store.DigestAsync(archivePath, token) };
+        await store.WriteAsync(Files.Path.Combine(Output, "receipt.json"), receipt, token);
+        return manifestPath;
     }
 
     public async Task<NativeBuildRequest> PrepareAsync(CancellationToken token)

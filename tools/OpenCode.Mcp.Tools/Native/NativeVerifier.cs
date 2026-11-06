@@ -46,7 +46,7 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
         var assetsPath = files.Path.Combine(request.Root, rid.AssetsPath);
         using var assets = JsonDocument.Parse(await files.File.ReadAllTextAsync(assetsPath, token).ConfigureAwait(false));
         var dependencies = DependencyInventory.Read(assets.RootElement, request.Rid);
-        var tests = await new NativeExecutableTests(files, processes).RunAsync(executable, files.Path.Combine(request.Root, "artifacts", "test-results", "native", request.Rid, "published"), token).ConfigureAwait(false);
+        var tests = await new NativeExecutableTests(files, processes, rid).RunAsync(executable, files.Path.Combine(request.Root, "artifacts", "test-results", "native", request.Rid, "published"), token).ConfigureAwait(false);
         var receipt = new NativeReceipt
         {
             Rid = request.Rid,
@@ -87,16 +87,13 @@ internal sealed class NativeVerifier(IFileSystem files, INativeProcessRunner run
     private async Task PrepareOutputAsync(string output, CancellationToken token)
     {
         files.Directory.CreateDirectory(output);
-        var receiptPath = files.Path.Combine(output, "receipt.json");
-        if (files.File.Exists(receiptPath))
-        {
-            await new NativeEvidenceStore(files).ReadAsync<NativeReceipt>(receiptPath, token).ConfigureAwait(false);
-        }
-        else if (files.Directory.EnumerateFileSystemEntries(output).Any())
+        var marker = files.Path.Combine(output, ".opencode-mcp-native");
+        if (!files.File.Exists(marker) && files.Directory.EnumerateFileSystemEntries(output).Any())
         {
             throw new InvalidOperationException("Output directory is not owned by the native tool: " + output);
         }
-        files.File.Delete(receiptPath);
+        await files.File.WriteAllTextAsync(marker, "", token).ConfigureAwait(false);
+        files.File.Delete(files.Path.Combine(output, "receipt.json"));
         foreach (var directory in OwnedDirectories.Select(name => files.Path.Combine(output, name)).Where(files.Directory.Exists))
         {
             files.Directory.Delete(directory, recursive: true);

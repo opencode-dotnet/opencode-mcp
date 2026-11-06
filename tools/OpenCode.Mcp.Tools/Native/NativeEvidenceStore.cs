@@ -6,7 +6,7 @@ namespace OpenCode.Mcp.Tools.Native;
 
 internal sealed class NativeEvidenceStore(IFileSystem files)
 {
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true, RespectNullableAnnotations = true };
 
     public async Task WriteAsync<T>(string path, T evidence, CancellationToken token)
     {
@@ -18,12 +18,28 @@ internal sealed class NativeEvidenceStore(IFileSystem files)
     {
         var evidence = JsonSerializer.Deserialize<T>(await files.File.ReadAllTextAsync(path, token).ConfigureAwait(false), Options)
             ?? throw new InvalidOperationException("Missing evidence: " + path);
-        var missing = Options.GetTypeInfo(typeof(T)).Properties.FirstOrDefault(property => property.IsRequired && property.Get?.Invoke(evidence) is null);
-        if (missing is not null)
+        if (evidence is NativeReceipt receipt)
         {
-            throw new InvalidOperationException("Evidence: required field " + missing.Name + " must not be null.");
+            CheckElements(receipt.Payload, "payload");
+            CheckElements(receipt.Properties.Values, "properties");
+            CheckElements(receipt.CompilerPackages, "compilerPackages");
+            CheckElements(receipt.PublishCommand, "publishCommand");
+            CheckElements(receipt.Warnings, "warnings");
+            CheckElements(receipt.Dependencies, "dependencies");
+        }
+        else if (evidence is PayloadFile[] payload)
+        {
+            CheckElements(payload, "payload manifest");
         }
         return evidence;
+    }
+
+    private static void CheckElements<T>(IEnumerable<T> elements, string name)
+    {
+        if (elements.Any(static element => element is null))
+        {
+            throw new JsonException("Evidence: " + name + " must not contain null elements.");
+        }
     }
 
     public async Task<string> DigestAsync(string path, CancellationToken token) =>

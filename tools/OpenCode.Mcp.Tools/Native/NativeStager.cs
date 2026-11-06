@@ -49,7 +49,7 @@ internal sealed class NativeStager(IFileSystem files, INativeProcessRunner runne
         var manifest = await inventory.CaptureAsync(payload, token).ConfigureAwait(false);
         var manifestPath = files.Path.Combine(request.Output, "payload-manifest.json");
         await store.WriteAsync(manifestPath, manifest, token).ConfigureAwait(false);
-        var tests = new NativeExecutableTests(files, processes);
+        var tests = new NativeExecutableTests(files, processes, rid);
         var resultRoot = files.Path.Combine(request.Root, "artifacts", "test-results", "native", receipt.Rid);
         var normalizedTests = await tests.RunAsync(normalized, files.Path.Combine(resultRoot, "normalized"), token).ConfigureAwait(false);
         var archivePath = files.Path.Combine(request.Output, "opencode-mcp-" + receipt.Rid + rid.ArchiveExtension);

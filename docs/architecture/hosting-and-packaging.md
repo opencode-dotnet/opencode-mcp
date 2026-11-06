@@ -226,8 +226,10 @@ not a second distributed product. The entry is compiled separately from the solu
   contain no `IL2xxx` or `IL3xxx` code except exactly `IL2121`, the pinned SDK's default for
   redundant suppression warnings, which do not report unsafe code. The receipt preserves the
   effective `NoWarn` value. It removes its owned publish and payload directories before
-  publishing. Child build, restore, property-query and publish commands disable node reuse and
-  shared compilation. It captures both publish streams, preserves the exit result, scans
+  publishing. An output is owned when empty or marked by the persistent `.opencode-mcp-native`
+  file; a foreign non-empty output without that marker is refused. Child build, restore,
+  property-query and publish commands disable node reuse and shared compilation. It captures both
+  publish streams, preserves the exit result, scans
   for trim/AOT diagnostics even on exit zero, inspects the native image, and runs `ExecutableTests`
   on that exact published path in both transport modes.
 - `stage --rid <RID> --publish-directory <dir>` requires matching successful verification and an
@@ -272,8 +274,8 @@ builder is not the clean environment used for runtime-independence proof.
 
 `.github/workflows/linux-builder.yml` builds and publishes
 `ghcr.io/opencode-dotnet/opencode-mcp-linux-builder` only on manual dispatch. The native Linux
-runners declared in `packaging/native-manifest.json` push by digest; a dependent merge job assembles
-the multi-architecture index. Its only tag is
+builders use `ubuntu-24.04` and `ubuntu-24.04-arm`, matching the manifest's Linux runners,
+and push by digest; a dependent merge job assembles the multi-architecture index. Its only tag is
 `jammy-<yyyymmdd>-<short source sha>-<github.run_id>-<github.run_attempt>` (UTC date, seven-character
 source SHA), unique to a dispatch and re-run attempt and never moved. There is no mutable tag,
 schedule, QEMU or automatic image deletion. The image carries source and revision labels. Native

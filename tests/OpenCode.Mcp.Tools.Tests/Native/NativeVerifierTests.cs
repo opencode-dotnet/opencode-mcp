@@ -8,6 +8,37 @@ public sealed class NativeVerifierTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task VerifyAsync_Should_Refuse_A_Malformed_Receipt_Without_An_Ownership_Marker(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        scenario.Files.Directory.CreateDirectory(request.Output);
+        var receipt = scenario.Files.Path.Combine(request.Output, "receipt.json");
+        await scenario.Files.File.WriteAllTextAsync(receipt, "not JSON", token);
+        await Assert.That(async () => await new NativeVerifier(scenario.Files, scenario.Runner).VerifyAsync(request, token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Output directory is not owned by the native tool: " + request.Output, StringComparison.Ordinal);
+        await Assert.That(await scenario.Files.File.ReadAllTextAsync(receipt, token)).IsEqualTo("not JSON");
+        await Assert.That(scenario.Runner.Calls).IsEmpty();
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task VerifyAsync_Should_Reuse_An_Owned_Output_After_A_Failed_Run(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var verifier = new NativeVerifier(scenario.Files, scenario.Runner);
+        scenario.EffectiveProperties["NoWarn"] = "IL3050";
+        await Assert.That(async () => await verifier.VerifyAsync(request, token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("NoWarn must not contain IL3050.", StringComparison.Ordinal);
+        scenario.EffectiveProperties["NoWarn"] = "";
+        var receipt = await verifier.VerifyAsync(request, token);
+        await Assert.That(receipt.PublishedTests).IsEqualTo(new NativeTestRun(0, 12, 0, 0));
+        await Assert.That(scenario.Files.File.Exists(scenario.Files.Path.Combine(request.Output, ".opencode-mcp-native"))).IsTrue();
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task VerifyAsync_Should_Refuse_An_Unowned_Nonempty_Output_Without_Deleting_Files(CancellationToken token)
     {
         var scenario = new NativeBuildScenario();
@@ -77,6 +108,7 @@ public sealed class NativeVerifierTests
         var payload = scenario.Files.Path.Combine(request.Output, "payload");
         await new NativeEvidenceStore(scenario.Files).WriteAsync(scenario.Files.Path.Combine(request.Output, "receipt.json"),
             ReceiptFixture.Create(request.Manifest.Runtimes[0]), token);
+        scenario.Files.Initialize().WithFile(scenario.Files.Path.Combine(request.Output, ".opencode-mcp-native"));
         scenario.Files.Directory.CreateDirectory(publish);
         scenario.Files.Directory.CreateDirectory(payload);
         scenario.Files.Initialize().WithFile(scenario.Files.Path.Combine(publish, "stale.xml"))
