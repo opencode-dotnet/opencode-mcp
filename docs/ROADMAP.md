@@ -20,7 +20,10 @@ Source launch instructions are in the README. Owned managed-process tests cover 
 explicit stdio, protocol-only stdout, stderr lifetime logs, selector refusals, exit zero after EOF,
 and cleanup after failures. HTTP process tests cover modern bootstrap, Development health,
 Host/Origin controls and listener release after forced teardown. These are local Windows proofs,
-not native or package evidence. The next bootstrap increment is the AppHost.
+not native or package evidence. The one-product-project Aspire AppHost and its eight closed-box
+graph, protocol, header-boundary and lifecycle tests are implemented and locally tested on Windows.
+The pinned wrapper's isolated start/wait/describe/stop path has also run locally. The next bootstrap
+increment is CI; no CI or cross-platform completion claim follows from these local proofs.
 
 Until CI and the merge queue exist, feature branches merge with the maintainer's approval.
 
@@ -35,7 +38,8 @@ Until CI and the merge queue exist, feature branches merge with the maintainer's
 4. **Stdio proof** - the real process over standard input and output, protocol-only standard output,
    and owned cleanup; implemented and locally tested on Windows.
 5. **AppHost** - the one-resource Aspire AppHost and its closed-box lifecycle tests
-   (`architecture/hosting-and-packaging.md`).
+   (`architecture/hosting-and-packaging.md`); implemented and locally tested on Windows, including
+   assertion-killed graph and cleanup mutants and the direct wrapper lifecycle.
 6. **CI** - the required CI workflow with its `CI result` check, dependency review, contribution
    guides, and then the merge queue and branch protection on `master`
    (`engineering/workflow.md`).

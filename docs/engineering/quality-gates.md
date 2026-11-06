@@ -90,6 +90,15 @@ its own head triggers is green: the lint job and the three operating-system legs
 the full gate below. The change is complete when the CI its merge commit triggers on `master` is
 green. Which changes skip those jobs, and what a merge requires, are in `workflow.md`.
 
+Every build and test command in the completion gate and local check runs with an owned
+`ASPIRE_HOME` beneath the user's temp folder. Without it, the AppHost SDK installs the Aspire
+bundle into the shared `%USERPROFILE%/.aspire` directory. Set it before the first build and keep
+it until all tests finish because generated metadata retains its bundle paths:
+
+```powershell
+$env:ASPIRE_HOME = Join-Path ([System.IO.Path]::GetTempPath()) 'opencode-mcp-aspire-home'
+```
+
 Before a pull request opens, run the local check from the repository root. It catches failures
 before they cost a CI run. A current handoff may add scope-specific checks but cannot weaken it.
 The local check builds with the analyzer wall on and runs every test module of the solution:
@@ -178,6 +187,44 @@ native image or establish native, RID, package or runtime-independence evidence.
 tests resolve the built Release DLL from the test executable's location. Focused runs do not replace
 the local check.
 
+### Focused AppHost checks
+
+Set an owned `ASPIRE_HOME` before building or testing the AppHost, not only before the CLI check.
+Keep it until all consumers of the generated bundle paths finish. Bundle acquisition, real-profile
+backchannel/certificate effects and the limits of `--isolated` are defined in
+`../architecture/hosting-and-packaging.md`. No global Aspire installation is needed.
+
+```powershell
+dotnet test --project tests/OpenCode.Mcp.AppHost.Tests/OpenCode.Mcp.AppHost.Tests.csproj -c Release --treenode-filter "/*/*/(AppHostTests|OwnedAppHostTests)/*" --minimum-expected-tests 1
+```
+
+Record the resolved package graph, SDK, generated `Projects.*` metadata, bundle marker and DCP
+version. The test builder runs the entry point in-process; its product runs closed-box under DCP.
+The focused tests do not replace the local check, native proof or package proof.
+
+The direct wrapper also needs a real lifecycle check on an otherwise idle host. First confirm no
+existing run targets this exact AppHost path: `start` can stop an existing instance, and
+`stop --apphost` is path-scoped, not session-ID-scoped. Under the same owned Aspire home, set
+`ASPIRE_DASHBOARD_DATA_DIRECTORY` beneath it, then run:
+
+```powershell
+pwsh -NoProfile -File tools/aspire.ps1 start --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --isolated --format Json --non-interactive
+pwsh -NoProfile -File tools/aspire.ps1 wait mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --status healthy --timeout 120 --non-interactive
+pwsh -NoProfile -File tools/aspire.ps1 describe mcp --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --format Json --non-interactive
+```
+
+Bound the foreground wrapper processes, drain stdout/stderr concurrently, and parse launch and
+resource JSON in memory without retaining dashboard login URLs. Retain the started process handles
+and the discovered endpoint. Always stop the exact owned run in `finally`, inspect the exit code,
+await retained exits, and require a refused fresh connection:
+
+```powershell
+pwsh -NoProfile -File tools/aspire.ps1 stop --apphost src/OpenCode.Mcp.AppHost/OpenCode.Mcp.AppHost.csproj --non-interactive
+```
+
+Never use `--force` or stop another session. Record the actual bundle and outside-repository writes;
+do not collect profile directories, certificate material or dashboard databases as artifacts.
+
 ## Continuous integration
 
 This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
@@ -190,6 +237,8 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   the required check missing.
 - **Lint job.** One Linux job restores the local tools, runs Slopwatch, the Release build with the
   analyzer wall, and both format passes.
+- **Aspire home input.** The CI task supplies an owned `ASPIRE_HOME` under each job's temporary
+  directory before every build and test command, and retains it through that job's tests.
 - **Build/test legs.** Windows, Linux and macOS legs (`windows-2025`, `ubuntu-24.04`, `macos-15`)
   build in Release with `-p:RunAnalyzers=false` and run every test project under the session timeout
   and hang dump below, with `fail-fast: false`. Each sets `TUNIT_DISABLE_ARTIFACT_UPLOAD: true` on

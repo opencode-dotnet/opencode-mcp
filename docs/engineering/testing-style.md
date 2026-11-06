@@ -160,7 +160,7 @@ boundary covers an OpenCode server process a later fixture starts. A test never 
 stops or reuses the user's own OpenCode server process or shared OpenCode service; a fixture that
 cannot own its server fails.
 
-- **One environment policy.** An owned launch takes its environment from one place, the process
+- **One environment policy.** A direct owned launch takes its environment from one place, the process
   owner in the test project's `Support/`. It launches the product in an owned empty run directory
   with an owned home, cache, configuration and temp root, and it clears inherited `OPENCODE_*`,
   `OTEL_*` and exporter, ASP.NET Core endpoint, Aspire, startup-hook and profiler variables before
@@ -223,6 +223,54 @@ cannot own its server fails.
 - **Fail fast, never skip.** A missing build output, a native path that does not exist or is a
   managed assembly, or a missing configured package feed is an instructive error, not a skipped
   test and never a fallback to another form of the product.
+
+### AppHost ownership
+
+`OwnedAppHost` accepts the actual testing builder and an `IFileSystem`. It owns one product run,
+not a substitute MCP server. Its separate test module has no reference to the product-test
+executable. The graph test inspects the unmodified entry-point model: project names are exactly
+`["mcp"]`, with generated metadata and the declared HTTP wiring. Bootstrap tests disable the
+dashboard and observe actual resource readiness before using the discovered authority. The hidden
+`mcp-rebuilder` stays in the upstream graph and must never start.
+
+`OwnedAppHost` alone owns and disposes the testing builder. Its product environment overrides only
+the home, config, cache and temp isolation groups, `NO_PROXY`, and the supplied `ASPIRE_HOME`;
+other ambient variables remain inherited, unlike the direct process owner's full scrub.
+
+Start the resource watcher before application startup. Select the actual product resource's named
+`executable.pid` property, ignore its not-yet-assigned zero value, retain each positive PID's
+process handle, and begin its exit wait while it is alive. The watcher is owned and joined, not
+fire-and-forget. Dispose MCP clients before disposing AppHost and its builder. Wait for product
+exits and the watcher, close the retained handles, then delete only the owner's root. Startup
+failure preserves the original error before any cleanup error; forced termination of a recorded
+product is a failed cleanup, not successful AppHost disposal.
+Join the observer in its own guarded step, attempt cleanup of every recorded product independently,
+and await exits under a fresh 30-second bound that the disposal timeout cannot cancel. Before a
+fallback kill, check the retained handle's exit state and compare the current PID's start identity
+with the one retained at observation; kill only that process, never its tree. Root deletion failures
+join the ordered failure list instead of replacing earlier failures.
+
+Cleanup tests hold independent process handles and capture the owner's safe handles before
+disposal. Assert `HasExited` before waiting, then assert the captured handles are closed, a fresh
+connection is refused, the owned root is absent, and the sibling sentinel's contents are unchanged.
+A completed no-op disposal must fail at an assertion, not an exit timeout. Test backstops release
+their own evidence after those assertions, including during mutation runs. Real request failure,
+resource-ready callback failure, explicit cancellation and repeated disposal each exercise cleanup.
+
+AppHost phase hang guards are: entry-point builder resolution 360 seconds; DCP/application startup
+180 seconds; resource health and ready callbacks 120 seconds; MCP connection 45 seconds; each
+HTTP/MCP request 30 seconds; host disposal and observer completion 60 seconds; fallback product
+exits a fresh 30 seconds; whole test 20 minutes. Each guard names
+the event it awaits. HTTP clients have infinite timeouts, so request tokens own the request bounds;
+the modern discovery probe uses the existing infinite-probe setting with a bounded connection.
+The whole-test token links the phase guards without changing the parameterless test signatures.
+
+DCP process exit is not asserted: the owner retains product processes only.
+The cancellation test cancels before the AppHost starts; cancellation during a running startup is
+not covered.
+The tests launch the product's Release apphost directly through the testing builder's executable
+annotation rather than `dotnet run`; the `tools/aspire.ps1` lifecycle check covers the `dotnet run`
+path, and the maintainer accepts this exact-ownership trade-off.
 
 ## 7. Anti-patterns (never)
 

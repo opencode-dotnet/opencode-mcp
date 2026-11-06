@@ -95,11 +95,17 @@ independent release identities. A preview version authorizes no publication.
 
 ## Aspire AppHost and ServiceDefaults
 
-The AppHost is a C# project-based Aspire AppHost that declares one HTTP product resource, `mcp`,
+The AppHost is a C# project-based Aspire AppHost that declares one HTTP product project resource, `mcp`,
 through `AddProject<T>` with generated project metadata. It starts the product with
 `--transport http` on a dynamically allocated loopback endpoint named `http`, in the Development
-environment, with a health check on `/health`. It starts no OpenCode server process, model
-provider, database, cache, container, or cloud service. Endpoints are discovered, not hardcoded.
+environment, with a health check on `/health`. Its `http` endpoint is explicitly proxy-less, with
+numeric target host `127.0.0.1` and `ASPNETCORE_URLS` bound to the allocated target port. The discovered
+authority therefore reaches the product's Host and Origin checks directly, without proxy Host
+rewriting or a test-only Host override. Forwarded-header injection is disabled; that annotation
+governs publishing, not Origin validation. Aspire also adds the hidden, explicit-start
+`mcp-rebuilder` infrastructure resource; the tests require it never to start.
+The AppHost starts no OpenCode server process, model provider, database, cache, container, or cloud
+service. Endpoints are discovered, not hardcoded.
 
 The AppHost uses the Aspire CLI bundle (`AspireUseCliBundle=true`) with
 `AspireCliInvocationMode=DnxPinned`, so an SDK-mediated launch runs the CLI version paired with the
@@ -108,6 +114,39 @@ command also goes through a named, pinned entry point: a repository script that 
 SDK version from the AppHost project and runs `dotnet dnx Aspire.Cli@<that version>`, so
 `global.json` selects the .NET SDK. Repository tooling lives in the root `dotnet-tools.json`; no
 duplicate `.config` manifest exists.
+
+`tools/aspire.ps1` is that direct entry point: it forwards arguments unchanged and preserves the
+CLI exit code. `DnxPinned` pins the CLI, not an independently selected bundle. Build-time bundle
+discovery can select an existing newer bundle; if no bundle exists, the SDK can acquire the pinned
+CLI through DNX and run its setup before any lifecycle command runs. Set an owned `ASPIRE_HOME`
+before building and keep it through the tests: generated AppHost assembly metadata retains the
+resolved DCP and dashboard paths. Record the bundle marker and the DCP binary's own version, which
+is not the Aspire release number. Restore and DNX can populate the shared NuGet package and HTTP
+caches. A CLI package can also extract a bundle beside its cached binary.
+
+`ASPIRE_HOME` is not complete machine-state isolation. Hosting uses the real profile's
+`.aspire/cli/bch` for its backchannel socket and `.aspire/dev-certs` for its developer-certificate
+cache; socket discovery can prune matching stale entries. Hosting can inspect the CurrentUser
+certificate store, and a CLI launch can generate an absent developer certificate or enter a
+platform-specific trust flow. Never repoint `HOME`, `USERPROFILE`, or `DOTNET_CLI_HOME` to conceal
+these effects, and never delete or rewrite the real `.aspire` directory. Tests isolate the product
+child's home/config/cache/temp paths, not the hosting test process's profile.
+
+The CLI's `--isolated` switch randomizes development ports; it does not isolate certificates,
+profile state or caches. No `UserSecretsId` is added. For an owned lifecycle check, place dashboard
+data under the owned Aspire home with `ASPIRE_DASHBOARD_DATA_DIRECTORY`; CLI logs and session
+metadata remain there too. The CLI can create an ignored repository-local `aspire.config.json`.
+The dashboard's SQLite store and authentication-related state are sensitive and are never uploaded.
+
+The AppHost testing builder invokes the actual AppHost entry point inside the test process. DCP
+launches the product as a separate process. To give that process an empty owned working directory,
+`OwnedAppHost` attaches an executable annotation for the built Release product selected from the
+generated project metadata and the inherited target framework. It preserves the composition's
+arguments, endpoints, environment and health registration; it replaces no services in the product.
+The CLI lifecycle check separately exercises the normal project-launch path. The test dependency
+graph deliberately contains Aspire's transitive `ModelContextProtocol` 1.4.1 beside directly
+selected Core 2.3.1; no product reference or transitive pin changes that graph. The separate product
+process keeps its own MCP dependency graph.
 
 ServiceDefaults keeps the standard Aspire behaviour: OpenTelemetry logs with formatted messages and
 scopes; ASP.NET Core, HTTP client, and runtime metrics; application, ASP.NET Core, and HTTP client
