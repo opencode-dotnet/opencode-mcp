@@ -173,6 +173,34 @@ of their own, never beside the managed pass:
 `../architecture/hosting-and-packaging.md` owns the native and package contract;
 `../ROADMAP.md` records which of these passes exist today.
 
+### Linux builder verification
+
+The builder recipe and publication contract are owned by
+`../architecture/hosting-and-packaging.md`. On a local amd64 Docker host, verify the recipe once
+without registry login or push:
+
+```powershell
+docker buildx build --load --platform linux/amd64 -f docker/linux-builder.Dockerfile -t opencode-mcp-linux-builder:local-check .
+docker run --rm opencode-mcp-linux-builder:local-check pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+docker image rm opencode-mcp-linux-builder:local-check
+```
+
+Require every exit code to be zero and confirm the local tag is gone. The Dockerfile prints and
+checks the architecture, glibc 2.35, compiler, linker, pinned PowerShell version, Git and curl; any
+failed probe fails the build. The separate container command must return the recipe's PowerShell
+version. This check proves only the local amd64 builder, not arm64 or native product execution.
+
+After an approved merge, the coordinator dispatches `linux-builder.yml` on `master`. Its build
+matrix checks OS/process architecture and `uname -m` before native builds; both legs must succeed
+before index merge. Only the build and merge jobs have `packages: write`, alongside `contents: read`;
+the workflow default is `contents: read`. Build jobs are bounded to 30 minutes and merge to 5 minutes.
+Intermediate digest artifacts and one consolidated run-evidence artifact have seven-day retention.
+The latter and the step summary contain the index digest, both runtime platform digests, source
+commit and `docker buildx imagetools inspect` output. Upload failures block success. Review that
+evidence, then confirm anonymous access to the public index and both platform images before using
+the index digest in native verification. A local build is not hosted arm64 or publication evidence.
+This dispatch is separate from `CI result` and does not change that check's dependencies.
+
 ### Focused executable checks
 
 Focused managed-process verification uses the actual Release product, not `dotnet run` or the

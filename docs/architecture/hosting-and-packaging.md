@@ -224,6 +224,20 @@ build infrastructure, not a product release artifact. The supported glibc floor 
 `GLIBC_` symbol version the payload references, measured with `objdump -T`, not the image's own
 glibc version.
 
+`docker/linux-builder.Dockerfile` owns the Ubuntu 22.04 recipe, its per-architecture PowerShell
+archive pins and SHA-256 checks, and build-time architecture/toolchain smoke. It includes PowerShell's
+runtime dependencies, but no .NET SDK or Docker engine. PowerShell bundles a .NET runtime, so this
+builder is not the clean environment used for runtime-independence proof.
+
+`.github/workflows/linux-builder.yml` builds and publishes
+`ghcr.io/opencode-dotnet/opencode-mcp-linux-builder` only on manual dispatch. The two native Linux
+runners above push by digest; a dependent merge job assembles the multi-architecture index. Its only
+tag is `jammy-<yyyymmdd>-<short source sha>-<github.run_id>-<github.run_attempt>` (UTC date, seven-character
+source SHA), unique to a dispatch and re-run attempt and never moved. There is no mutable tag,
+schedule, QEMU or automatic image deletion. The image carries source and revision labels. Native
+consumers pin the published index digest, not its discovery tag. The coordinator makes the package
+public after its first publication; the workflow does not change visibility.
+
 Runtime independence has its own proof. A Linux payload runs in a clean container that has no .NET
 SDK or shared runtime. A Windows or macOS payload runs on its matching runner and passes a
 native-image inspection: the payload holds no managed assemblies, runtime configuration, dependency
