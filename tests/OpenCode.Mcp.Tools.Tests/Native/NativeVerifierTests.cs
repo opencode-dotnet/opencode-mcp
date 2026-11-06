@@ -19,6 +19,7 @@ public sealed class NativeVerifierTests
             .ThrowsExactly<InvalidOperationException>().WithMessage("Output directory is not owned by the native tool: " + request.Output, StringComparison.Ordinal);
         await Assert.That(await scenario.Files.File.ReadAllTextAsync(receipt, token)).IsEqualTo("not JSON");
         await Assert.That(scenario.Runner.Calls).IsEmpty();
+        await Assert.That(scenario.Files.File.Exists(scenario.Files.Path.Combine(request.Output, ".opencode-mcp-native"))).IsFalse();
     }
 
     [Test]
@@ -54,6 +55,7 @@ public sealed class NativeVerifierTests
         await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Files.Path.Combine(payload, "keep"), token)).IsEqualTo("payload");
         await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Files.Path.Combine(publish, "keep"), token)).IsEqualTo("publish");
         await Assert.That(scenario.Runner.Calls).IsEmpty();
+        await Assert.That(scenario.Files.File.Exists(scenario.Files.Path.Combine(request.Output, ".opencode-mcp-native"))).IsFalse();
     }
 
     [Test]
