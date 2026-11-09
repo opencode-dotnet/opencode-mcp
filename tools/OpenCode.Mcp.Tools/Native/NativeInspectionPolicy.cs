@@ -5,8 +5,10 @@ internal static class NativeInspectionPolicy
     public static IReadOnlyList<string> Diagnostics(IReadOnlyList<string> forbiddenFiles, string rid, string exports)
     {
         var diagnostics = forbiddenFiles.Order(StringComparer.Ordinal).Select(static path => "Forbidden runtime file: " + path).ToList();
-        var symbol = new NativeRid(rid).IsMacOS ? "_DotNetRuntimeDebugHeader" : "DotNetRuntimeDebugHeader";
-        if (!exports.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Contains(symbol, StringComparer.Ordinal))
+        var target = new NativeRid(rid);
+        var symbol = target.IsMacOS ? "_DotNetRuntimeDebugHeader" : "DotNetRuntimeDebugHeader";
+        if (!exports.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Select(name => target.IsLinux ? name.Split('@')[0] : name).Contains(symbol, StringComparer.Ordinal))
         {
             diagnostics.Add("Missing native export: " + symbol);
         }

@@ -110,7 +110,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             _input = new RecordingDuplexStream(_process.StandardInput.BaseStream, Transcript, fromServer: false);
             _output = new RecordingDuplexStream(_process.StandardOutput.BaseStream, Transcript, fromServer: true);
             _stderr = _process.StandardError;
-            _diagnosticRoots = [root, ResolvePhysicalPath(root)];
+            _diagnosticRoots = [root, new PhysicalPathResolver(_files).Resolve(root)];
             _drain = DrainAsync(_stderr);
             cancellationToken.ThrowIfCancellationRequested();
         }
@@ -495,23 +495,6 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             redacted = redacted.Replace(root, "<run>", StringComparison.OrdinalIgnoreCase);
         }
         return redacted;
-    }
-
-    private string ResolvePhysicalPath(string path)
-    {
-        var root = _files.Path.GetPathRoot(path);
-        Debug.Assert(root is not null);
-        var resolved = root;
-        foreach (var component in path[root.Length..].Split([_files.Path.DirectorySeparatorChar, _files.Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
-        {
-            resolved = _files.Path.Combine(resolved, component);
-            var target = _files.Directory.ResolveLinkTarget(resolved, returnFinalTarget: true);
-            if (target is not null)
-            {
-                resolved = ResolvePhysicalPath(target.FullName);
-            }
-        }
-        return resolved;
     }
 
     private static bool IsSensitive(string name) => SensitiveNames.Any(part => name.Contains(part, StringComparison.OrdinalIgnoreCase));
