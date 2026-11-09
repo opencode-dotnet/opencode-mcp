@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/10/nuspec.xsd">
+  <metadata>
+    <id>OpenCodeDotNet.Mcp.win-x64</id>
+    <version>0.1.0-preview.1</version>
+    <authors>OpenCode.Mcp</authors>
+    <license type="expression">MIT</license>
+    <licenseUrl>https://licenses.nuget.org/MIT</licenseUrl>
+    <readme>README.md</readme>
+    <description>Local OpenCode MCP bootstrap preview with a harmless connectivity tool.</description>
+    <packageTypes>
+      <packageType name="DotnetToolRidPackage" />
+    </packageTypes>
+    <repository type="git" url="https://github.com/opencode-dotnet/opencode-mcp.git" branch="refs/heads/dispatch/2026-11-09-mcp-t8a/t8a" commit="3aea200c08618f7d12dd5dd336f584ec3ebc5684" />
+    <frameworkReferences>
+      <group targetFramework="net10.0">
+        <frameworkReference name="Microsoft.AspNetCore.App" />
+      </group>
+    </frameworkReferences>
+  </metadata>
+</package>

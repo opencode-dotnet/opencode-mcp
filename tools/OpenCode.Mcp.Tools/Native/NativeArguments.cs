@@ -6,7 +6,7 @@ internal static class NativeArguments
     {
         if (arguments.Count == 0)
         {
-            throw new InvalidOperationException("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux or snapshot.");
+            throw new InvalidOperationException("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child or snapshot.");
         }
         var operation = arguments[0];
         string[] required = operation switch
@@ -18,6 +18,7 @@ internal static class NativeArguments
             "matrix" => ["--manifest", "--github-output"],
             "control" => ["--rid"],
             "prove-linux" => ["--rid", "--evidence"],
+            "pack-child" => ["--rid", "--evidence"],
             "snapshot" => ["--output"],
             _ => throw new InvalidOperationException("Arguments: unknown command " + operation + "."),
         };

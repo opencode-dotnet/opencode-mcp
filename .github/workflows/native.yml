@@ -104,6 +104,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           dotnet run tools/native.cs -- stage --rid ${{ matrix.rid }} --publish-directory artifacts/native/${{ matrix.rid }}/publish
           exit $LASTEXITCODE
+      - name: Pack child package
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- pack-child --rid ${{ matrix.rid }} --evidence artifacts/native/${{ matrix.rid }}
+          exit $LASTEXITCODE
       - name: List executable tests after failure
         if: ${{ failure() && !cancelled() && hashFiles(format('artifacts/test-results/native/{0}/**/execution.log', matrix.rid)) != '' }}
         timeout-minutes: 5
@@ -200,6 +206,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet run tools/native.cs -- stage --rid ${{ matrix.rid }} --publish-directory artifacts/native/${{ matrix.rid }}/publish
+          exit $LASTEXITCODE
+      - name: Pack child package
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- pack-child --rid ${{ matrix.rid }} --evidence artifacts/native/${{ matrix.rid }}
           exit $LASTEXITCODE
       - name: List executable tests after failure
         if: ${{ failure() && !cancelled() && hashFiles(format('artifacts/test-results/native/{0}/**/execution.log', matrix.rid)) != '' }}

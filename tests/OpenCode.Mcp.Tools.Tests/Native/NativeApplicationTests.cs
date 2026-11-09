@@ -3,11 +3,45 @@ using System.Text.Json;
 using System.Xml;
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Tests.Native.Support;
+using OpenCode.Mcp.Tools.Tests.Packaging.Support;
 
 namespace OpenCode.Mcp.Tools.Tests.Native;
 
 public sealed class NativeApplicationTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RunAsync_Should_Report_Child_Packing_Or_Its_Complete_Refusal(bool refused, CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        var request = await builder.PrepareStagedAsync(token);
+        await new NativeEvidenceStore(builder.Files).WriteAsync(builder.Files.Path.Combine(request.Root, "packaging", "native-manifest.json"), request.Manifest, token);
+        if (refused)
+        {
+            builder.PackageCount = 0;
+        }
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(builder.Files, builder.Native.Runner, new FixtureHostReader(request.Host with { WorkingDirectory = request.Root }), builder.Native.Modes, output, errors);
+        var exit = await application.RunAsync(["pack-child", "--rid", "win-x64", "--evidence", request.Output], token);
+        if (refused)
+        {
+            await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo("Expected exactly one child package named OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg.");
+            await Assert.That(output.ToString()).IsEmpty();
+            await Assert.That(exit).IsEqualTo(2);
+        }
+        else
+        {
+            var path = builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg");
+            await Assert.That(builder.Files.File.Exists(path)).IsTrue();
+            var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await builder.Files.File.ReadAllBytesAsync(path, token)));
+            await Assert.That(output.ToString().TrimEnd('\r', '\n')).IsEqualTo(path + "\nPackage SHA-256: " + digest);
+            await Assert.That(errors.ToString()).IsEmpty();
+            await Assert.That(exit).IsEqualTo(0);
+        }
+    }
+
     [Test]
     [Timeout(30_000)]
     public async Task RunAsync_Should_Refuse_A_Forbidden_File_In_The_Final_Payload(CancellationToken token)

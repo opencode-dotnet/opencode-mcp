@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release
@@ -39,7 +39,8 @@ owns those values. The AppHost and test projects are not package artifacts. The 
 outside the test-exemption globs, and its reference to the product is orchestration metadata.
 ServiceDefaults is not a business-model or shared-helper bucket.
 
-The product uses `Microsoft.NET.Sdk.Web` with explicit `OutputType=Exe` and `IsPackable=false`.
+The product uses `Microsoft.NET.Sdk.Web` with explicit `OutputType=Exe` and is the solution's only
+packable project.
 The Web SDK supplies `Microsoft.AspNetCore.App` implicitly. Its top-level entry point delegates to
 the launcher; HTTP uses a slim web builder and stdio a generic builder
 (`server-and-transports.md`). The [README's source-launch commands](../../README.md#run-from-source)
@@ -237,6 +238,14 @@ not a second distributed product. The entry is compiled separately from the solu
   `opencode-mcp[.exe]`, preserves runtime assets, adds license, notices and version/RID metadata,
   inventories every payload file, tests the normalized command, archives it, extracts to an owned
   temporary directory, compares the complete inventory, and tests the extracted command.
+- `pack-child --rid <RID> --evidence <directory>` requires that RID's staging evidence, matching
+  executed SDK, source commit and common-input digest, and the manifest-ordered evaluated tool RIDs.
+  It replaces only its derived `packages/` directory and packs from `payload/` without building,
+  restoring or publishing. Any pack warning or nonzero exit refuses the result. It revalidates the
+  native artifacts after packing, requires exactly the expected child package, and checks its
+  identity, sole child type, command settings, whole-payload digests, channel metadata and repository
+  commit. Success prints the package path and SHA-256. It requires neither the six-RID set nor
+  the later Linux runtime-independence proof.
 - `inspect --rid <RID> --path <executable-or-directory>` inspects only the supplied image when the
   path is a file. A directory also scans its companion files recursively. The framework-dependent
   negative control uses the file path.
@@ -384,7 +393,16 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
 - `ToolPackageRuntimeIdentifiers` lists exactly the six native RIDs. The SDK generates one
   implementation package per RID, `OpenCodeDotNet.Mcp.<RID>` of type `DotnetToolRidPackage`, at the
   same version. The root package never maps an absent child, and no `any` mapping exists.
-- Each child packs the verified native payload of its RID without recompiling it.
+- The ordered tool RID list is a checked projection of `packaging/native-manifest.json`, not
+  another owner. Each child packs its staged native payload through the SDK's supported
+  `IsPublishable=false`, `PublishDir` and `ToolEntryPoint` composition, with `--no-build --no-restore`;
+  it never recompiles, relinks or republishes the payload. The SDK owns the child ID, package type,
+  runner and implementation layout. MCP package metadata is channel metadata outside that payload.
+- The manifest's two versions and root package identifier are checked against the evaluated product
+  identity at pack time. Its product policy checks listing identity, description bounds, the single
+  NuGet package, exact ordered arguments, stdio transport and a UTF-8 size below 20,000 bytes. This
+  is a typed product policy, not full JSON Schema validation; packing never rewrites the tracked
+  manifest.
 - `.mcp/server.json` declares stdio acquisition through `dnx` with explicit
   `--transport stdio` package arguments. `dnx` receives `-v minimal` before `--`, both there and in
   the README's manual launch command: on macOS a cold acquisition at default verbosity writes a
@@ -392,8 +410,8 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
   the protocol stream. That line is never filtered out to pass a test.
 - Native execution needs no installed .NET runtime; `dnx` acquisition still needs the .NET SDK.
   Direct native archives are the SDK-free route.
-- The packed README stays free of repository links unless it is pinned to the packed commit. No
-  `McpName` property and no unverified repository URL is set.
+- The packed README is `packaging/README.md`, packed as `README.md`, and contains no repository
+  links. No `McpName` property and no unverified repository URL is set.
 
 ### Payload, candidate, and acquisition
 

@@ -2,7 +2,15 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <PackageType>McpServer</PackageType>
+    <PackageId>OpenCodeDotNet.Mcp</PackageId>
+    <ToolCommandName>opencode-mcp</ToolCommandName>
+    <ToolPackageRuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</ToolPackageRuntimeIdentifiers>
+    <PackageDescription>Local OpenCode MCP bootstrap preview with a harmless connectivity tool.</PackageDescription>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- The native server ships no XML documentation. -->
@@ -23,6 +31,13 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OpenCode.Mcp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../packaging/README.md" Pack="true" PackagePath="/README.md" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
+    <None Include=".mcp/server.json" Pack="true" PackagePath="/.mcp/" />
   </ItemGroup>
 
 </Project>

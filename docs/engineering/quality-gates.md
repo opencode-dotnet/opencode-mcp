@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -175,8 +175,9 @@ of their own, never beside the managed pass:
   executable tests directly against the published native executable, never a managed assembly,
   `dotnet run` or the AppHost. A native path that is missing or is not native fails the pass
   instead of falling back to the managed product.
-- **Packages.** Tests that inspect packages or acquire the packaged MCP server carry the `Package`
-  category. Once that category exists, the managed pass's test command adds
+- **Packages.** Tests that need SDK-produced packages from the feed carry the `Package` category.
+  Unit tests of the package inspector and its policy over archives built in the test file system
+  stay in the managed pass. Once that category exists, the managed pass's test command adds
   `--treenode-filter "/*/*/*/*[Category!=Package]"`, and the package pass runs the category on its own
   against the packages the native pass produced.
 
@@ -191,12 +192,13 @@ On an otherwise idle matching host, after the managed local check, run:
 dotnet run tools/native.cs -- verify --rid win-x64
 dotnet run tools/native.cs -- control --rid win-x64
 dotnet run tools/native.cs -- stage --rid win-x64 --publish-directory artifacts/native/win-x64/publish
+dotnet run tools/native.cs -- pack-child --rid win-x64 --evidence artifacts/native/win-x64
 dotnet run tools/native.cs -- validate --receipts artifacts/native
 ```
 
 Use the manifest RID matching the actual OS, OS architecture, process and SDK architecture. The
 Windows prerequisites are in the architecture canon. No prerequisite is installed by the tool.
-`verify`, `control` and `stage` must exit zero. The last command must exit 2 for a local one-RID set, naming
+`verify`, `control`, `stage` and `pack-child` must exit zero. The last command must exit 2 for a local one-RID set, naming
 the other five missing receipts in manifest order; only a complete hosted set may exit zero.
 `--output <dir>` selects verify's owned evidence directory; stage uses the publish directory's
 parent. `control` owns its temporary publication and cleanup. Its successful result requires
