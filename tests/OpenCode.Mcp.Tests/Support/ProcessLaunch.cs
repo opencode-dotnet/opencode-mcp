@@ -5,6 +5,9 @@ namespace OpenCode.Mcp.Tests.Support;
 /// <summary>Carries one owned child launch with immutable argument and environment snapshots.</summary>
 internal sealed record ProcessLaunch
 {
+    /// <summary>Gets the container identity when Docker owns the product process.</summary>
+    public ContainerLaunch? Container { get; init; }
+
     /// <summary>Gets the executable started directly by the process owner.</summary>
     public required string FileName
     {

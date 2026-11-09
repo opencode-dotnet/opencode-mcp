@@ -206,6 +206,12 @@ jobs:
           dotnet build OpenCode.Mcp.slnx --configuration Release -p:RunAnalyzers=false
           exit $LASTEXITCODE
 
+      - name: Build native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+
       - name: Test
         id: test
         timeout-minutes: 35
@@ -237,16 +243,8 @@ jobs:
         if: always()
         run: |
           $ErrorActionPreference = 'Stop'
-          $directory = Join-Path $env:RUNNER_TEMP 'process-snapshot'
-          New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          $now = Get-Date
-          $lines = Get-Process | Sort-Object -Property CPU -Descending | ForEach-Object {
-            $started = try { $_.StartTime } catch { $null }
-            $age = if ($started) { [int]($now - $started).TotalSeconds } else { -1 }
-            '{0}|{1}|cpu={2:N1}s|ws={3}MB|age={4}s|{5}' -f $_.Id, $_.ProcessName, $_.CPU, [int]($_.WorkingSet64 / 1MB), $age, $_.CommandLine
-          }
-          $lines | Set-Content -LiteralPath (Join-Path $directory 'processes.txt')
-          $lines | Select-Object -First 25 | Write-Output
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
 
       - name: Upload process snapshot
         if: always()

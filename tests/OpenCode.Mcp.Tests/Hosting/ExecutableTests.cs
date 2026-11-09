@@ -6,6 +6,7 @@ using System.Text.Json;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using OpenCode.Mcp.Tests.Support;
+using OpenCode.Mcp.Tools.Native;
 using Testably.Abstractions;
 using TUnit.Assertions.Enums;
 
@@ -30,8 +31,9 @@ public sealed class ExecutableTests
         await using var process = new OwnedMcpProcess(_files);
         using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Listening or early exit, then modern bootstrap.
         var launch = Launch(["--transport", transport, "--environment", "Development"]);
-        await _files.File.WriteAllTextAsync(_files.Path.Combine(launch.WorkingDirectory, "appsettings.json"),
-            """{"Kestrel":{"Endpoints":{"A":{"Url":"http://0.0.0.0:5099"}}},"OTEL_EXPORTER_OTLP_ENDPOINT":"http://127.0.0.1:1"}""", guard.Token);
+        var configuration = """{"Kestrel":{"Endpoints":{"A":{"Url":"http://0.0.0.0:5099"}}},"OTEL_EXPORTER_OTLP_ENDPOINT":"http://127.0.0.1:1"}""";
+        await _files.File.WriteAllTextAsync(_files.Path.Combine(launch.WorkingDirectory, "appsettings.json"), configuration, guard.Token);
+        await AssertPreparedFixtureAsync(launch, configuration, guard.Token);
         await process.StartAsync(launch, guard.Token);
         if (string.Equals(transport, "http", StringComparison.Ordinal))
         {
@@ -57,8 +59,17 @@ public sealed class ExecutableTests
             await Assert.That(await process.WaitForExitAsync(guard.Token)).IsEqualTo(0);
             await Assert.That(process.Transcript.Methods).IsEquivalentTo(ModernMethods, CollectionOrdering.Matching);
             await AssertResultsAsync(process.Transcript.Results);
-            var artifact = launch.Arguments.FirstOrDefault(static argument => argument.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) ?? launch.FileName;
-            await Assert.That(process.StandardError).Contains("      Content root path: " + _files.Path.GetDirectoryName(artifact) + _files.Path.DirectorySeparatorChar);
+            if (launch.Container is null)
+            {
+                var artifact = launch.Arguments.FirstOrDefault(static argument => argument.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) ?? launch.FileName;
+                var directory = _files.Path.GetDirectoryName(artifact) ?? throw new InvalidOperationException("The product artifact has no directory.");
+                var contentRoot = new PhysicalPathResolver(_files).Resolve(directory);
+                await Assert.That(process.StandardError).Contains("      Content root path: " + contentRoot + _files.Path.DirectorySeparatorChar);
+            }
+        }
+        if (launch.Container is not null)
+        {
+            await AssertContainerContentRootAsync(process);
         }
     }
 
@@ -168,8 +179,56 @@ public sealed class ExecutableTests
         {
             environment.Add("OPENCODE_MCP_TEST_EXPECT_NATIVE", expectNative);
         }
+        var containerImage = Environment.GetEnvironmentVariable("OPENCODE_MCP_TEST_CONTAINER_IMAGE");
+        if (containerImage is not null)
+        {
+            environment.Add("OPENCODE_MCP_TEST_CONTAINER_IMAGE", containerImage);
+        }
         var launch = new ProductExecutable(_files).Resolve(environment);
         return launch with { Arguments = [.. launch.Arguments, .. arguments] };
+    }
+
+    private static async Task AssertContainerContentRootAsync(OwnedMcpProcess process) =>
+        await Assert.That(process.StandardError).Contains("      Content root path: /opencode-mcp-payload/");
+
+    private async Task AssertPreparedFixtureAsync(ProcessLaunch launch, string configuration, CancellationToken token)
+    {
+        if (launch.Container is not { } container)
+        {
+            await Assert.That(await _files.File.ReadAllTextAsync(_files.Path.Combine(launch.WorkingDirectory, "appsettings.json"), token)).IsEqualTo(configuration);
+            return;
+        }
+        var runner = new SystemNativeProcessRunner();
+        var probe = launch with
+        {
+            Container = container with { Name = "opencode-mcp-test-" + Guid.NewGuid().ToString("N"), Executable = "/bin/sh" },
+            Arguments = ["-c", "pwd; cat appsettings.json"],
+        };
+        var request = await new ContainerLaunchBuilder(_files, runner).BuildAsync(probe,
+            new Dictionary<string, string?>(new System.Diagnostics.ProcessStartInfo().Environment, StringComparer.Ordinal), token);
+        request = request with { Arguments = [.. request.Arguments.Where(static argument => argument != "-i")] };
+        var owner = new NativeContainerOwner(runner, request, probe.Container.Name);
+        Exception? failure = null;
+        try
+        {
+            var result = await runner.RunAsync(request with { Container = owner }, token);
+            await Assert.That(result.ExitCode).IsEqualTo(0);
+            await Assert.That(result.StandardError).IsEmpty();
+            await Assert.That(result.StandardOutput).IsEqualTo("/opencode-mcp-run/work\n" + configuration);
+        }
+        catch (Exception original)
+        {
+            failure = original;
+        }
+        var failures = await owner.CleanupAsync(failure);
+        if (failures.Count != 0)
+        {
+            if (owner.AbsenceProven)
+            {
+                _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+            }
+            throw new AggregateException("Prepared container fixture probe failed; root: " + launch.OwnedRoot, failures);
+        }
     }
 
     private async Task WithHttpAsync(Func<Uri, RecordingHttpHandler, HttpClient, CancellationToken, Task> observation)

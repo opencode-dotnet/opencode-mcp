@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-06
+Date: 2026-11-09
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release
@@ -240,10 +240,29 @@ not a second distributed product. The entry is compiled separately from the solu
 - `inspect --rid <RID> --path <executable-or-directory>` inspects only the supplied image when the
   path is a file. A directory also scans its companion files recursively. The framework-dependent
   negative control uses the file path.
+- `control --rid <RID>` publishes a real framework-dependent apphost under owned temporary storage,
+  including isolated intermediate outputs. It inspects the executable alone and requires exactly
+  the missing Native AOT export refusal. A companion file or a generic inspector failure cannot
+  satisfy the control. The control does not change the native receipt or invalidate its assets.
+- `matrix --manifest <path> --github-output <file>` projects the manifest, in order, into
+  `linux-matrix` and `native-matrix` Actions outputs. Linux entries also carry the builder and
+  runtime images.
+- `prove-linux --rid <RID> --evidence <downloaded-directory>` requires a matching Linux host,
+  source inputs and executed SDK. It clears stale proof, verifies the complete downloaded payload,
+  manifest and archive, and extracts the verified tar before executing anything downloaded. It
+  probes the manifest's already-pulled clean runtime image and runs the prebuilt `ExecutableTests`
+  in that image against the extracted command, and measures the highest numeric `GLIBC_` requirement
+  with `objdump -T`. Failed, absent or malformed measurement is a refusal. Proof is written only
+  after successful tests and owned cleanup. The caller builds the product-test runner in Release
+  and pulls the manifest runtime image before this command; neither preparation runs inside the
+  test step's budget. The proof still inspects the local image before using it.
+- `snapshot --output <directory>` records PID, process name, CPU, working set, age and command line,
+  sorted by CPU descending, in `processes.txt`; its first 25 rows also reach the job log.
 - `validate --receipts <dir> [--manifest <path>]` checks the manifest's complete ordered receipt set,
   common source/SDK/version/dependency identities, successful publish and three test runs, effective
   properties, warning results, manifest runner/image identities, payload manifests, archive
-  identities and archive contents. Each payload must contain the command, `LICENSE`,
+  identities and archive contents, matching actual OS/OS architecture/process architecture, and the
+  platform's structured runtime-independence proof. Each payload must contain the command, `LICENSE`,
   `THIRD-PARTY-NOTICES.md` and `payload.json`; the command digest must equal the verified executable
   digest. Validation does not rerun native inspection. The manifest defaults to
   `packaging/native-manifest.json`. An incomplete local set is a refusal, never six-RID acceptance.
@@ -258,6 +277,24 @@ development evidence; they are not relabeled as clean candidates. Unix payload m
 file-mode seam and the target RID: Windows payloads write no Unix mode; Unix tar entries and
 extracted files preserve their recorded modes. The real adapter guards platform APIs on the actual
 host and refuses Unix-mode writes on Windows.
+
+`RuntimeIndependence` records `Kind`, optional `Tests`, `ImageReference`, `ImageId`, `DotnetAbsent`
+and `Inspection`. Linux requires `linux-clean-container`, successful nonzero container tests, the
+exact manifest runtime reference, a recorded image ID, and `DotnetAbsent=true`. The probe requires
+an exit-127 or exit-1 `command -v dotnet` lookup with empty stdout and stderr, and successful
+same-filesystem whole-root enumeration with no `dotnet`, `libhostfxr.so`, `libhostpolicy.so` or
+`libcoreclr.so`. Linux also requires
+`GlibcFloor` with the measured `Version` and `ToolVersion`. Windows/macOS require
+`matching-host-inspection` and the successful final normalized-payload export inspection;
+their glibc field is null. Receipt validation checks recorded evidence, not an inspection rerun.
+
+The `Native` workflow projects both build matrices from the manifest. Preparation resolves the SDK
+from `global.json`; every later job installs that exact SDK. Linux builds run in the pinned builder
+job containers; Windows/macOS build on matching hosts. Separate Linux host jobs prove the downloaded
+archives. The final validation job runs only after every needed job succeeds, downloads completed
+per-RID evidence into separate directories, and validates the receipt set. Its success and log are
+the fan-in evidence; no preparation file or receipt index is produced. This workflow has read-only
+contents permission, runs on pull requests and manual dispatch, and adds no required check.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
@@ -293,6 +330,34 @@ alone cannot tell a Native AOT image from a framework-dependent apphost and are 
 This Windows/macOS standard is inspection plus matching-host execution, not an SDK-free-machine
 claim. Linux receipts additionally require clean-container runtime-independence evidence and the
 measured glibc floor; builder execution alone does not supply either.
+
+### Container executable-test launches
+
+The container selector applies only when `OPENCODE_MCP_TEST_CONTAINER_IMAGE` is present. It must
+be digest-qualified, requires both native selectors and a compatible Linux image/test host, and
+is consumed before the product starts. Direct launches retain their existing selection and
+environment behavior.
+
+Container launches bind the exact prepared root read-write at `/opencode-mcp-run`, the payload
+read-only at `/opencode-mcp-payload`, and work in `/opencode-mcp-run/work`. They use host networking,
+the measured host UID/GID, no TTY, and no published ports. Isolation directories are created inside
+the owned root and mapped explicitly; ordinary test inputs use explicit environment entries,
+including distinct empty and removed values. The Docker CLI receives only allow-listed launch
+necessities, an owned home and empty `DOCKER_CONFIG`, and a deterministic diagnostic locale. It
+inherits no Docker host/context, credentials, proxies or SDK environment. Docker requests opt out
+of environment inheritance and use the default local socket. Explicit `DOTNET_*`, `LANG`, `LC_ALL`
+and `PATH` test inputs are refused with a diagnostic naming the input; they are never silently
+dropped.
+The Docker CLI process alone may carry the host's `DOTNET_ROOT`; it is never forwarded into the container, and explicit `DOTNET_*` container inputs stay refused.
+
+Cleanup ends and awaits the CLI before forced exact-name removal and absence verification;
+attached reader EOF is never awaited before removal. Absence needs a recognized missing-container
+inspection response and successful all-container listing without the exact name. Unknown errors,
+daemon failure and a still-present container fail cleanup. Independent cleanup phases have fresh
+15-second guards and retain failures in operation/CLI/removal/absence/readers/handles/root order.
+A removal-already-in-progress response proceeds to the same absence proof instead of failing by
+itself.
+Unresolved termination or absence retains and names the owned root. Repeated disposal is idempotent.
 
 ### Windows prerequisites
 

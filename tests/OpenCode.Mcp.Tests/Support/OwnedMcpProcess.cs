@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using OpenCode.Mcp.Tools.Native;
+using OpenCode.Mcp.Tools.Native.Abstractions;
 
 namespace OpenCode.Mcp.Tests.Support;
 
@@ -13,7 +15,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
 {
     private static readonly string[] LaunchVariables = ["PATH", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64",
         "DOTNET_HOST_PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE"];
-    private static readonly string[][] IsolationGroups =
+    internal static readonly string[][] IsolationGroups =
     [
         ["home", "HOME", "USERPROFILE", "DOTNET_CLI_HOME"],
         ["config", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR"],
@@ -22,6 +24,8 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     ];
     private static readonly string[] SensitiveNames = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
     private readonly IFileSystem _files;
+    private readonly INativeProcessRunner _runner;
+    private NativeContainerOwner? _container;
     private readonly Process _process = new();
     private readonly List<string> _errors = [];
     private readonly Lock _gate = new();
@@ -40,10 +44,11 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     private bool _startAttempted;
 
     /// <summary>Receives the filesystem used for the child's isolated run.</summary>
-    public OwnedMcpProcess(IFileSystem fileSystem)
+    public OwnedMcpProcess(IFileSystem fileSystem, INativeProcessRunner? runner = null)
     {
         ArgumentNullException.ThrowIfNull(fileSystem);
         _files = fileSystem;
+        _runner = runner ?? new SystemNativeProcessRunner();
     }
 
     /// <summary>Gets the child's recorded protocol observations.</summary>
@@ -90,22 +95,14 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         _root = root;
         try
         {
+            if (launch.Container is { } container)
+            {
+                var environment = new NativeDockerEnvironment(_files).Create(root, new Dictionary<string, string?>(new ProcessStartInfo().Environment, StringComparer.Ordinal));
+                _container = new NativeContainerOwner(_runner, new NativeProcessRequest("docker", [], launch.WorkingDirectory, environment, TimeSpan.FromSeconds(15)) { InheritEnvironment = false }, container.Name);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             _files.Directory.CreateDirectory(launch.WorkingDirectory);
-            var start = new ProcessStartInfo(launch.FileName)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                WorkingDirectory = launch.WorkingDirectory,
-            };
-            foreach (var argument in launch.Arguments)
-            {
-                start.ArgumentList.Add(argument);
-            }
-            ConfigureEnvironment(start, launch.Environment);
+            var start = await PrepareStartAsync(launch, cancellationToken);
             _process.StartInfo = start;
             _started = _process.Start();
             // The owner observes this task through exit or forced cleanup, independent of startup cancellation.
@@ -113,7 +110,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             _input = new RecordingDuplexStream(_process.StandardInput.BaseStream, Transcript, fromServer: false);
             _output = new RecordingDuplexStream(_process.StandardOutput.BaseStream, Transcript, fromServer: true);
             _stderr = _process.StandardError;
-            _diagnosticRoots = [root, ResolvePhysicalPath(root)];
+            _diagnosticRoots = [root, new PhysicalPathResolver(_files).Resolve(root)];
             _drain = DrainAsync(_stderr);
             cancellationToken.ThrowIfCancellationRequested();
         }
@@ -176,7 +173,128 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     /// <summary>Finishes child termination, readers and handles before removing owned files.</summary>
     public ValueTask DisposeAsync() => new(_dispose ??= CleanupAsync());
 
-    private async Task CleanupAsync()
+    private Task CleanupAsync() => _container is null ? CleanupDirectAsync() : CleanupContainerAsync();
+
+    private async Task<ProcessStartInfo> PrepareStartAsync(ProcessLaunch launch, CancellationToken token)
+    {
+        var start = new ProcessStartInfo(launch.FileName)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = launch.WorkingDirectory,
+        };
+        var arguments = launch.Arguments;
+        if (launch.Container is not null)
+        {
+            var request = await new ContainerLaunchBuilder(_files, _runner).BuildAsync(launch, new Dictionary<string, string?>(start.Environment, StringComparer.Ordinal), token);
+            arguments = request.Arguments;
+            start.Environment.Clear();
+            foreach (var entry in request.Environment)
+            {
+                start.Environment[entry.Key] = entry.Value;
+            }
+        }
+        else
+        {
+            ConfigureEnvironment(start, launch.Environment);
+        }
+        foreach (var argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+        return start;
+    }
+
+    private async Task CleanupContainerAsync()
+    {
+        var failures = new List<Exception>();
+        await AttemptCleanupAsync(async token =>
+        {
+            if (_started)
+            {
+                if (!_process.HasExited)
+                {
+                    _process.Kill(entireProcessTree: true);
+                }
+                await _exit.WaitAsync(token);
+            }
+        }, failures);
+        var terminated = failures.Count == 0;
+        var container = _container ?? throw new InvalidOperationException("No container owner.");
+        failures.AddRange(await container.CleanupAsync());
+        await AttemptCleanupAsync(async token =>
+        {
+            await Task.WhenAll(_drain, DrainOutput()).WaitAsync(token);
+        }, failures);
+        await AttemptCleanupAsync(async token =>
+        {
+            if (_client is not null)
+            {
+                await _client.DisposeAsync().AsTask().WaitAsync(token);
+            }
+        }, failures);
+        await AttemptCleanupAsync(async _ =>
+        {
+            if (_input is not null)
+            {
+                await _input.DisposeAsync();
+            }
+        }, failures);
+        await AttemptCleanupAsync(async _ =>
+        {
+            if (_output is not null)
+            {
+                await _output.DisposeAsync();
+            }
+        }, failures);
+        await AttemptCleanupAsync(_ =>
+        {
+            _stderr?.Dispose();
+            return Task.CompletedTask;
+        }, failures);
+        await AttemptCleanupAsync(_ =>
+        {
+            _process.Dispose();
+            return Task.CompletedTask;
+        }, failures);
+        if (terminated && container.AbsenceProven)
+        {
+            await AttemptCleanupAsync(_ =>
+            {
+                if (_root is not null && _files.Directory.Exists(_root))
+                {
+                    _files.Directory.Delete(_root, recursive: true);
+                }
+                return Task.CompletedTask;
+            }, failures);
+        }
+        else
+        {
+            failures.Add(new InvalidOperationException("Container ownership is unresolved; retained root: " + _root));
+        }
+        if (failures.Count != 0)
+        {
+            throw new AggregateException("Container process cleanup failed.", failures);
+        }
+    }
+
+    private static async Task AttemptCleanupAsync(Func<CancellationToken, Task> cleanup, List<Exception> failures)
+    {
+        using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Each independent cleanup phase owns a fresh guard.
+        try
+        {
+            await cleanup(guard.Token).WaitAsync(guard.Token);
+        }
+        catch (Exception failure)
+        {
+            failures.Add(failure);
+        }
+    }
+
+    private async Task CleanupDirectAsync()
     {
         using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Forced termination and owned reader completion.
         try
@@ -377,23 +495,6 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             redacted = redacted.Replace(root, "<run>", StringComparison.OrdinalIgnoreCase);
         }
         return redacted;
-    }
-
-    private string ResolvePhysicalPath(string path)
-    {
-        var root = _files.Path.GetPathRoot(path);
-        Debug.Assert(root is not null);
-        var resolved = root;
-        foreach (var component in path[root.Length..].Split([_files.Path.DirectorySeparatorChar, _files.Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
-        {
-            resolved = _files.Path.Combine(resolved, component);
-            var target = _files.Directory.ResolveLinkTarget(resolved, returnFinalTarget: true);
-            if (target is not null)
-            {
-                resolved = ResolvePhysicalPath(target.FullName);
-            }
-        }
-        return resolved;
     }
 
     private static bool IsSensitive(string name) => SensitiveNames.Any(part => name.Contains(part, StringComparison.OrdinalIgnoreCase));

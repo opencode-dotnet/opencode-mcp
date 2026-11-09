@@ -26,7 +26,7 @@ internal sealed class NativeReceiptValidator(IFileSystem files, IUnixFileModes m
         return diagnostics.AsReadOnly();
     }
 
-    private async Task<IReadOnlyList<string>> ValidateArtifactsAsync(NativeReceipt receipt, string directory, CancellationToken token)
+    public async Task<IReadOnlyList<string>> ValidateArtifactsAsync(NativeReceipt receipt, string directory, CancellationToken token)
     {
         var diagnostics = new List<string>();
         var store = new NativeEvidenceStore(files);

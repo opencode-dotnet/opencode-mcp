@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO.Abstractions;
 using System.Text.RegularExpressions;
 using NSubstitute;
+using OpenCode.Mcp.Tools.Native.Abstractions;
 using Testably.Abstractions;
 using Testably.Abstractions.Testing;
 using TUnit.Assertions.Enums;
@@ -15,6 +16,153 @@ namespace OpenCode.Mcp.Tests.Support;
 public sealed class OwnedMcpProcessTests
 {
     private readonly RealFileSystem _files = new();
+
+    [Test]
+    public async Task DisposeAsync_Should_Retain_And_Name_The_Root_When_Container_Absence_Is_Unproven()
+    {
+        var launch = ContainerDiagnosticLaunch();
+        var runner = Substitute.For<INativeProcessRunner>();
+        runner.RunAsync(Arg.Any<NativeProcessRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            var request = call.Arg<NativeProcessRequest>();
+            if (request.FileName == "id")
+            {
+                return Task.FromResult(new NativeProcessResult(0, "1001", ""));
+            }
+            return Task.FromResult(request.Arguments[1] == "inspect" ? new NativeProcessResult(1, "", "Cannot connect to the Docker daemon")
+                : new NativeProcessResult(0, "", ""));
+        });
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        AggregateException? startup = null;
+        try
+        {
+            await Assert.That(async () =>
+            {
+                await using var owner = new OwnedMcpProcess(_files, runner);
+                try
+                {
+                    await owner.StartAsync(launch, cancellation.Token);
+                }
+                catch (AggregateException failure)
+                {
+                    startup = failure;
+                }
+            }).ThrowsExactly<AggregateException>();
+            var failure = await Assert.That(startup).IsNotNull();
+            await Assert.That(failure.InnerExceptions[0]).IsTypeOf<OperationCanceledException>();
+            var nested = await Assert.That(failure.InnerExceptions[1]).IsTypeOf<AggregateException>();
+            var cleanup = await Assert.That(nested).IsNotNull();
+            await Assert.That(cleanup.InnerExceptions.Select(static error => error.Message)).IsEquivalentTo(
+                ["Cannot connect to the Docker daemon", "Container ownership is unresolved; retained root: " + launch.OwnedRoot], CollectionOrdering.Matching);
+            await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsTrue();
+        }
+        finally
+        {
+            if (_files.Directory.Exists(launch.OwnedRoot))
+            {
+                _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+            }
+        }
+    }
+
+    [Test]
+    public async Task DisposeAsync_Should_End_The_Live_Cli_Before_Removal_And_Absence()
+    {
+        var managed = Launch();
+        var assembly = managed.Arguments.Single(static argument => argument.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+        var launch = ContainerDiagnosticLaunch() with
+        {
+            FileName = _files.Path.ChangeExtension(assembly, OperatingSystem.IsWindows() ? ".exe" : null),
+            Arguments = [],
+        };
+        _files.Directory.Delete(managed.OwnedRoot, recursive: true);
+        var runner = Substitute.For<INativeProcessRunner>();
+        var phases = new List<string>();
+        await using var owner = new OwnedMcpProcess(_files, runner);
+        runner.RunAsync(Arg.Any<NativeProcessRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            var request = call.Arg<NativeProcessRequest>();
+            if (request.FileName == "id")
+            {
+                return Task.FromResult(new NativeProcessResult(0, "1001", ""));
+            }
+            if (request.Arguments[0] == "rm")
+            {
+                phases.Add(owner.HasExited ? "CLI ended" : "CLI live");
+                phases.Add("rm -f");
+            }
+            else
+            {
+                phases.Add(request.Arguments[1]);
+            }
+            return Task.FromResult(request.Arguments[1] == "inspect"
+                ? new NativeProcessResult(1, "[]", "Error: No such container: opencode-mcp-test-fixture") : new NativeProcessResult(0, "", ""));
+        });
+        using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Real child bootstrap before the cleanup-order oracle.
+        await owner.StartAsync(launch, guard.Token);
+        var client = await owner.ConnectStdioAsync(guard.Token);
+        await Assert.That(client.NegotiatedProtocolVersion).IsEqualTo(ProtocolData.Revision);
+        await Assert.That(owner.HasExited).IsFalse();
+        await owner.DisposeAsync();
+        await Assert.That(phases).IsEquivalentTo(["CLI ended", "rm -f", "inspect", "ls"], CollectionOrdering.Matching);
+        await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsFalse();
+    }
+
+    [Test]
+    [Arguments("cancel")]
+    [Arguments("start failure")]
+    [Arguments("exit")]
+    public async Task DisposeAsync_Should_Remove_The_Container_On_Every_Owned_Exit_Path(string path)
+    {
+        var launch = DiagnosticLaunch("exit /b 0", "exit 0") with
+        {
+            Container = new ContainerLaunch("opencode-mcp-test-fixture", "registry.test/runtime@sha256:" + new string('b', 64), _files.Path.GetTempPath(), "/opencode-mcp-payload/opencode-mcp"),
+        };
+        if (path == "start failure")
+        {
+            launch = launch with { FileName = _files.Path.Combine(launch.OwnedRoot, "missing-child.exe") };
+        }
+        var runner = Substitute.For<INativeProcessRunner>();
+        var calls = new List<string>();
+        var cleanupTokens = new List<CancellationToken>();
+        runner.RunAsync(Arg.Any<NativeProcessRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            var request = call.Arg<NativeProcessRequest>();
+            if (request.FileName == "id")
+            {
+                return Task.FromResult(new NativeProcessResult(0, "1001", ""));
+            }
+            calls.Add(string.Join(' ', request.Arguments));
+            cleanupTokens.Add(call.Arg<CancellationToken>());
+            return Task.FromResult(request.Arguments[1] == "inspect"
+                ? new NativeProcessResult(1, "[]", "Error: No such container: opencode-mcp-test-fixture") : new NativeProcessResult(0, "", ""));
+        });
+        await using var owner = new OwnedMcpProcess(_files, runner);
+        using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Diagnostic CLI exit before the ownership oracle.
+        if (path == "cancel")
+        {
+            await guard.CancelAsync();
+            await Assert.That(() => owner.StartAsync(launch, guard.Token)).ThrowsExactly<OperationCanceledException>();
+        }
+        else if (path == "start failure")
+        {
+            await Assert.That(() => owner.StartAsync(launch, guard.Token)).ThrowsExactly<Win32Exception>();
+        }
+        else
+        {
+            await owner.StartAsync(launch, guard.Token);
+            await owner.CloseInputAsync();
+            await owner.WaitForExitAsync(guard.Token);
+        }
+        await owner.DisposeAsync();
+        await owner.DisposeAsync();
+        await Assert.That(calls).IsEquivalentTo(["rm -f opencode-mcp-test-fixture", "container inspect opencode-mcp-test-fixture", "container ls --all --no-trunc --format {{.Names}}"], CollectionOrdering.Matching);
+        await Assert.That(cleanupTokens.Select(static token => token.IsCancellationRequested)).IsEquivalentTo([false, false, false], CollectionOrdering.Matching);
+        await Assert.That(cleanupTokens.Select(static token => token.CanBeCanceled)).IsEquivalentTo([true, true, true], CollectionOrdering.Matching);
+        await Assert.That(cleanupTokens[0]).IsNotEqualTo(cleanupTokens[1]);
+        await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsFalse();
+    }
 
     [Test]
     public async Task StartAsync_Should_Refuse_An_Unowned_Root_Without_Touching_A_Sibling_Working_Directory()
@@ -392,6 +540,11 @@ public sealed class OwnedMcpProcessTests
     }
 
     private ProcessLaunch Launch() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal));
+
+    private ProcessLaunch ContainerDiagnosticLaunch() => DiagnosticLaunch("exit /b 0", "exit 0") with
+    {
+        Container = new ContainerLaunch("opencode-mcp-test-fixture", "registry.test/runtime@sha256:" + new string('b', 64), _files.Path.GetTempPath(), "/opencode-mcp-payload/opencode-mcp"),
+    };
 
     private async Task CreateDirectoryLinkAsync(string link, string target)
     {

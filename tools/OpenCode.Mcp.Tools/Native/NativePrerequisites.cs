@@ -30,7 +30,7 @@ internal sealed class NativePrerequisites(IFileSystem files, NativeProcesses pro
             throw new InvalidOperationException("Missing prerequisite: " + component);
         }
         var tools = files.Path.Combine(installation, "VC", "Tools", "MSVC");
-        var inspectorPath = files.Directory.EnumerateDirectories(tools).OrderByDescending(path => Version.Parse(files.Path.GetFileName(path)))
+        var inspectorPath = VersionDirectories(tools)
             .Select(path => files.Path.Combine(path, "bin", "Host" + architecture, architecture, "dumpbin.exe")).FirstOrDefault(files.File.Exists)
             ?? throw new InvalidOperationException("Missing prerequisite: dumpbin.exe for " + rid);
         environment["PATH"] = installer + files.Path.PathSeparator + host.Environment.GetValueOrDefault("PATH");
@@ -38,9 +38,15 @@ internal sealed class NativePrerequisites(IFileSystem files, NativeProcesses pro
         var linker = files.Path.Combine(files.Path.GetDirectoryName(inspectorPath) ?? throw new InvalidOperationException("Missing MSVC directory."), "link.exe");
         var linkerDetails = await processes.RequireAsync(linker, ["/dump", "/headers", linker], environment, token).ConfigureAwait(false);
         var sdkRoot = files.Path.Combine(programFiles, "Windows Kits", "10", "Lib");
-        var sdk = (files.Directory.Exists(sdkRoot) ? files.Directory.EnumerateDirectories(sdkRoot).OrderByDescending(path => Version.Parse(files.Path.GetFileName(path)))
+        var sdk = (files.Directory.Exists(sdkRoot) ? VersionDirectories(sdkRoot)
             .FirstOrDefault(path => files.File.Exists(files.Path.Combine(path, "um", architecture, "kernel32.lib"))) : null)
             ?? throw new InvalidOperationException("Missing prerequisite: Windows SDK libraries for " + rid + ".");
         return new NativeToolchain(inspectorPath, ["/exports"], environment, installation + "\n" + inspectorPath + "\n" + details + "\n" + linkerDetails + "\nAvailable Windows SDK: " + sdk);
     }
+
+    private IEnumerable<string> VersionDirectories(string root) => files.Directory.EnumerateDirectories(root)
+        .Select(path => new { Path = path, Version = Version.TryParse(files.Path.GetFileName(path), out var version) ? version : null })
+        .Where(static directory => directory.Version is not null)
+        .OrderByDescending(static directory => directory.Version)
+        .Select(static directory => directory.Path);
 }

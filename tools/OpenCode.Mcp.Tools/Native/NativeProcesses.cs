@@ -7,7 +7,8 @@ internal sealed class NativeProcesses(INativeProcessRunner runner, string root)
 {
     public Task<NativeProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string?> environment, CancellationToken token) =>
-        runner.RunAsync(new NativeProcessRequest(fileName, arguments, root, environment, TimeSpan.FromMinutes(35)), token);
+        runner.RunAsync(new NativeProcessRequest(fileName, arguments, root, environment,
+            TimeSpan.FromMinutes(fileName == "dotnet" && arguments.Count != 0 && arguments[0] == "test" ? 30 : 35)), token);
 
     public async Task<string> RequireAsync(string fileName, IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string?> environment, CancellationToken token)

@@ -16,13 +16,14 @@ internal static class NativeReceiptPolicy
             {
                 diagnostics.Add("Duplicate receipt: " + rid);
             }
-            else if (new NativeRid(rid).IsLinux && string.IsNullOrEmpty(matching[0].RuntimeIndependence))
+            else if (new NativeRid(rid).IsLinux && matching[0].RuntimeIndependence is null)
             {
                 diagnostics.Add("Missing Linux runtime-independence proof: " + rid);
             }
             if (matching.Length == 1)
             {
                 diagnostics.AddRange(EntryDiagnostics(matching[0], manifest));
+                diagnostics.AddRange(ProofDiagnostics(matching[0], manifest));
             }
         }
         diagnostics.AddRange(receipts.Select(static receipt => receipt.Rid).Except(manifest.Runtimes.Select(static runtime => runtime.Rid), StringComparer.Ordinal)
@@ -35,7 +36,7 @@ internal static class NativeReceiptPolicy
         return diagnostics.AsReadOnly();
     }
 
-    private static string[] EntryDiagnostics(NativeReceipt receipt, NativeManifest manifest)
+    public static string[] EntryDiagnostics(NativeReceipt receipt, NativeManifest manifest)
     {
         var diagnostics = NativePublishPolicy.PropertyDiagnostics(receipt.Properties).Select(error => receipt.Rid + ": " + error).ToList();
         var rid = new NativeRid(receipt.Rid);
@@ -92,7 +93,65 @@ internal static class NativeReceiptPolicy
         {
             diagnostics.Add("Missing archive identity: " + receipt.Rid);
         }
+        diagnostics.AddRange(NativePublishPolicy.HostDiagnostics(receipt.Rid, receipt.Os, receipt.OsArchitecture, receipt.ProcessArchitecture).Select(error => receipt.Rid + ": " + error));
         return [.. diagnostics];
+    }
+
+    private static IEnumerable<string> ProofDiagnostics(NativeReceipt receipt, NativeManifest manifest)
+    {
+        var rid = new NativeRid(receipt.Rid);
+        var proof = receipt.RuntimeIndependence;
+        if (proof is null)
+        {
+            if (!rid.IsLinux)
+            {
+                yield return "Missing matching-host runtime-independence proof: " + receipt.Rid;
+            }
+        }
+        else
+        {
+            var kind = rid.IsLinux ? "linux-clean-container" : "matching-host-inspection";
+            if (proof.Kind != kind)
+            {
+                yield return receipt.Rid + ": RuntimeIndependence.Kind must be " + kind + ".";
+            }
+            if (rid.IsLinux)
+            {
+                if (proof.Tests?.Succeeded != true)
+                {
+                    yield return receipt.Rid + ": RuntimeIndependence.Tests must be successful and nonzero.";
+                }
+                if (proof.ImageReference != manifest.RuntimeImage)
+                {
+                    yield return receipt.Rid + ": RuntimeIndependence.ImageReference differs from manifest.";
+                }
+                if (string.IsNullOrWhiteSpace(proof.ImageId))
+                {
+                    yield return receipt.Rid + ": RuntimeIndependence.ImageId is required.";
+                }
+                if (proof.DotnetAbsent != true)
+                {
+                    yield return receipt.Rid + ": RuntimeIndependence.DotnetAbsent must be true.";
+                }
+            }
+            else if (NativeInspectionPolicy.Diagnostics([], receipt.Rid, proof.Inspection ?? "").Count != 0)
+            {
+                yield return receipt.Rid + ": RuntimeIndependence.Inspection must contain the native AOT export.";
+            }
+        }
+        if (rid.IsLinux && receipt.GlibcFloor is null)
+        {
+            yield return receipt.Rid + ": GlibcFloor is required.";
+        }
+        if (rid.IsLinux && receipt.GlibcFloor is { } floor && (!Version.TryParse(floor.Version, out _)
+            || !floor.Version.All(static character => char.IsAsciiDigit(character) || character == '.') || string.IsNullOrWhiteSpace(floor.ToolVersion)))
+        {
+            yield return receipt.Rid + ": GlibcFloor requires a numeric Version and ToolVersion.";
+        }
+        if (!rid.IsLinux && receipt.GlibcFloor is not null)
+        {
+            yield return receipt.Rid + ": GlibcFloor must be null.";
+        }
     }
 
     private static void CheckCommon(IEnumerable<string> values, string name, List<string> diagnostics)

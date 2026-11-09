@@ -30,7 +30,7 @@ internal sealed class NativeStager(IFileSystem files, INativeProcessRunner runne
         {
             throw new InvalidOperationException("Source or common build inputs changed after verification.");
         }
-        receipt = receipt with { Payload = [], NormalizedTests = null, ExtractedTests = null, Archive = null, ArchiveSha256 = null };
+        receipt = receipt with { Payload = [], NormalizedTests = null, ExtractedTests = null, Archive = null, ArchiveSha256 = null, RuntimeIndependence = null, GlibcFloor = null };
         await store.WriteAsync(receiptPath, receipt, token).ConfigureAwait(false);
         var payload = await new NativePayloadNormalizer(files, modes).NormalizeAsync(request.Output, receipt, token).ConfigureAwait(false);
         await files.File.WriteAllBytesAsync(files.Path.Combine(payload, "LICENSE"), await files.File.ReadAllBytesAsync(files.Path.Combine(request.Root, "LICENSE"), token).ConfigureAwait(false), token).ConfigureAwait(false);
@@ -49,6 +49,7 @@ internal sealed class NativeStager(IFileSystem files, INativeProcessRunner runne
         var manifest = await inventory.CaptureAsync(payload, token).ConfigureAwait(false);
         var manifestPath = files.Path.Combine(request.Output, "payload-manifest.json");
         await store.WriteAsync(manifestPath, manifest, token).ConfigureAwait(false);
+        var finalInspection = await InspectPayloadAsync(request, processes, payload, token).ConfigureAwait(false);
         var tests = new NativeExecutableTests(files, processes, rid);
         var resultRoot = files.Path.Combine(request.Root, "artifacts", "test-results", "native", receipt.Rid);
         var normalizedTests = await tests.RunAsync(normalized, files.Path.Combine(resultRoot, "normalized"), token).ConfigureAwait(false);
@@ -79,9 +80,21 @@ internal sealed class NativeStager(IFileSystem files, INativeProcessRunner runne
             ExtractedTests = extractedTests,
             Archive = files.Path.GetFileName(archivePath),
             ArchiveSha256 = await store.DigestAsync(archivePath, token).ConfigureAwait(false),
-            RuntimeIndependence = rid.IsLinux ? null : "Matching-host execution and native AOT export inspection; not an SDK-free machine.",
+            RuntimeIndependence = rid.IsLinux ? null : new NativeRuntimeIndependence("matching-host-inspection", Inspection: finalInspection),
         };
         await store.WriteAsync(receiptPath, receipt, token).ConfigureAwait(false);
         return receipt;
+    }
+
+    private async Task<string?> InspectPayloadAsync(NativeBuildRequest request, NativeProcesses processes, string payload, CancellationToken token)
+    {
+        if (new NativeRid(request.Rid).IsLinux)
+        {
+            return null;
+        }
+        var toolchain = await new NativePrerequisites(files, processes).CheckAsync(request.Rid, request.Host, token).ConfigureAwait(false);
+        var inspection = await new NativeInspector(files, processes).InspectAsync(request.Rid, payload, toolchain, token).ConfigureAwait(false);
+        await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "payload-inspection.log"), inspection, token).ConfigureAwait(false);
+        return inspection;
     }
 }

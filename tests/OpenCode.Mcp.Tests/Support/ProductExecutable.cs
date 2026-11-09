@@ -1,18 +1,20 @@
 using System.IO.Abstractions;
 using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 
 namespace OpenCode.Mcp.Tests.Support;
 
 /// <summary>Selects the exact product artifact used by executable tests.</summary>
-internal sealed class ProductExecutable
+internal sealed partial class ProductExecutable
 {
     private readonly IFileSystem _files;
     private readonly string _os;
     private readonly Architecture _osArchitecture;
+    private readonly Architecture _processArchitecture;
 
     /// <summary>Receives the filesystem used to resolve product artifacts.</summary>
-    public ProductExecutable(IFileSystem fileSystem, string? os = null, Architecture? osArchitecture = null)
+    public ProductExecutable(IFileSystem fileSystem, string? os = null, Architecture? osArchitecture = null, Architecture? processArchitecture = null)
     {
         ArgumentNullException.ThrowIfNull(fileSystem);
         _files = fileSystem;
@@ -22,6 +24,7 @@ internal sealed class ProductExecutable
             _os = "linux";
         }
         _osArchitecture = osArchitecture ?? RuntimeInformation.OSArchitecture;
+        _processArchitecture = processArchitecture ?? RuntimeInformation.ProcessArchitecture;
     }
 
     /// <summary>Resolves managed output or an explicit executable without fallback on invalid input.</summary>
@@ -29,6 +32,11 @@ internal sealed class ProductExecutable
     {
         ArgumentNullException.ThrowIfNull(environment);
         var inputs = new Dictionary<string, string?>(environment, StringComparer.OrdinalIgnoreCase);
+        var containerSelected = inputs.Remove("OPENCODE_MCP_TEST_CONTAINER_IMAGE", out var image);
+        if (containerSelected)
+        {
+            ValidateContainerInputs(image, inputs);
+        }
         var hasNativeSelector = inputs.Remove("OPENCODE_MCP_TEST_EXPECT_NATIVE", out var native);
         var expectNative = string.Equals(native, "true", StringComparison.OrdinalIgnoreCase);
         if (hasNativeSelector && !expectNative && !string.Equals(native, "false", StringComparison.OrdinalIgnoreCase))
@@ -66,11 +74,47 @@ internal sealed class ProductExecutable
             arguments = [ResolveManaged()];
         }
 
+        var container = containerSelected ? SelectContainer(image, fileName) : null;
         var root = _files.Path.Combine(_files.Path.GetTempPath(), "opencode-mcp-" + Guid.NewGuid().ToString("N"));
         var work = _files.Path.Combine(root, "work");
         _files.Directory.CreateDirectory(work);
-        return new ProcessLaunch { FileName = fileName, Arguments = arguments, Environment = inputs, OwnedRoot = root, WorkingDirectory = work };
+        return new ProcessLaunch { FileName = container is null ? fileName : "docker", Arguments = arguments, Environment = inputs, OwnedRoot = root, WorkingDirectory = work, Container = container };
     }
+
+    private ContainerLaunch SelectContainer(string? image, string executable)
+    {
+        if (_os != "linux" || _osArchitecture != _processArchitecture)
+        {
+            throw new InvalidOperationException("Container execution requires a matching Linux test host.");
+        }
+        return new ContainerLaunch("opencode-mcp-test-" + Guid.NewGuid().ToString("N"), image ?? throw new InvalidOperationException("Missing container image."),
+            _files.Path.GetDirectoryName(executable) ?? throw new InvalidOperationException("Payload needs a parent directory."),
+            "/opencode-mcp-payload/" + _files.Path.GetFileName(executable));
+    }
+
+    private static void ValidateContainerInputs(string? image, Dictionary<string, string?> inputs)
+    {
+        var errors = new List<string>();
+        if (image is null || !DigestImage().IsMatch(image))
+        {
+            errors.Add("OPENCODE_MCP_TEST_CONTAINER_IMAGE must be digest-qualified (sha256).");
+        }
+        if (!inputs.TryGetValue("OPENCODE_MCP_TEST_EXPECT_NATIVE", out var native) || !string.Equals(native, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            errors.Add("Container execution requires OPENCODE_MCP_TEST_EXPECT_NATIVE=true.");
+        }
+        if (!inputs.ContainsKey("OPENCODE_MCP_TEST_EXECUTABLE"))
+        {
+            errors.Add("Container execution requires OPENCODE_MCP_TEST_EXECUTABLE.");
+        }
+        if (errors.Count != 0)
+        {
+            throw new InvalidOperationException(string.Join('\n', errors));
+        }
+    }
+
+    [GeneratedRegex(@"\A[^\s@]+@sha256:[a-fA-F0-9]{64}\z", RegexOptions.None, Timeout.Infinite)]
+    private static partial Regex DigestImage();
 
     private string ReadNativeIdentity(string path)
     {

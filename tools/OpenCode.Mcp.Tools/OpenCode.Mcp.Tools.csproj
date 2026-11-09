@@ -4,6 +4,8 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="OpenCode.Mcp.Tools.Tests" />
+    <InternalsVisibleTo Include="OpenCode.Mcp.Tests" />
+    <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Testably.Abstractions" />

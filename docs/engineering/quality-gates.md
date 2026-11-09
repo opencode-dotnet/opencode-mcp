@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-06
+Date: 2026-11-09
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -189,31 +189,25 @@ On an otherwise idle matching host, after the managed local check, run:
 
 ```text
 dotnet run tools/native.cs -- verify --rid win-x64
+dotnet run tools/native.cs -- control --rid win-x64
 dotnet run tools/native.cs -- stage --rid win-x64 --publish-directory artifacts/native/win-x64/publish
 dotnet run tools/native.cs -- validate --receipts artifacts/native
 ```
 
 Use the manifest RID matching the actual OS, OS architecture, process and SDK architecture. The
 Windows prerequisites are in the architecture canon. No prerequisite is installed by the tool.
-`verify` and `stage` must exit zero. The last command must exit 2 for a local one-RID set, naming
+`verify`, `control` and `stage` must exit zero. The last command must exit 2 for a local one-RID set, naming
 the other five missing receipts in manifest order; only a complete hosted set may exit zero.
 `--output <dir>` selects verify's owned evidence directory; stage uses the publish directory's
-parent. Keep the framework-dependent control outside `artifacts/native/`:
-
-```text
-dotnet publish src/OpenCode.Mcp/OpenCode.Mcp.csproj -c Release -r win-x64 --self-contained false -p:PublishAot=false -o "<owned-control-directory>" -nodeReuse:false -p:UseSharedCompilation=false
-dotnet run tools/native.cs -- inspect --rid win-x64 --path "<owned-control-directory>/OpenCode.Mcp.exe"
-```
-
-Choose a new owned control directory under system temp for both commands.
-
-Require publish exit zero and inspection exit 2 naming the missing `DotNetRuntimeDebugHeader`
-export, then remove only the owned control directory. Inspect the executable path, not just the
-directory: companion-file detection alone does not prove the image check rejects an apphost.
+parent. `control` owns its temporary publication and cleanup. Its successful result requires
+publish exit zero and exactly the missing Native AOT export refusal for the executable file,
+independent of companion-file detection.
 
 The tool supplies `OPENCODE_MCP_TEST_EXECUTABLE` and `OPENCODE_MCP_TEST_EXPECT_NATIVE=true` to the
 existing owning project's `ExecutableTests`; the resolver strips both from each product child's
-environment and never substitutes managed output. Each of the published, normalized and extracted
+environment and never substitutes managed output. Linux container execution additionally supplies
+`OPENCODE_MCP_TEST_CONTAINER_IMAGE` with the exact manifest runtime image; the resolver strips all
+three selectors. Each of the published, normalized and extracted
 runs uses `--no-build --treenode-filter "/*/*/ExecutableTests/*" --minimum-expected-tests 1`, TRX
 under `artifacts/test-results/native/<RID>/`, `TUNIT_DISABLE_ARTIFACT_UPLOAD=true`, and the session
 timeout/hang-dump options below. Test-runner preparation and native compilation are sequential.
@@ -224,6 +218,24 @@ queue entry requires all six same-run manifest receipts, matching common build i
 two Linux runtime-independence proofs. It is separate from `CI result`; it adds no required check
 or dependency to that job. Local Windows evidence proves neither hosted execution nor Linux/macOS
 support, package acquisition or installation.
+
+The `Native` workflow uses prepare → Linux builder/Windows/macOS build jobs → Linux host proof
+jobs → validation. Job guards are 30 minutes for preparation and validation, 150 minutes for builds,
+and 90 minutes for Linux proof. Every step invoking tests has a 35-minute guard; tool-owned test
+processes have a 30-minute outer guard around the 25-minute session bound. Listing steps have a
+five-minute guard and do not rerun tests. All test invocations disable TUnit's automatic artifact
+upload and use unique phase result directories. Every job owns `DOTNET_INSTALL_DIR` under
+`runner.temp`; Windows sets `TEMP` and `TMP` there before SDK setup. Linux proof runs on hosts,
+not in the builder container, and executes downloaded binaries only from the verified extracted tar.
+
+Evidence, test results, symbols and process snapshots have unique per-job/per-RID artifact names
+and seven-day retention. Completed receipts are uploaded only after successful proof; validation
+has no `always()` override and starts only when all needed jobs succeed. Both workflows prebuild
+the file-based entry in a normal step before tests. Process snapshots run with `always()` and
+`--no-build` through the shared `snapshot` subcommand in both workflows. Upload errors remain
+blocking. The validation success and its log establish the complete-set result; no index file or
+separate job-result input stands in for that dependency graph. The native workflow must be green
+at the pull request's head before queue entry, including hosted parsing and all six RIDs.
 
 ### Linux builder verification
 
