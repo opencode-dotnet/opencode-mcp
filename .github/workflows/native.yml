@@ -1,0 +1,344 @@
+name: Native
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  DOTNET_NOLOGO: "true"
+  TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
+    outputs:
+      sdk-version: ${{ steps.sdk.outputs.dotnet-version }}
+      linux-matrix: ${{ steps.matrix.outputs.linux-matrix }}
+      native-matrix: ${{ steps.matrix.outputs.native-matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Setup .NET SDK
+        id: sdk
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Project native matrices
+        id: matrix
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- matrix --manifest packaging/native-manifest.json --github-output $env:GITHUB_OUTPUT
+          exit $LASTEXITCODE
+
+  build-linux:
+    name: Build (${{ matrix.rid }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.builderImage }}
+    timeout-minutes: 150
+    env:
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.linux-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+          architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - name: Verify published native executable
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- verify --rid ${{ matrix.rid }}
+          exit $LASTEXITCODE
+      - name: Verify framework-dependent control
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- control --rid ${{ matrix.rid }}
+          exit $LASTEXITCODE
+      - name: Stage and verify archive
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- stage --rid ${{ matrix.rid }} --publish-directory artifacts/native/${{ matrix.rid }}/publish
+          exit $LASTEXITCODE
+      - name: List executable tests after failure
+        if: ${{ failure() && !cancelled() && hashFiles(format('artifacts/test-results/native/{0}/**/execution.log', matrix.rid)) != '' }}
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/ExecutableTests/*" --list-tests
+          exit $LASTEXITCODE
+      - name: Record processes after tests
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-process-snapshot-build-linux-${{ matrix.rid }}
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-build-linux-${{ matrix.rid }}
+          path: artifacts/test-results/native/${{ matrix.rid }}/**
+          retention-days: 7
+      - name: Upload Linux build evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-build-${{ matrix.rid }}
+          path: |
+            artifacts/native/${{ matrix.rid }}/**
+            !artifacts/native/${{ matrix.rid }}/publish/**
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload native symbols
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-symbols-${{ matrix.rid }}
+          path: artifacts/native/${{ matrix.rid }}/publish/**/*.dbg
+          retention-days: 7
+
+  build-native:
+    name: Build (${{ matrix.rid }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    env:
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.native-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+          architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - name: Verify published native executable
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- verify --rid ${{ matrix.rid }}
+          exit $LASTEXITCODE
+      - name: Verify framework-dependent control
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- control --rid ${{ matrix.rid }}
+          exit $LASTEXITCODE
+      - name: Stage and verify archive
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- stage --rid ${{ matrix.rid }} --publish-directory artifacts/native/${{ matrix.rid }}/publish
+          exit $LASTEXITCODE
+      - name: List executable tests after failure
+        if: ${{ failure() && !cancelled() && hashFiles(format('artifacts/test-results/native/{0}/**/execution.log', matrix.rid)) != '' }}
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/ExecutableTests/*" --list-tests
+          exit $LASTEXITCODE
+      - name: Record processes after tests
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-process-snapshot-build-native-${{ matrix.rid }}
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-build-native-${{ matrix.rid }}
+          path: artifacts/test-results/native/${{ matrix.rid }}/**
+          retention-days: 7
+      - name: Upload completed native evidence
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-complete-${{ matrix.rid }}
+          path: |
+            artifacts/native/${{ matrix.rid }}/**
+            !artifacts/native/${{ matrix.rid }}/publish/**
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload native failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-failure-build-native-${{ matrix.rid }}
+          path: |
+            artifacts/native/${{ matrix.rid }}/**
+            !artifacts/native/${{ matrix.rid }}/publish/**
+          retention-days: 7
+      - name: Upload native symbols
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-symbols-${{ matrix.rid }}
+          path: |
+            artifacts/native/${{ matrix.rid }}/publish/**/*.pdb
+            artifacts/native/${{ matrix.rid }}/publish/**/*.dSYM/**
+          retention-days: 7
+
+  prove-linux:
+    name: Prove (${{ matrix.rid }})
+    needs: [prepare, build-linux]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.linux-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+          architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - name: Download matching Linux build
+        uses: actions/download-artifact@v8
+        with:
+          name: native-build-${{ matrix.rid }}
+          path: artifacts/native/${{ matrix.rid }}
+      - name: Prove Linux runtime independence
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- prove-linux --rid ${{ matrix.rid }} --evidence artifacts/native/${{ matrix.rid }}
+          exit $LASTEXITCODE
+      - name: List executable tests after failure
+        if: ${{ failure() && !cancelled() && hashFiles(format('artifacts/test-results/native/{0}/**/execution.log', matrix.rid)) != '' }}
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/ExecutableTests/*" --list-tests
+          exit $LASTEXITCODE
+      - name: Record processes after tests
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-process-snapshot-prove-linux-${{ matrix.rid }}
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-test-results-prove-linux-${{ matrix.rid }}
+          path: artifacts/test-results/native/${{ matrix.rid }}/**
+          retention-days: 7
+      - name: Upload completed Linux evidence
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-complete-${{ matrix.rid }}
+          path: artifacts/native/${{ matrix.rid }}/**
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload Linux failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-failure-prove-linux-${{ matrix.rid }}
+          path: artifacts/native/${{ matrix.rid }}/**
+          retention-days: 7
+
+  validate:
+    name: Validate native receipts
+    needs: [prepare, build-linux, build-native, prove-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+      - name: Download completed native evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-complete-*
+          path: artifacts/native-receipts
+          merge-multiple: false
+      - name: Validate complete native receipt set
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- validate --receipts artifacts/native-receipts
+          exit $LASTEXITCODE

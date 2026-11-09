@@ -31,7 +31,8 @@ internal sealed record NativeReceipt
     public IReadOnlyList<DependencyNotice> Dependencies { get; init; } = [];
     public string? BuilderImage { get; init; }
     public string? RuntimeImage { get; init; }
-    public string? RuntimeIndependence { get; init; }
+    public NativeRuntimeIndependence? RuntimeIndependence { get; init; }
+    public NativeGlibcFloor? GlibcFloor { get; init; }
     public string? PayloadDirectory { get; init; }
     public string? PayloadManifest { get; init; }
     public IReadOnlyList<PayloadFile> Payload { get; init; } = [];

@@ -17,14 +17,7 @@ internal sealed class SystemNativeProcessRunner : INativeProcessRunner
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        foreach (var argument in request.Arguments)
-        {
-            start.ArgumentList.Add(argument);
-        }
-        foreach (var entry in request.Environment)
-        {
-            start.Environment[entry.Key] = entry.Value;
-        }
+        ConfigureStart(start, request);
         using var process = new Process { StartInfo = start };
         if (!process.Start())
         {
@@ -39,7 +32,14 @@ internal sealed class SystemNativeProcessRunner : INativeProcessRunner
         Exception? failure = null;
         try
         {
-            await Task.WhenAll(exited, stdout, stderr).WaitAsync(bound.Token).ConfigureAwait(false);
+            if (request.Container is null)
+            {
+                await Task.WhenAll(exited, stdout, stderr).WaitAsync(bound.Token).ConfigureAwait(false);
+            }
+            else
+            {
+                await exited.WaitAsync(bound.Token).ConfigureAwait(false);
+            }
         }
         catch (Exception error)
         {
@@ -51,17 +51,51 @@ internal sealed class SystemNativeProcessRunner : INativeProcessRunner
             {
                 process.Kill(entireProcessTree: true);
             }
-            await Task.WhenAll(exited, stdout, stderr).WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None).ConfigureAwait(false);
+            var completion = request.Container is null ? Task.WhenAll(exited, stdout, stderr) : exited;
+            await completion.WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception cleanup)
         {
-            IEnumerable<Exception> failures = failure is null ? [cleanup] : [failure, cleanup];
-            throw new AggregateException("Native command cleanup failed.", failures);
+            if (request.Container is null)
+            {
+                IEnumerable<Exception> failures = failure is null ? [cleanup] : [failure, cleanup];
+                throw new AggregateException("Native command cleanup failed.", failures);
+            }
+            failure = failure is null ? cleanup : new AggregateException(failure, cleanup);
+        }
+        if (request.Container is { } container)
+        {
+            var failures = await container.CleanupAsync(failure).ConfigureAwait(false);
+            failure = failures.Count == 0 ? null : new AggregateException("Native container command failed.", failures);
+            try
+            {
+                await Task.WhenAll(stdout, stderr).WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception cleanup)
+            {
+                failure = failure is null ? cleanup : new AggregateException(failure, cleanup);
+            }
         }
         if (failure is not null)
         {
             ExceptionDispatchInfo.Throw(failure);
         }
         return new NativeProcessResult(process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
+    }
+
+    private static void ConfigureStart(ProcessStartInfo start, NativeProcessRequest request)
+    {
+        foreach (var argument in request.Arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+        if (!request.InheritEnvironment)
+        {
+            start.Environment.Clear();
+        }
+        foreach (var entry in request.Environment)
+        {
+            start.Environment[entry.Key] = entry.Value;
+        }
     }
 }

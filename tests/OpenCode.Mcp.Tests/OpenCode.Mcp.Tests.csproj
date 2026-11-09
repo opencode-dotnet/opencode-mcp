@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/OpenCode.Mcp/OpenCode.Mcp.csproj" />
+    <ProjectReference Include="../../tools/OpenCode.Mcp.Tools/OpenCode.Mcp.Tools.csproj" />
     <ProjectReference Include="..\..\src\OpenCode.Mcp.ServiceDefaults\OpenCode.Mcp.ServiceDefaults.csproj" />
   </ItemGroup>
 

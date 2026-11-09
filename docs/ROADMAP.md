@@ -1,6 +1,6 @@
 # Roadmap
 
-Date: 2026-11-06
+Date: 2026-11-09
 
 Operational state: what exists today, what is queued next, what is still open, and what is known to
 be incomplete. This file is a summary and shrinks as work lands. `../AGENTS.md` routes to the
@@ -12,7 +12,8 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 **Pre-release bootstrap. Nothing is installable yet, and no package or binary is published.**
 
 The managed server, transports, connectivity probe and one-resource Aspire AppHost are implemented.
-Native tooling and the public Linux builder manifest are implemented. Hosted acceptance remains
+Native tooling, container proof orchestration, the native workflow and the public Linux builder
+manifest are implemented. Hosted acceptance remains
 unverified here; verification evidence belongs in pull requests.
 
 Until the merge queue and `master` protection are active, feature branches merge with the maintainer's approval.
@@ -33,8 +34,9 @@ Until the merge queue and `master` protection are active, feature branches merge
    guides and HangDump references are written. The first green hosted run, then merge-queue and
    branch-protection activation on `master`, remain pending (`engineering/workflow.md`).
 7. **Native AOT** - the builder, manifest, file-based tool, contract tests, server-only properties,
-   native selection and archive validation are implemented. The native workflow, six hosted
-   receipts and Linux clean-container runtime-independence proofs remain pending.
+   native selection, container ownership, structured runtime proofs, glibc measurement, negative
+   control, archive validation and the manifest-driven native workflow are implemented. Six hosted
+   receipts and real Linux clean-container acceptance remain pending.
 8. **Packages** - the NuGet MCP tool package set built from those payloads, a complete local feed,
    and the first `CHANGELOG.md` entry.
 9. **Acquisition** - isolated acquisition and packaged startup on each RID, then a package

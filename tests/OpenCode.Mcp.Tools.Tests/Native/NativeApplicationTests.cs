@@ -10,6 +10,47 @@ public sealed class NativeApplicationTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task RunAsync_Should_Refuse_A_Forbidden_File_In_The_Final_Payload(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var manifest = await new NativeManifestFixture().WriteAsync(scenario.Files, token);
+        scenario.Files.Directory.CreateDirectory(scenario.Files.Path.Combine(request.Root, "packaging"));
+        scenario.Files.File.Copy(manifest, scenario.Files.Path.Combine(request.Root, "packaging", "native-manifest.json"));
+        var receipt = await new NativeVerifier(scenario.Files, scenario.Runner).VerifyAsync(request, token);
+        await scenario.AddStagingInputsAsync(token);
+        await scenario.Files.File.WriteAllTextAsync(scenario.Files.Path.Combine(receipt.PublishDirectory, "unexpected.deps.json"), "forbidden runtime metadata", token);
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(scenario.Files, scenario.Runner, new FixtureHostReader(request.Host with { WorkingDirectory = request.Root }), scenario.Modes, output, errors);
+        var result = await application.RunAsync(["stage", "--rid", "win-x64", "--publish-directory", receipt.PublishDirectory], token);
+        await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo("Forbidden runtime file: unexpected.deps.json");
+        await Assert.That(result).IsEqualTo(2);
+        await Assert.That(output.ToString()).IsEmpty();
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task RunAsync_Should_Write_Manifest_Matrices_Without_A_Rid(CancellationToken token)
+    {
+        var scenario = new NativeBuildScenario();
+        var request = await scenario.PrepareAsync(token);
+        var manifest = await new NativeManifestFixture().WriteAsync(scenario.Files, token);
+        var path = scenario.Files.Path.Combine(request.Root, "github-output");
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(scenario.Files, scenario.Runner, new FixtureHostReader(request.Host with { WorkingDirectory = request.Root }), scenario.Modes, output, errors);
+        var result = await application.RunAsync(["matrix", "--manifest", manifest, "--github-output", path], token);
+        await Assert.That(errors.ToString()).IsEmpty();
+        await Assert.That(result).IsEqualTo(0);
+        await Assert.That(scenario.Files.File.Exists(path)).IsTrue();
+        await Assert.That((await scenario.Files.File.ReadAllLinesAsync(path, token)).Select(static line => line.Split('=', 2)[0]))
+            .IsEquivalentTo(["linux-matrix", "native-matrix"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(scenario.Runner.Calls).IsEmpty();
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task RunAsync_Should_Name_The_Broken_Trx_Path_And_Rid(CancellationToken token)
     {
         var scenario = new NativeBuildScenario();

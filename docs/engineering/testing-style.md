@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-06
+Date: 2026-11-09
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in
@@ -51,6 +51,8 @@ sized to need:
   prerequisite refusals, and native inspection. These tests run in managed CI without publishing.
   Native process proof reuses the product project's `ExecutableTests`, not a copied protocol suite;
   the separate pass and selector contract live in `quality-gates.md`.
+  The product tests reference the non-packable tooling project to share its process runner and
+  `NativeContainerOwner`; no tooling package enters the product.
 - A helper or fixture used by one slice lives in that slice's `Support/` or `Fixtures/`. Helpers
   and fixtures used by several slices stay in the test project's root `Support/` and `Fixtures/`.
   Embedded fixtures retain their `Fixtures.` resource-name prefix through explicit `LogicalName`
@@ -230,6 +232,19 @@ cannot own its server fails.
 - **Fail fast, never skip.** A missing build output, a native path that does not exist or is a
   managed assembly, or a missing configured package feed is an instructive error, not a skipped
   test and never a fallback to another form of the product.
+
+### Native container ownership
+
+The [container launch contract](../architecture/hosting-and-packaging.md#container-executable-test-launches)
+owns selection, mounts, environment separation and cleanup order. The product-test process owner
+and tool image probes share `NativeContainerOwner`, including on cancelled startup and failed launch.
+
+The configuration-isolation rows independently prove the hostile fixture is visible in the actual
+container working directory. Their separately named container content-root assertion requires
+exactly `/opencode-mcp-payload/`; the direct-launch expectation is unchanged. The complete
+container-selected `ExecutableTests` pass exercises real cleanup on Linux. Normal managed CI
+proves selection, argument/environment construction, exit-path cleanup and absence refusals through
+the injected Docker runner; it discovers no Docker-dependent test class.
 
 ### AppHost ownership
 

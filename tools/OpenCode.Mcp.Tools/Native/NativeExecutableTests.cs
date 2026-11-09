@@ -7,7 +7,9 @@ namespace OpenCode.Mcp.Tools.Native;
 
 internal sealed class NativeExecutableTests(IFileSystem files, NativeProcesses processes, NativeRid rid)
 {
-    public async Task<NativeTestRun> RunAsync(string executable, string results, CancellationToken token)
+    public Task<NativeTestRun> RunAsync(string executable, string results, CancellationToken token) => RunAsync(executable, results, null, token);
+
+    public async Task<NativeTestRun> RunAsync(string executable, string results, string? containerImage, CancellationToken token)
     {
         if (files.Directory.Exists(results))
         {
@@ -18,6 +20,7 @@ internal sealed class NativeExecutableTests(IFileSystem files, NativeProcesses p
         {
             ["OPENCODE_MCP_TEST_EXECUTABLE"] = executable,
             ["OPENCODE_MCP_TEST_EXPECT_NATIVE"] = "true",
+            ["OPENCODE_MCP_TEST_CONTAINER_IMAGE"] = containerImage,
             ["TUNIT_DISABLE_ARTIFACT_UPLOAD"] = "true",
         };
         var result = await processes.RunAsync("dotnet", ["test", "--project", "tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj", "-c", "Release", "--no-build",

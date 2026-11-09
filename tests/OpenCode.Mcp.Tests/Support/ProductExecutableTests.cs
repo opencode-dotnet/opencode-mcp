@@ -13,6 +13,89 @@ public sealed class ProductExecutableTests
     private readonly MockFileSystem _files = new();
 
     [Test]
+    public async Task Resolve_Should_Select_A_Container_Only_When_All_Native_Inputs_Are_Present()
+    {
+        var executable = await ArrangeNativeAsync("linux", "x64");
+        var inputs = Native(executable);
+        inputs["OPENCODE_MCP_TEST_CONTAINER_IMAGE"] = "registry.test/runtime@sha256:" + new string('b', 64);
+        inputs["kept"] = "value";
+        var launch = new ProductExecutable(_files, "linux", Architecture.X64).Resolve(inputs);
+        await Assert.That(launch.FileName).IsEqualTo("docker");
+        await Assert.That(launch.Arguments).IsEmpty();
+        await Assert.That(launch.Environment.Select(static item => item.Key + "=" + item.Value)).IsEquivalentTo(["kept=value"], CollectionOrdering.Matching);
+        var container = await Assert.That(launch.Container).IsNotNull();
+        await Assert.That(container.Image).IsEqualTo("registry.test/runtime@sha256:" + new string('b', 64));
+        await Assert.That(container.PayloadDirectory).IsEqualTo(_files.Path.GetDirectoryName(executable));
+        await Assert.That(container.Executable).IsEqualTo("/opencode-mcp-payload/opencode-mcp.exe");
+        await Assert.That(container.Name).Matches("^opencode-mcp-test-[0-9a-f]{32}$");
+    }
+
+    [Test]
+    public async Task Resolve_Should_Preserve_Direct_Launches_When_The_Container_Input_Is_Absent()
+    {
+        var product = ArrangeManaged();
+        var resolver = new ProductExecutable(_files);
+        ProcessLaunch? managedResult = null;
+        await Assert.That(() => managedResult = resolver.Resolve(new Dictionary<string, string?>(StringComparer.Ordinal))).ThrowsNothing();
+        var managed = await Assert.That(managedResult).IsNotNull();
+        await Assert.That(managed.FileName).IsEqualTo("dotnet");
+        await Assert.That(managed.Arguments).IsEquivalentTo([product], CollectionOrdering.Matching);
+        await Assert.That(managed.Container).IsNull();
+        var executable = await ArrangeNativeAsync("win", "x64");
+        var direct = resolver.Resolve(Explicit(executable));
+        await Assert.That(direct.FileName).IsEqualTo(executable);
+        await Assert.That(direct.Arguments).IsEmpty();
+        await Assert.That(direct.Environment).IsEmpty();
+        await Assert.That(direct.Container).IsNull();
+    }
+
+    [Test]
+    [Arguments("win", Architecture.X64, Architecture.X64)]
+    [Arguments("linux", Architecture.Arm64, Architecture.X64)]
+    public async Task Resolve_Should_Require_A_Matching_Linux_Test_Host(string os, Architecture osArchitecture, Architecture processArchitecture)
+    {
+        var executable = await ArrangeNativeAsync(os, osArchitecture.ToString().ToLowerInvariant());
+        var inputs = Native(executable);
+        inputs["OPENCODE_MCP_TEST_CONTAINER_IMAGE"] = "registry.test/runtime@sha256:" + new string('b', 64);
+        await Assert.That(() => new ProductExecutable(_files, os, osArchitecture, processArchitecture).Resolve(inputs))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Container execution requires a matching Linux test host.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("false")]
+    public async Task Resolve_Should_Require_Both_Native_Selectors_For_A_Container(string? native)
+    {
+        var inputs = new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["OPENCODE_MCP_TEST_CONTAINER_IMAGE"] = "registry.test/runtime@sha256:" + new string('b', 64),
+        };
+        if (native is not null)
+        {
+            inputs["OPENCODE_MCP_TEST_EXPECT_NATIVE"] = native;
+        }
+        await Assert.That(() => new ProductExecutable(_files).Resolve(inputs)).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("Container execution requires OPENCODE_MCP_TEST_EXPECT_NATIVE=true.\nContainer execution requires OPENCODE_MCP_TEST_EXECUTABLE.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments(" ")]
+    [Arguments("ubuntu:22.04")]
+    [Arguments("ubuntu@sha256:123")]
+    [Arguments("ubuntu@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa extra")]
+    public async Task Resolve_Should_Refuse_Invalid_Container_Inputs_In_Validation_Order(string? image)
+    {
+        ArrangeManaged();
+        await Assert.That(() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["OPENCODE_MCP_TEST_CONTAINER_IMAGE"] = image,
+        })).ThrowsExactly<InvalidOperationException>().WithMessage(
+            "OPENCODE_MCP_TEST_CONTAINER_IMAGE must be digest-qualified (sha256).\nContainer execution requires OPENCODE_MCP_TEST_EXPECT_NATIVE=true.\nContainer execution requires OPENCODE_MCP_TEST_EXECUTABLE.", StringComparison.Ordinal);
+    }
+
+    [Test]
     public async Task Resolve_Should_Select_The_Fixed_Windows_Arm64_Fixture_On_An_Arm64_Windows_Os()
     {
         var executable = await ArrangeNativeAsync("win", "arm64");

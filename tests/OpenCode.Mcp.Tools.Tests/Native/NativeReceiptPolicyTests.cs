@@ -9,6 +9,50 @@ public sealed class NativeReceiptPolicyTests
 {
     [Test]
     [Timeout(30_000)]
+    [Arguments("kind", "linux-x64: RuntimeIndependence.Kind must be linux-clean-container.")]
+    [Arguments("tests", "linux-x64: RuntimeIndependence.Tests must be successful and nonzero.")]
+    [Arguments("zero", "linux-x64: RuntimeIndependence.Tests must be successful and nonzero.")]
+    [Arguments("image", "linux-x64: RuntimeIndependence.ImageReference differs from manifest.")]
+    [Arguments("id", "linux-x64: RuntimeIndependence.ImageId is required.")]
+    [Arguments("dotnet", "linux-x64: RuntimeIndependence.DotnetAbsent must be true.")]
+    [Arguments("glibc", "linux-x64: GlibcFloor is required.")]
+    [Arguments("glibc-version", "linux-x64: GlibcFloor requires a numeric Version and ToolVersion.")]
+    [Arguments("glibc-tool", "linux-x64: GlibcFloor requires a numeric Version and ToolVersion.")]
+    [Arguments("inspection", "win-x64: RuntimeIndependence.Inspection must contain the native AOT export.")]
+    [Arguments("os", "linux-x64: Native execution needs a compatible linux-x64 host; observed win-x64 (process x64).")]
+    [Arguments("architecture", "linux-x64: Native execution needs a compatible linux-x64 host; observed linux-arm64 (process x64).")]
+    [Arguments("process", "linux-x64: Native execution needs a compatible linux-x64 host; observed linux-x64 (process arm64).")]
+    public async Task Diagnostics_Should_Require_Complete_Platform_Proofs(string defect, string diagnostic, CancellationToken token)
+    {
+        var manifest = await ManifestAsync(token);
+        var receipts = manifest.Runtimes.Select(ReceiptFixture.Create).ToArray();
+        var receipt = receipts[2];
+        var proof = receipt.RuntimeIndependence ?? throw new InvalidOperationException();
+        receipts[2] = defect switch
+        {
+            "kind" => receipt with { RuntimeIndependence = proof with { Kind = "matching-host-inspection" } },
+            "tests" => receipt with { RuntimeIndependence = proof with { Tests = null } },
+            "zero" => receipt with { RuntimeIndependence = proof with { Tests = new NativeTestRun(0, 0, 0, 0) } },
+            "image" => receipt with { RuntimeIndependence = proof with { ImageReference = "wrong" } },
+            "id" => receipt with { RuntimeIndependence = proof with { ImageId = null } },
+            "dotnet" => receipt with { RuntimeIndependence = proof with { DotnetAbsent = false } },
+            "glibc" => receipt with { GlibcFloor = null },
+            "glibc-version" => receipt with { GlibcFloor = new NativeGlibcFloor("invalid", "GNU objdump fixture") },
+            "glibc-tool" => receipt with { GlibcFloor = new NativeGlibcFloor("2.35", "") },
+            "os" => receipt with { Os = "win" },
+            "architecture" => receipt with { OsArchitecture = "arm64" },
+            "process" => receipt with { ProcessArchitecture = "arm64" },
+            _ => receipt,
+        };
+        if (defect == "inspection")
+        {
+            receipts[0] = receipts[0] with { RuntimeIndependence = new NativeRuntimeIndependence("matching-host-inspection", Inspection: "main") };
+        }
+        await Assert.That(NativeReceiptPolicy.Diagnostics(manifest, receipts)).IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     [Arguments("LICENSE")]
     [Arguments("THIRD-PARTY-NOTICES.md")]
     [Arguments("opencode-mcp.exe")]

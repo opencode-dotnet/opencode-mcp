@@ -49,8 +49,19 @@ internal static class ReceiptFixture
             new PayloadFile("payload.json", "fixture-metadata", 7, null)],
         Archive = "payload.zip",
         ArchiveSha256 = "fixture-archive",
-        RuntimeIndependence = "fixture-proof",
+        RuntimeIndependence = Proof(runtime.Rid),
+        GlibcFloor = runtime.Rid.StartsWith("linux-", StringComparison.Ordinal) ? new NativeGlibcFloor("2.35", "GNU objdump fixture") : null,
         BuilderImage = runtime.Rid.StartsWith("linux-", StringComparison.Ordinal) ? "registry.test/builder@sha256:" + new string('a', 64) : null,
         RuntimeImage = runtime.Rid.StartsWith("linux-", StringComparison.Ordinal) ? "registry.test/runtime@sha256:" + new string('b', 64) : null,
     };
+
+    private static NativeRuntimeIndependence Proof(string rid)
+    {
+        if (rid.StartsWith("linux-", StringComparison.Ordinal))
+        {
+            return new NativeRuntimeIndependence("linux-clean-container", new NativeTestRun(0, 12, 0, 0),
+                "registry.test/runtime@sha256:" + new string('b', 64), "sha256:" + new string('c', 64), true);
+        }
+        return new NativeRuntimeIndependence("matching-host-inspection", Inspection: rid.StartsWith("osx-", StringComparison.Ordinal) ? "_DotNetRuntimeDebugHeader" : "DotNetRuntimeDebugHeader");
+    }
 }
