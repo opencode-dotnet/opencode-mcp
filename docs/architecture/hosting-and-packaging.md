@@ -31,7 +31,7 @@ unregistered listing candidate, not a registered identity.
 | `src/OpenCode.Mcp.AppHost` | The Aspire development orchestrator, non-packable |
 | `tests/OpenCode.Mcp.Tests` | Product tests, starting from the production composition |
 | `tests/OpenCode.Mcp.AppHost.Tests` | Closed-box AppHost integration tests |
-| `tools/OpenCode.Mcp.Tools` | Non-packable native verification and staging collaborators |
+| `tools/OpenCode.Mcp.Tools` | Non-packable native verification, staging and packaging collaborators |
 | `tests/OpenCode.Mcp.Tools.Tests` | In-process tool contract tests; no native compilation |
 
 Every project targets `net10.0` with C# `14.0` and analysis level `10.0`; `Directory.Build.props`
@@ -240,12 +240,18 @@ not a second distributed product. The entry is compiled separately from the solu
   temporary directory, compares the complete inventory, and tests the extracted command.
 - `pack-child --rid <RID> --evidence <directory>` requires that RID's staging evidence, matching
   executed SDK, source commit and common-input digest, and the manifest-ordered evaluated tool RIDs.
-  It replaces only its derived `packages/` directory and packs from `payload/` without building,
-  restoring or publishing. Any pack warning or nonzero exit refuses the result. It revalidates the
-  native artifacts after packing, requires exactly the expected child package, and checks its
+  It deletes its derived `packages/` directory before checking preconditions and packs from `payload/`
+  without building, restoring or publishing. Any pack warning or nonzero exit refuses the result.
+  It revalidates the native artifacts after packing, requires exactly the expected child package
+  and no other file, and checks its
   identity, sole child type, command settings, whole-payload digests, channel metadata and repository
-  commit. Success prints the package path and SHA-256. It requires neither the six-RID set nor
-  the later Linux runtime-independence proof.
+  commit. Outside the tool directory, the entry set is closed: only the nuspec, `.mcp/server.json`,
+  `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md`, `[Content_Types].xml`, `_rels/.rels` and one `.psmdcp`
+  under `package/services/metadata/core-properties/` are allowed. A post-pack refusal deletes
+  `packages/` again; a cleanup failure follows the original refusal in the ordered failure list.
+  `packages/` exists only with an accepted package after successful cleanup. Success prints the
+  package path and SHA-256. It requires neither the six-RID set nor the later Linux
+  runtime-independence proof.
 - `inspect --rid <RID> --path <executable-or-directory>` inspects only the supplied image when the
   path is a file. A directory also scans its companion files recursively. The framework-dependent
   negative control uses the file path.
@@ -278,7 +284,8 @@ not a second distributed product. The entry is compiled separately from the solu
 
 Default evidence lives under `artifacts/native/<RID>/`: publish and toolchain logs, effective
 properties in `receipt.json`, native inspection, `payload-manifest.json`, the normalized `payload/`,
-and a ZIP on Windows or tar.gz on Unix. Symbols and build evidence stay outside the runtime payload.
+a ZIP on Windows or tar.gz on Unix, and the accepted child package in `packages/`.
+Symbols and build evidence stay outside the runtime payload.
 Receipts record actual source commit/status and common input hash, SDK and compiler package
 identities, requested runner versus actual host, executable and archive digests, resolved runtime
 packages, and published/normalized/extracted test totals. Dirty development receipts remain dirty
@@ -400,9 +407,14 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
   runner and implementation layout. MCP package metadata is channel metadata outside that payload.
 - The manifest's two versions and root package identifier are checked against the evaluated product
   identity at pack time. Its product policy checks listing identity, description bounds, the single
-  NuGet package, exact ordered arguments, stdio transport and a UTF-8 size below 20,000 bytes. This
-  is a typed product policy, not full JSON Schema validation; packing never rewrites the tracked
-  manifest.
+  NuGet package, exact ordered arguments, stdio transport and a UTF-8 size below 20,000 bytes.
+  The manifest is checked by a typed product policy; the repository carries no JSON Schema engine
+  and no copy of the schema. The policy mirrors the published 2025-12-11 schema's
+  `ServerDetail.required` and `Package.required` fields, `Package.version` prohibition of `latest`,
+  transport type enumeration (`stdio`, `streamable-http`, `sse`), and array types for
+  `Package.packageArguments` and `Package.runtimeArguments`, naming each rule in its diagnostics.
+  The exactly pinned listing name is tested against the `ServerDetail.name` pattern and 3–200
+  character bounds. Packing never rewrites the tracked manifest.
 - `.mcp/server.json` declares stdio acquisition through `dnx` with explicit
   `--transport stdio` package arguments. `dnx` receives `-v minimal` before `--`, both there and in
   the README's manual launch command: on macOS a cold acquisition at default verbosity writes a

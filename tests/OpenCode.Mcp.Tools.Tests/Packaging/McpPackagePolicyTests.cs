@@ -1,11 +1,50 @@
+using OpenCode.Mcp.Tools.Native.Abstractions;
 using OpenCode.Mcp.Tools.Packaging;
-using OpenCode.Mcp.Tools.Tests.Packaging.Support;
+using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.Tools.Tests.Packaging;
 
 public sealed class McpPackagePolicyTests
 {
+    private const string MissingLicenseDiagnostic = "Missing payload file: LICENSE";
+    private const string ChangedNoticesDiagnostic = "Changed payload file: THIRD-PARTY-NOTICES.md";
+
+    [Test]
+    public async Task PackDiagnostics_Should_Report_Each_Distinct_Warning_Once()
+    {
+        const string second = "src/product.csproj(2,1): warning NU5000: another warning [src/product.csproj]";
+        var result = new NativeProcessResult(0,
+            PackageArchiveBuilder.PackWarning + "\n" + second + "\n" + PackageArchiveBuilder.PackWarning + "\r\n" + second, "");
+        await Assert.That(McpPackagePolicy.PackDiagnostics(result)).IsEquivalentTo([
+            PackageArchiveBuilder.PackWarningDiagnostic, "Child pack warning: " + second], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Arguments("content/extra.dat")]
+    [Arguments("package/services/metadata/core-properties/not-metadata.txt")]
+    public async Task ChildDiagnostics_Should_Refuse_An_Entry_Outside_The_Closed_Set(string path, CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        builder.AdditionalFiles.Add(path, "extra");
+        await builder.WriteAsync(token);
+        var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
+        await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() }))
+            .IsEquivalentTo(["Unexpected package entry: " + path], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task ChildDiagnostics_Should_Refuse_Repeated_Core_Properties_In_Ordinal_Order(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        builder.AdditionalFiles.Add("package/services/metadata/core-properties/earlier.psmdcp", "extra");
+        await builder.WriteAsync(token);
+        var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
+        await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() }))
+            .IsEquivalentTo(["Unexpected package entry: package/services/metadata/core-properties/earlier.psmdcp",
+                "Unexpected package entry: package/services/metadata/core-properties/fixture.psmdcp"], CollectionOrdering.Matching);
+    }
+
     [Test]
     [Arguments("win-x64", "opencode-mcp.exe")]
     [Arguments("win-arm64", "opencode-mcp.exe")]
@@ -42,15 +81,15 @@ public sealed class McpPackagePolicyTests
         await builder.WriteAsync(token);
         var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, receipt)).IsEquivalentTo([
-            "Package ID must be OpenCodeDotNet.Mcp.win-x64.", "Package version must be 0.1.0-preview.1.",
-            "Missing payload file: LICENSE", "Changed payload file: THIRD-PARTY-NOTICES.md",
-            "Manifest name must be io.github.opencode-dotnet/opencode-mcp.", "Missing package root file: README.md"], CollectionOrdering.Matching);
+            PackageArchiveBuilder.PackageIdDiagnostic, PackageArchiveBuilder.PackageVersionDiagnostic.Replace("{version}", PackageArchiveBuilder.BuildVersion, StringComparison.Ordinal),
+            MissingLicenseDiagnostic, ChangedNoticesDiagnostic,
+            PackageArchiveBuilder.ManifestNameDiagnostic, "Missing package root file: README.md"], CollectionOrdering.Matching);
     }
 
     [Test]
-    [Arguments("missing", "Missing payload file: LICENSE")]
+    [Arguments("missing", MissingLicenseDiagnostic)]
     [Arguments("extra", "Unexpected payload file: extra.dat")]
-    [Arguments("changed", "Changed payload file: THIRD-PARTY-NOTICES.md")]
+    [Arguments("changed", ChangedNoticesDiagnostic)]
     public async Task ChildDiagnostics_Should_Compare_The_Whole_Payload(string fault, string diagnostic, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);
@@ -89,11 +128,11 @@ public sealed class McpPackagePolicyTests
         await builder.WriteAsync(token);
         var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() }))
-            .IsEquivalentTo(["Package manifest must be .mcp/server.json."], CollectionOrdering.Matching);
+            .IsEquivalentTo(["Package manifest must be .mcp/server.json.", "Unexpected package entry: elsewhere/server.json"], CollectionOrdering.Matching);
     }
 
     [Test]
-    [Arguments("version", "wrong", "Package version must be 0.1.0-preview.1.")]
+    [Arguments("version", "wrong", PackageArchiveBuilder.PackageVersionDiagnostic)]
     [Arguments("packageType", "DotnetTool", "Package types must be exactly DotnetToolRidPackage.")]
     [Arguments("secondType", "McpServer", "Package types must be exactly DotnetToolRidPackage.")]
     [Arguments("Name", "wrong", "Package command must be opencode-mcp.")]
@@ -103,6 +142,7 @@ public sealed class McpPackagePolicyTests
     [Arguments("commit", "wrong", "Package repository commit differs from native receipt.")]
     public async Task ChildDiagnostics_Should_Refuse_Metadata_Drift(string field, string value, string diagnostic, CancellationToken token)
     {
+        ArgumentNullException.ThrowIfNull(diagnostic);
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         var ns = builder.Metadata.Name.Namespace;
         switch (field)
@@ -120,7 +160,7 @@ public sealed class McpPackagePolicyTests
         await builder.WriteAsync(token);
         var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() }))
-            .IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
+            .IsEquivalentTo([diagnostic.Replace("{version}", PackageArchiveBuilder.BuildVersion, StringComparison.Ordinal)], CollectionOrdering.Matching);
     }
 
     [Test]
@@ -131,6 +171,6 @@ public sealed class McpPackagePolicyTests
         await builder.WriteAsync(token);
         var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() }))
-            .IsEquivalentTo(["Package ID must be OpenCodeDotNet.Mcp.win-x64."], CollectionOrdering.Matching);
+            .IsEquivalentTo([PackageArchiveBuilder.PackageIdDiagnostic], CollectionOrdering.Matching);
     }
 }

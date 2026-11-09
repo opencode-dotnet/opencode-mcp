@@ -1,12 +1,17 @@
+using System.IO.Abstractions;
+using NSubstitute;
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Packaging;
-using OpenCode.Mcp.Tools.Tests.Packaging.Support;
+using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.Tools.Tests.Packaging;
 
 public sealed class McpPackageBuilderTests
 {
+    private const string PackFailureDiagnostic = "Child pack exited 7:\npack failed\n";
+    private const string ChangedPayloadDiagnostic = "win-x64: Changed payload file: required.dat";
+
     [Test]
     public async Task PackChildAsync_Should_Not_Mistake_An_Output_Path_For_A_Warning(CancellationToken token)
     {
@@ -15,7 +20,7 @@ public sealed class McpPackageBuilderTests
         builder.PackResult = new(0, "Created C:/warning/child.nupkg", "");
         string? path = null;
         await Assert.That(async () => { path = await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); }).ThrowsNothing();
-        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg"));
+        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64." + PackageArchiveBuilder.BuildVersion + ".nupkg"));
     }
 
     [Test]
@@ -24,7 +29,7 @@ public sealed class McpPackageBuilderTests
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         var request = await builder.PrepareStagedAsync(token);
         builder.Metadata.Element(builder.Metadata.Name.Namespace + "id")?.SetValue("wrong");
-        await AssertRefusalAsync(builder, request, "Package ID must be OpenCodeDotNet.Mcp.win-x64.", token);
+        await AssertRefusalAsync(builder, request, PackageArchiveBuilder.PackageIdDiagnostic, token);
     }
 
     [Test]
@@ -39,6 +44,7 @@ public sealed class McpPackageBuilderTests
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         var request = await builder.PrepareStagedAsync(token);
         var receipt = builder.Receipt;
+        await builder.WriteAsync(token, builder.Files.Path.Combine(request.Output, "packages", "stale.nupkg"));
         receipt = field switch
         {
             "Rid" => receipt with { Rid = "win-arm64" },
@@ -62,7 +68,7 @@ public sealed class McpPackageBuilderTests
     [Arguments("manifest", "win-x64: Missing payload manifest.")]
     [Arguments("manifest content", "win-x64: Payload manifest differs from receipt.")]
     [Arguments("payload", "win-x64: Missing payload directory.")]
-    [Arguments("payload content", "win-x64: Changed payload file: required.dat")]
+    [Arguments("payload content", ChangedPayloadDiagnostic)]
     [Arguments("archive", "win-x64: Missing archive.")]
     [Arguments("archive digest", "win-x64: Archive digest differs from receipt.")]
     [Arguments("archive content", "win-x64 archive: Missing payload file: required.dat")]
@@ -71,24 +77,31 @@ public sealed class McpPackageBuilderTests
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         var request = await builder.PrepareStagedAsync(token);
         await builder.BreakStagingAsync(request, fault, token);
+        await builder.WriteAsync(token, builder.Files.Path.Combine(request.Output, "packages", "stale.nupkg"));
         var start = builder.Native.Runner.Calls.Count;
         await AssertRefusalAsync(builder, request, diagnostic, token);
         await Assert.That(builder.Native.Runner.Calls.Skip(start)).IsEmpty();
     }
 
     [Test]
-    [Arguments("exit", "Child pack exited 7:\npack failed\n")]
-    [Arguments("warning", "Child pack warning: warning NU5100: fixture")]
-    [Arguments("none", "Expected exactly one child package named OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg.")]
-    [Arguments("two", "Expected exactly one child package named OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg.")]
-    [Arguments("stale", "Expected exactly one child package named OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg.")]
-    [Arguments("changed payload", "win-x64: Changed payload file: required.dat")]
-    [Arguments("wrong name", "Expected exactly one child package named OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg.")]
+    [Arguments("exit", PackFailureDiagnostic)]
+    [Arguments("warning", PackageArchiveBuilder.PackWarningDiagnostic)]
+    [Arguments("none", PackageArchiveBuilder.PackageCountDiagnostic)]
+    [Arguments("two", PackageArchiveBuilder.PackageCountDiagnostic)]
+    [Arguments("extra file", PackageArchiveBuilder.PackageCountDiagnostic)]
+    [Arguments("stale", PackageArchiveBuilder.PackageCountDiagnostic)]
+    [Arguments("changed payload", ChangedPayloadDiagnostic)]
+    [Arguments("wrong name", PackageArchiveBuilder.PackageCountDiagnostic)]
+    [Arguments("inspection", PackageArchiveBuilder.MissingManifestDiagnostic)]
     public async Task PackChildAsync_Should_Refuse_Failed_Or_Ineffective_Packs(string fault, string diagnostic, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         var request = await builder.PrepareStagedAsync(token);
         var packages = builder.Files.Path.Combine(request.Output, "packages");
+        if (fault == "inspection")
+        {
+            builder.Omitted.Add(".mcp/server.json");
+        }
         if (fault is "none" or "stale")
         {
             builder.PackageCount = 0;
@@ -100,12 +113,12 @@ public sealed class McpPackageBuilderTests
         builder.PackResult = fault switch
         {
             "exit" => new(7, "pack failed", ""),
-            "warning" => new(0, "", "warning NU5100: fixture"),
+            "warning" => new(0, PackageArchiveBuilder.PackWarning, ""),
             _ => builder.PackResult,
         };
         if (fault == "stale")
         {
-            await builder.WriteAsync(token, builder.Files.Path.Combine(packages, "OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg"));
+            await builder.WriteAsync(token, builder.Files.Path.Combine(packages, "OpenCodeDotNet.Mcp.win-x64." + PackageArchiveBuilder.BuildVersion + ".nupkg"));
         }
         builder.AfterPack = async cancellation =>
         {
@@ -117,8 +130,36 @@ public sealed class McpPackageBuilderTests
             {
                 builder.Files.File.Move(builder.Files.Directory.EnumerateFiles(packages).Single(), builder.Files.Path.Combine(packages, "wrong.nupkg"));
             }
+            else if (fault == "extra file")
+            {
+                await builder.Files.File.WriteAllTextAsync(builder.Files.Path.Combine(packages, "extra.txt"), "extra", cancellation);
+            }
         };
         await AssertRefusalAsync(builder, request, diagnostic, token);
+    }
+
+    [Test]
+    public async Task PackChildAsync_Should_Keep_The_Refusal_Before_A_Cleanup_Failure(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        var request = await builder.PrepareStagedAsync(token);
+        builder.PackResult = new(7, "pack failed", "");
+        var packages = builder.Files.Path.Combine(request.Output, "packages");
+        var cleanup = new IOException("fixture cleanup failure");
+        var directory = Substitute.For<IDirectory>();
+        directory.Exists(Arg.Any<string>()).Returns(call => builder.Files.Directory.Exists(call.Arg<string>()));
+        directory.CreateDirectory(Arg.Any<string>()).Returns(call => builder.Files.Directory.CreateDirectory(call.Arg<string>()));
+        directory.EnumerateFiles(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SearchOption>())
+            .Returns(call => builder.Files.Directory.EnumerateFiles(call.ArgAt<string>(0), call.ArgAt<string>(1), call.Arg<SearchOption>()));
+        directory.When(value => value.Delete(packages, true)).Do(_ => throw cleanup);
+        var files = Substitute.For<IFileSystem>();
+        files.File.Returns(builder.Files.File);
+        files.Path.Returns(builder.Files.Path);
+        files.Directory.Returns(directory);
+        var failure = await Assert.That(async () => { await new McpPackageBuilder(files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); })
+            .ThrowsExactly<AggregateException>() ?? throw new InvalidOperationException("Expected ordered failures.");
+        await Assert.That(failure.InnerExceptions.Select(static error => error.Message)).IsEquivalentTo([PackFailureDiagnostic, cleanup.Message], CollectionOrdering.Matching);
+        await Assert.That(failure.InnerExceptions[1]).IsSameReferenceAs(cleanup);
     }
 
     [Test]
@@ -142,13 +183,17 @@ public sealed class McpPackageBuilderTests
             "-nodeReuse:false", "-p:UseSharedCompilation=false"], CollectionOrdering.Matching);
         await Assert.That(calls.Select(static call => call.WorkingDirectory).Distinct(StringComparer.Ordinal)).IsEquivalentTo([request.Root], CollectionOrdering.Matching);
         await Assert.That(calls.Select(static call => call.Timeout).Distinct()).IsEquivalentTo([TimeSpan.FromMinutes(35)], CollectionOrdering.Matching);
-        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg"));
+        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64." + PackageArchiveBuilder.BuildVersion + ".nupkg"));
         var package = await new McpPackageInspector(builder.Files).InspectAsync(path, token);
         await Assert.That(package.Payload).IsEquivalentTo(builder.Receipt.Payload, CollectionOrdering.Matching);
         await Assert.That(await new NativeReceiptValidator(builder.Files, builder.Native.Modes).ValidateArtifactsAsync(builder.Receipt, request.Output, token)).IsEmpty();
     }
 
-    private static async Task AssertRefusalAsync(PackageArchiveBuilder builder, NativeBuildRequest request, string diagnostic, CancellationToken token) =>
+    private static async Task AssertRefusalAsync(PackageArchiveBuilder builder, NativeBuildRequest request, string diagnostic, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
         await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); })
-            .ThrowsExactly<InvalidOperationException>().WithMessage(diagnostic, StringComparison.Ordinal);
+            .ThrowsExactly<InvalidOperationException>().WithMessage(diagnostic.Replace("{version}", PackageArchiveBuilder.BuildVersion, StringComparison.Ordinal), StringComparison.Ordinal);
+        await Assert.That(builder.Files.Directory.Exists(builder.Files.Path.Combine(request.Output, "packages"))).IsFalse();
+    }
 }

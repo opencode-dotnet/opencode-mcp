@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -10,10 +11,21 @@ using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Native.Support;
 using Testably.Abstractions.Testing;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging.Support;
+namespace OpenCode.Mcp.Tools.Tests.Support;
 
 internal sealed class PackageArchiveBuilder
 {
+    public const string PackWarning = "src/product.csproj(3,5): warning NU5100: fixture [src/product.csproj]";
+    public const string PackWarningDiagnostic = "Child pack warning: " + PackWarning;
+    public const string PackageCountDiagnostic = "Expected exactly one child package named OpenCodeDotNet.Mcp.win-x64.{version}.nupkg.";
+    public const string PackageIdDiagnostic = "Package ID must be OpenCodeDotNet.Mcp.win-x64.";
+    public const string PackageVersionDiagnostic = "Package version must be {version}.";
+    public const string ManifestNameDiagnostic = "Manifest name must be io.github.opencode-dotnet/opencode-mcp.";
+    public const string MissingManifestDiagnostic = "Package: expected exactly one server.json.";
+
+    public static string BuildVersion { get; } = (typeof(PackageIdentity).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+        ?? throw new InvalidOperationException("Missing tools informational version.")).InformationalVersion.Split('+')[0];
+
     public NativeBuildScenario Native { get; } = new();
     public MockFileSystem Files => Native.Files;
     public required XDocument Nuspec { get; init; }
@@ -37,6 +49,7 @@ internal sealed class PackageArchiveBuilder
     public ISet<string> Omitted { get; } = new HashSet<string>(StringComparer.Ordinal);
     public IDictionary<string, string> AdditionalFiles { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public string? Duplicate { get; set; }
+    public string? MalformedEntry { get; set; }
     public int? ManifestSize { get; set; }
     public XElement Metadata => Nuspec.Root?.Element(Nuspec.Root.Name.Namespace + "metadata") ?? throw new InvalidOperationException();
     public XElement Command => Settings.Descendants("Command").Single();
@@ -47,13 +60,14 @@ internal sealed class PackageArchiveBuilder
     public static async Task<PackageArchiveBuilder> CreateAsync(CancellationToken token)
     {
         var nuspec = XDocument.Parse(await FixtureAsync("OpenCodeDotNet.Mcp.win-x64.nuspec", token));
+        nuspec.Descendants((nuspec.Root ?? throw new InvalidOperationException()).Name.Namespace + "version").Single().SetValue(BuildVersion);
         var manifest = JsonNode.Parse(await FixtureAsync("server.json", token))?.AsObject() ?? throw new InvalidOperationException();
         return new PackageArchiveBuilder
         {
             Nuspec = nuspec,
             Settings = XDocument.Parse(await FixtureAsync("DotnetToolSettings.xml", token)),
             Manifest = manifest,
-            Identity = new PackageIdentity("OpenCodeDotNet.Mcp", manifest["version"]?.GetValue<string>() ?? throw new InvalidOperationException(), "opencode-mcp", ["win-x64"]),
+            Identity = new PackageIdentity("OpenCodeDotNet.Mcp", BuildVersion, "opencode-mcp", ["win-x64"]),
             Receipt = ReceiptFixture.Create(new("win-x64", "windows-2025")) with
             {
                 SourceCommit = nuspec.Descendants((nuspec.Root ?? throw new InvalidOperationException()).Name.Namespace + "repository").Single().Attribute("commit")?.Value ?? throw new InvalidOperationException(),
@@ -71,7 +85,7 @@ internal sealed class PackageArchiveBuilder
         await AddAsync(archive, SettingsPath, Settings.ToString(), token);
         var manifest = Manifest.ToJsonString();
         await AddAsync(archive, ManifestPath, ManifestSize is { } size ? manifest.PadRight(size) : manifest, token);
-        foreach (var name in new[] { "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md" })
+        foreach (var name in new[] { "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "[Content_Types].xml", "_rels/.rels", "package/services/metadata/core-properties/fixture.psmdcp" })
         {
             await AddAsync(archive, name, name, token);
         }
@@ -88,15 +102,13 @@ internal sealed class PackageArchiveBuilder
     public async Task<NativeBuildRequest> PrepareStagedAsync(CancellationToken token)
     {
         var request = await Native.PrepareAsync(token);
+        Native.EffectiveProperties["Version"] = BuildVersion;
         var published = await new NativeVerifier(Files, Native.Runner).VerifyAsync(request, token);
         await Native.AddStagingInputsAsync(token);
         Receipt = await new NativeStager(Files, Native.Runner, Native.Modes).StageAsync(request, published.PublishDirectory, token);
         Identity = Identity with { Version = Receipt.Version, RuntimeIdentifiers = [.. request.Manifest.Runtimes.Select(static runtime => runtime.Rid)] };
         Metadata.Element(Metadata.Name.Namespace + "version")?.SetValue(Identity.Version);
         Metadata.Element(Metadata.Name.Namespace + "repository")?.SetAttributeValue("commit", Receipt.SourceCommit);
-        Manifest["version"] = Identity.Version;
-        var package = Manifest["packages"]?[0] ?? throw new InvalidOperationException();
-        package["version"] = Identity.Version;
         Payload.Clear();
         foreach (var file in Receipt.Payload)
         {
@@ -155,7 +167,7 @@ internal sealed class PackageArchiveBuilder
         {
             return;
         }
-        await WriteEntryAsync(archive, path, content, token);
+        await WriteEntryAsync(archive, path, path == MalformedEntry ? "malformed" : content, token);
         if (Duplicate == path)
         {
             await WriteEntryAsync(archive, path, content, token);
@@ -164,7 +176,8 @@ internal sealed class PackageArchiveBuilder
 
     private static async Task WriteEntryAsync(ZipArchive archive, string path, string content, CancellationToken token)
     {
-        await using var writer = new StreamWriter(await archive.CreateEntry(path).OpenAsync(token), new UTF8Encoding(false));
+        var entryName = string.Join('/', path.Split('/').Select(Uri.EscapeDataString));
+        await using var writer = new StreamWriter(await archive.CreateEntry(entryName).OpenAsync(token), new UTF8Encoding(false));
         await writer.WriteAsync(content.AsMemory(), token);
     }
 

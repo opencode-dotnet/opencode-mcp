@@ -198,8 +198,9 @@ dotnet run tools/native.cs -- validate --receipts artifacts/native
 
 Use the manifest RID matching the actual OS, OS architecture, process and SDK architecture. The
 Windows prerequisites are in the architecture canon. No prerequisite is installed by the tool.
-`verify`, `control`, `stage` and `pack-child` must exit zero. The last command must exit 2 for a local one-RID set, naming
-the other five missing receipts in manifest order; only a complete hosted set may exit zero.
+`verify`, `control`, `stage` and `pack-child` must exit zero. The last command must exit 2 for a
+local one-RID set, naming the other five missing receipts in manifest order; only a complete hosted
+set may exit zero.
 `--output <dir>` selects verify's owned evidence directory; stage uses the publish directory's
 parent. `control` owns its temporary publication and cleanup. Its successful result requires
 publish exit zero and exactly the missing Native AOT export refusal for the executable file,

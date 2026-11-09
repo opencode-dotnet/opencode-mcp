@@ -11,7 +11,7 @@
     <packageTypes>
       <packageType name="DotnetToolRidPackage" />
     </packageTypes>
-    <repository type="git" url="https://github.com/opencode-dotnet/opencode-mcp.git" branch="refs/heads/dispatch/2026-11-09-mcp-t8a/t8a" commit="3aea200c08618f7d12dd5dd336f584ec3ebc5684" />
+    <repository type="git" url="https://github.com/opencode-dotnet/opencode-mcp.git" commit="3aea200c08618f7d12dd5dd336f584ec3ebc5684" />
     <frameworkReferences>
       <group targetFramework="net10.0">
         <frameworkReference name="Microsoft.AspNetCore.App" />

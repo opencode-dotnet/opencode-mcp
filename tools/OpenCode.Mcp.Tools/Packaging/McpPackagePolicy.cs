@@ -16,7 +16,7 @@ internal static partial class McpPackagePolicy
         {
             return [string.Create(CultureInfo.InvariantCulture, $"Child pack exited {result.ExitCode}:\n{result.Output}")];
         }
-        return [.. result.Output.Split('\n').Select(static line => line.TrimEnd('\r')).Where(static line => Warning().IsMatch(line))
+        return [.. result.Output.Split('\n').Select(static line => line.TrimEnd('\r')).Where(static line => Warning().IsMatch(line)).Distinct(StringComparer.Ordinal)
             .Select(static line => "Child pack warning: " + line)];
     }
 
@@ -70,6 +70,20 @@ internal static partial class McpPackagePolicy
         {
             diagnostics.Add("Package repository commit differs from native receipt.");
         }
+        diagnostics.AddRange(UnexpectedEntries(package));
         return diagnostics.AsReadOnly();
+    }
+
+    private static IEnumerable<string> UnexpectedEntries(PackageInspection package)
+    {
+        var prefix = package.SettingsPath[..(package.SettingsPath.LastIndexOf('/') + 1)];
+        var coreProperties = package.Paths.Where(static path => path.StartsWith("package/services/metadata/core-properties/", StringComparison.Ordinal)
+            && path.EndsWith(".psmdcp", StringComparison.Ordinal)).ToArray();
+        return package.Paths.Where(path => !path.StartsWith(prefix, StringComparison.Ordinal)
+            && !RootFiles.Contains(path, StringComparer.Ordinal)
+            && path is not (".mcp/server.json" or "[Content_Types].xml" or "_rels/.rels")
+            && !path.EndsWith(".nuspec", StringComparison.Ordinal)
+            && !(coreProperties.Length == 1 && path == coreProperties[0]))
+            .Order(StringComparer.Ordinal).Select(static path => "Unexpected package entry: " + path);
     }
 }

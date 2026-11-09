@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Xml;
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Tests.Native.Support;
-using OpenCode.Mcp.Tools.Tests.Packaging.Support;
+using OpenCode.Mcp.Tools.Tests.Support;
 
 namespace OpenCode.Mcp.Tools.Tests.Native;
 
@@ -27,13 +27,13 @@ public sealed class NativeApplicationTests
         var exit = await application.RunAsync(["pack-child", "--rid", "win-x64", "--evidence", request.Output], token);
         if (refused)
         {
-            await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo("Expected exactly one child package named OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg.");
+            await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo(PackageArchiveBuilder.PackageCountDiagnostic.Replace("{version}", PackageArchiveBuilder.BuildVersion, StringComparison.Ordinal));
             await Assert.That(output.ToString()).IsEmpty();
             await Assert.That(exit).IsEqualTo(2);
         }
         else
         {
-            var path = builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64.fixture-version.nupkg");
+            var path = builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64." + PackageArchiveBuilder.BuildVersion + ".nupkg");
             await Assert.That(builder.Files.File.Exists(path)).IsTrue();
             var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await builder.Files.File.ReadAllBytesAsync(path, token)));
             await Assert.That(output.ToString().TrimEnd('\r', '\n')).IsEqualTo(path + "\nPackage SHA-256: " + digest);

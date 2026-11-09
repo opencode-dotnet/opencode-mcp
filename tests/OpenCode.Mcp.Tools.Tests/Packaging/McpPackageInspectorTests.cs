@@ -1,13 +1,69 @@
 using System.IO.Abstractions;
 using NSubstitute;
 using OpenCode.Mcp.Tools.Packaging;
-using OpenCode.Mcp.Tools.Tests.Packaging.Support;
+using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.Tools.Tests.Packaging;
 
 public sealed class McpPackageInspectorTests
 {
+    [Test]
+    [Arguments("OpenCodeDotNet.Mcp.win-x64.nuspec")]
+    [Arguments("tools/any/win-x64/DotnetToolSettings.xml")]
+    [Arguments(".mcp/server.json")]
+    public async Task InspectAsync_Should_Name_A_Malformed_Metadata_Entry(string path, CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        builder.MalformedEntry = path;
+        await builder.WriteAsync(token);
+        var error = await Assert.That(async () => { await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token); })
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Package: malformed entry " + path + ".", StringComparison.Ordinal);
+        await Assert.That(error?.InnerException).IsNotNull();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(2)]
+    public async Task InspectAsync_Should_Require_One_Command(int count, CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        var command = builder.Command;
+        if (count == 0)
+        {
+            command.Remove();
+        }
+        else
+        {
+            command.AddAfterSelf(new System.Xml.Linq.XElement(command));
+        }
+        await builder.WriteAsync(token);
+        await Assert.That(async () => { await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token); })
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Package: expected exactly one Command.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    public async Task InspectAsync_Should_Refuse_Missing_Nuspec_Metadata(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        builder.Metadata.Remove();
+        await builder.WriteAsync(token);
+        await Assert.That(async () => { await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token); })
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Package: missing nuspec metadata.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    public async Task InspectAsync_Should_Decode_An_Opc_Part_Name_Exactly_Once(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        builder.Payload.Add("asset +%20.dat", "asset");
+        await builder.WriteAsync(token);
+        var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
+        await Assert.That(package.Payload).IsEquivalentTo(builder.Inventory(), CollectionOrdering.Matching);
+        await Assert.That(package.Paths).Contains("tools/any/win-x64/asset +%20.dat");
+        await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() })).IsEmpty();
+    }
+
     [Test]
     [Arguments("extra.nuspec", "nuspec")]
     [Arguments("another/DotnetToolSettings.xml", "DotnetToolSettings.xml")]
@@ -29,7 +85,7 @@ public sealed class McpPackageInspectorTests
     [Test]
     [Arguments("missing", "OpenCodeDotNet.Mcp.win-x64.nuspec", "Package: expected exactly one nuspec.")]
     [Arguments("missing", "tools/any/win-x64/DotnetToolSettings.xml", "Package: expected exactly one DotnetToolSettings.xml.")]
-    [Arguments("missing", ".mcp/server.json", "Package: expected exactly one server.json.")]
+    [Arguments("missing", ".mcp/server.json", PackageArchiveBuilder.MissingManifestDiagnostic)]
     [Arguments("duplicate", "OpenCodeDotNet.Mcp.win-x64.nuspec", "Duplicate package path: OpenCodeDotNet.Mcp.win-x64.nuspec")]
     [Arguments("duplicate", "tools/any/win-x64/DotnetToolSettings.xml", "Duplicate package path: tools/any/win-x64/DotnetToolSettings.xml")]
     [Arguments("duplicate", ".mcp/server.json", "Duplicate package path: .mcp/server.json")]
@@ -76,14 +132,14 @@ public sealed class McpPackageInspectorTests
     }
 
     [Test]
-    public async Task Inspect_Should_Read_The_Sdk_Metadata_And_Whole_Payload(CancellationToken token)
+    public async Task InspectAsync_Should_Read_The_Sdk_Metadata_And_Whole_Payload(CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         builder.SettingsPath = "tools/fixture/win-x64/DotnetToolSettings.xml";
         await builder.WriteAsync(token);
         var result = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(result.Id).IsEqualTo("OpenCodeDotNet.Mcp.win-x64");
-        await Assert.That(result.Version).IsEqualTo("0.1.0-preview.1");
+        await Assert.That(result.Version).IsEqualTo(PackageArchiveBuilder.BuildVersion);
         await Assert.That(result.PackageTypes).IsEquivalentTo(["DotnetToolRidPackage"], CollectionOrdering.Matching);
         await Assert.That(result.SettingsPath).IsEqualTo("tools/fixture/win-x64/DotnetToolSettings.xml");
         await Assert.That(result.CommandName).IsEqualTo("opencode-mcp");
@@ -95,6 +151,7 @@ public sealed class McpPackageInspectorTests
         await Assert.That(result.ManifestSize).IsEqualTo(System.Text.Encoding.UTF8.GetByteCount(builder.Manifest.ToJsonString()));
         await Assert.That(result.Payload).IsEquivalentTo(builder.Inventory(), CollectionOrdering.Matching);
         await Assert.That(result.Paths).IsEquivalentTo([".mcp/server.json", "LICENSE", "OpenCodeDotNet.Mcp.win-x64.nuspec", "README.md", "THIRD-PARTY-NOTICES.md",
+            "[Content_Types].xml", "_rels/.rels", "package/services/metadata/core-properties/fixture.psmdcp",
             "tools/fixture/win-x64/DotnetToolSettings.xml", "tools/fixture/win-x64/LICENSE", "tools/fixture/win-x64/THIRD-PARTY-NOTICES.md",
             "tools/fixture/win-x64/opencode-mcp.exe", "tools/fixture/win-x64/payload.json"], CollectionOrdering.Matching);
     }
