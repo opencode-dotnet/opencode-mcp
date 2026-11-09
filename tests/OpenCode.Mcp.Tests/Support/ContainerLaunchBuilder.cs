@@ -43,9 +43,12 @@ internal sealed class ContainerLaunchBuilder(IFileSystem files, INativeProcessRu
             {
                 throw new ArgumentException("Explicit environment input cannot replace an isolation path: " + name, nameof(explicitInputs));
             }
+            if (name.StartsWith("DOTNET_", StringComparison.OrdinalIgnoreCase) || name is "PATH" or "LANG" or "LC_ALL")
+            {
+                throw new ArgumentException("Explicit environment input is not allowed in container mode: " + name, nameof(explicitInputs));
+            }
             if (name.StartsWith("DOCKER_", StringComparison.OrdinalIgnoreCase) || name.StartsWith("OPENCODE_MCP_TEST_", StringComparison.OrdinalIgnoreCase)
-                || (name.StartsWith("DOTNET_", StringComparison.OrdinalIgnoreCase) && !string.Equals(name, "DOTNET_ENVIRONMENT", StringComparison.OrdinalIgnoreCase))
-                || name is "PATH" or "LANG" or "LC_ALL" or "NO_PROXY")
+                || name is "NO_PROXY")
             {
                 continue;
             }

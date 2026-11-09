@@ -29,7 +29,7 @@ internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativePr
             try
             {
                 var result = await InvokeAsync(["rm", "-f", name], removal.Token).ConfigureAwait(false);
-                if (result.ExitCode != 0 && !IsMissing(result))
+                if (result.ExitCode != 0 && !IsMissing(result) && !IsRemoving(result))
                 {
                     failures.Add(new InvalidOperationException(result.Output.Trim()));
                 }
@@ -101,6 +101,9 @@ internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativePr
 
     private bool IsMissing(NativeProcessResult result) => result.StandardError.Trim() == "Error: No such container: " + name
         || result.StandardError.Trim() == "Error response from daemon: No such container: " + name;
+
+    private static bool IsRemoving(NativeProcessResult result) => result.StandardError.Trim().StartsWith("Error response from daemon: removal of container ", StringComparison.Ordinal)
+        && result.StandardError.Trim().EndsWith(" is already in progress", StringComparison.Ordinal);
 
     private Task<NativeProcessResult> InvokeAsync(IReadOnlyList<string> arguments, CancellationToken token)
     {

@@ -1,10 +1,29 @@
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Tests.Native.Support;
+using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.Tools.Tests.Native;
 
 public sealed class NativeLinuxProofTests
 {
+    [Test]
+    [Timeout(30_000)]
+    public async Task ProveAsync_Should_Use_The_Prepared_Runner_And_Local_Image(CancellationToken token)
+    {
+        var scenario = new LinuxProofScenario();
+        var request = await scenario.PrepareAsync(token);
+        var prepared = scenario.Runner.Calls.Count;
+        var completed = await new NativeLinuxProof(scenario.Files, scenario.Runner, scenario.Modes).ProveAsync(request, token);
+        await Assert.That(completed.RuntimeIndependence?.Tests).IsEqualTo(new NativeTestRun(0, 12, 0, 0));
+        await Assert.That(scenario.Runner.Calls.Skip(prepared)
+            .Where(static call => (call.FileName == "docker" && call.Arguments[0] is "pull" or "image")
+                || (call.FileName == "dotnet" && call.Arguments[0] is "build" or "test"))
+            .Select(static call => call.FileName + " " + call.Arguments[0]))
+            .IsEquivalentTo(["docker image", "dotnet test"], CollectionOrdering.Matching);
+        var tests = scenario.Runner.Calls.Skip(prepared).Single(static call => call.Arguments[0] == "test");
+        await Assert.That(tests.Arguments).Contains("--no-build");
+    }
+
     [Test]
     [Timeout(30_000)]
     [Arguments("archive", "linux-x64: Archive digest differs from receipt.")]

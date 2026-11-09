@@ -34,7 +34,6 @@ internal sealed class NativeLinuxProof(IFileSystem files, INativeProcessRunner r
             await new PayloadArchive(files, modes, rid).ExtractAsync(files.Path.Combine(request.Output, receipt.Archive ?? throw new InvalidOperationException("Missing archive.")), extracted, token).ConfigureAwait(false);
             NativeDiagnostics.Refuse(await new PayloadInventory(files, modes, rid).CompareAsync(extracted, receipt.Payload, token).ConfigureAwait(false));
             var proof = await new NativeRuntimeImageProbe(files, runner).ProbeAsync(request, token).ConfigureAwait(false);
-            await processes.RequireAsync("dotnet", ["build", "tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj", "-c", "Release", "-nodeReuse:false", "-p:UseSharedCompilation=false"], request.Host.Environment, token).ConfigureAwait(false);
             var executable = files.Path.Combine(extracted, rid.CommandName);
             var results = files.Path.Combine(request.Root, "artifacts", "test-results", "native", request.Rid, "container");
             var tests = await new NativeExecutableTests(files, processes, rid).RunAsync(executable, results, request.Manifest.RuntimeImage, token).ConfigureAwait(false);

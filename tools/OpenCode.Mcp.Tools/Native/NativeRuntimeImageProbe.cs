@@ -7,11 +7,11 @@ namespace OpenCode.Mcp.Tools.Native;
 
 internal sealed class NativeRuntimeImageProbe(IFileSystem files, INativeProcessRunner runner)
 {
-    private readonly List<NativeContainerOwner> _owners = [];
     private const string Scan = "find / -xdev -type f \\( -name dotnet -o -name libhostfxr.so -o -name libhostpolicy.so -o -name libcoreclr.so \\) -print";
 
     public async Task<NativeRuntimeIndependence> ProbeAsync(NativeBuildRequest request, CancellationToken token)
     {
+        var owners = new List<NativeContainerOwner>();
         var root = files.Path.Combine(files.Path.GetTempPath(), "opencode-mcp-image-" + Guid.NewGuid().ToString("N"));
         var environment = new NativeDockerEnvironment(files).Create(root, request.Host.Environment);
         var docker = new NativeProcessRequest("docker", [], root, environment, TimeSpan.FromMinutes(30)) { InheritEnvironment = false };
@@ -20,21 +20,16 @@ internal sealed class NativeRuntimeImageProbe(IFileSystem files, INativeProcessR
         try
         {
             var image = request.Manifest.RuntimeImage;
-            var pulled = await runner.RunAsync(docker with { Arguments = ["pull", image] }, token).ConfigureAwait(false);
-            if (pulled.ExitCode != 0)
-            {
-                throw new InvalidOperationException("Runtime image pull failed:\n" + pulled.Output.Trim());
-            }
             var inspection = await runner.RunAsync(docker with { Arguments = ["image", "inspect", image, "--format", "{{json .}}"] }, token).ConfigureAwait(false);
             await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "runtime-image-inspection.json"), inspection.Output, token).ConfigureAwait(false);
             var imageId = ReadImage(inspection, request.Rid);
-            var lookup = await RunProbeAsync(docker, image, "command -v dotnet", token).ConfigureAwait(false);
+            var lookup = await RunProbeAsync(docker, image, "command -v dotnet", owners, token).ConfigureAwait(false);
             await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "dotnet-lookup.log"), lookup.Output, token).ConfigureAwait(false);
-            if (lookup.ExitCode != 1 || !string.IsNullOrWhiteSpace(lookup.StandardOutput) || !string.IsNullOrWhiteSpace(lookup.StandardError))
+            if (lookup.ExitCode is not (127 or 1) || lookup.StandardOutput.Length != 0 || lookup.StandardError.Length != 0)
             {
                 throw new InvalidOperationException("Runtime image dotnet lookup did not prove absence.");
             }
-            var scan = await RunProbeAsync(docker, image, Scan, token).ConfigureAwait(false);
+            var scan = await RunProbeAsync(docker, image, Scan, owners, token).ConfigureAwait(false);
             await files.File.WriteAllTextAsync(files.Path.Combine(request.Output, "dotnet-filesystem-scan.log"), scan.Output, token).ConfigureAwait(false);
             if (scan.ExitCode != 0 || !string.IsNullOrWhiteSpace(scan.StandardError))
             {
@@ -52,7 +47,7 @@ internal sealed class NativeRuntimeImageProbe(IFileSystem files, INativeProcessR
         }
         try
         {
-            if (_owners.All(static owner => owner.AbsenceProven))
+            if (owners.All(static owner => owner.AbsenceProven))
             {
                 files.Directory.Delete(root, recursive: true);
             }
@@ -72,11 +67,11 @@ internal sealed class NativeRuntimeImageProbe(IFileSystem files, INativeProcessR
         return proof ?? throw new InvalidOperationException("Missing runtime image proof.");
     }
 
-    private async Task<NativeProcessResult> RunProbeAsync(NativeProcessRequest docker, string image, string command, CancellationToken token)
+    private async Task<NativeProcessResult> RunProbeAsync(NativeProcessRequest docker, string image, string command, List<NativeContainerOwner> owners, CancellationToken token)
     {
         var name = "opencode-mcp-test-" + Guid.NewGuid().ToString("N");
         var owner = new NativeContainerOwner(runner, docker, name);
-        _owners.Add(owner);
+        owners.Add(owner);
         NativeProcessResult? result = null;
         Exception? original = null;
         try

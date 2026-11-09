@@ -12,6 +12,23 @@ public sealed class ContainerLaunchBuilderTests
 
     [Test]
     [Timeout(30_000)]
+    [Arguments("DOTNET_ROOT", "sdk-path")]
+    [Arguments("DOTNET_ENVIRONMENT", "Development")]
+    [Arguments("dotnet_startup_hooks", "")]
+    [Arguments("LANG", "C")]
+    [Arguments("LC_ALL", null)]
+    [Arguments("PATH", "host-path")]
+    public async Task BuildAsync_Should_Refuse_Explicit_Runtime_And_Locale_Inputs(string name, string? value, CancellationToken token)
+    {
+        _runner.RunAsync(Arg.Any<NativeProcessRequest>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new NativeProcessResult(0, "1001", "")));
+        var launch = Launch("/payload") with { Environment = new Dictionary<string, string?>(StringComparer.Ordinal) { [name] = value } };
+        await Assert.That(async () => await new ContainerLaunchBuilder(_files, _runner).BuildAsync(launch,
+            new Dictionary<string, string?>(StringComparer.Ordinal) { ["PATH"] = "host-path" }, token)).ThrowsExactly<ArgumentException>()
+            .WithMessage("Explicit environment input is not allowed in container mode: " + name + " (Parameter 'explicitInputs')", StringComparison.Ordinal);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     [Arguments("HOME")]
     [Arguments("TEMP")]
     [Arguments("dotnet_cli_home")]
@@ -37,8 +54,7 @@ public sealed class ContainerLaunchBuilderTests
             Environment = new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["OPENCODE_TEST_INPUT"] = value,
-                ["DOTNET_ENVIRONMENT"] = "Development",
-                ["DOTNET_ROOT"] = "sdk-path",
+                ["ASPNETCORE_ENVIRONMENT"] = "Development",
             },
         };
         var request = await new ContainerLaunchBuilder(_files, _runner).BuildAsync(launch, new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -47,12 +63,12 @@ public sealed class ContainerLaunchBuilderTests
             ["DOCKER_HOST"] = "remote",
             ["OPENCODE_TEST_INPUT"] = "ambient",
         }, token);
-        string[] expectedKeys = value is null ? ["DOCKER_CONFIG", "DOTNET_ENVIRONMENT", "HOME", "LANG", "LC_ALL", "PATH"]
-            : ["DOCKER_CONFIG", "DOTNET_ENVIRONMENT", "HOME", "LANG", "LC_ALL", "OPENCODE_TEST_INPUT", "PATH"];
+        string[] expectedKeys = value is null ? ["ASPNETCORE_ENVIRONMENT", "DOCKER_CONFIG", "HOME", "LANG", "LC_ALL", "PATH"]
+            : ["ASPNETCORE_ENVIRONMENT", "DOCKER_CONFIG", "HOME", "LANG", "LC_ALL", "OPENCODE_TEST_INPUT", "PATH"];
         await Assert.That(request.Environment.Keys.Order(StringComparer.Ordinal)).IsEquivalentTo(expectedKeys, CollectionOrdering.Matching);
         await Assert.That(request.Environment.GetValueOrDefault("OPENCODE_TEST_INPUT")).IsEqualTo(value);
         await Assert.That(request.Arguments.Skip(15)).IsEquivalentTo(IsolationArguments().Concat(
-            ["-e", "OPENCODE_TEST_INPUT", "-e", "DOTNET_ENVIRONMENT", "-e", "NO_PROXY=localhost,127.0.0.1,::1", "registry.test/runtime@sha256:" + new string('b', 64), "/opencode-mcp-payload/opencode-mcp", "--transport", "stdio"]), CollectionOrdering.Matching);
+            ["-e", "OPENCODE_TEST_INPUT", "-e", "ASPNETCORE_ENVIRONMENT", "-e", "NO_PROXY=localhost,127.0.0.1,::1", "registry.test/runtime@sha256:" + new string('b', 64), "/opencode-mcp-payload/opencode-mcp", "--transport", "stdio"]), CollectionOrdering.Matching);
     }
 
     [Test]

@@ -12,6 +12,23 @@ public sealed class NativeContainerOwnerTests
 
     [Test]
     [Timeout(30_000)]
+    [Arguments("opencode-mcp-test-fixture")]
+    [Arguments("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")]
+    public async Task CleanupAsync_Should_Check_Absence_When_Auto_Removal_Is_In_Progress(string identity, CancellationToken token)
+    {
+        _runner.Response = (request, _) => Task.FromResult(request.Arguments[0] == "rm"
+            ? new NativeProcessResult(1, "", "Error response from daemon: removal of container " + identity + " is already in progress")
+            : MissingOrListing(request));
+        var owner = Owner();
+        var errors = await owner.CleanupAsync().WaitAsync(token);
+        await Assert.That(errors).IsEmpty();
+        await Assert.That(owner.AbsenceProven).IsTrue();
+        await Assert.That(_runner.Calls.Select(static call => string.Join(' ', call.Arguments)))
+            .IsEquivalentTo(["rm -f " + Name, "container inspect " + Name, "container ls --all --no-trunc --format {{.Names}}"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task CleanupAsync_Should_Preserve_Nested_Operation_Failures_Before_Later_Cleanup_Failures(CancellationToken token)
     {
         _runner.Response = static (request, _) =>

@@ -12,6 +12,29 @@ public sealed class NativeProcessSnapshotTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task RecordAsync_Should_Timestamp_After_The_Process_Query(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var now = new DateTimeOffset(2026, 11, 9, 12, 0, 0, TimeSpan.Zero);
+        var runner = new FakeNativeProcessRunner
+        {
+            Response = (_, _) =>
+            {
+                var started = now.AddSeconds(2);
+                now = now.AddSeconds(5);
+                var json = JsonSerializer.Serialize(new[] { new { Id = 7, ProcessName = "inside-query", CPU = 1, WorkingSet64 = 1_048_576L, StartTime = started, CommandLine = "query-child" } });
+                return Task.FromResult(new NativeProcessResult(0, json, ""));
+            },
+        };
+        var root = files.Path.Combine(files.Path.GetTempPath(), "snapshot");
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        await new NativeProcessSnapshot(files, runner, files.Path.GetTempPath(), output).RecordAsync(root, () => now, token);
+        await Assert.That(await files.File.ReadAllLinesAsync(files.Path.Combine(root, "processes.txt"), token))
+            .IsEquivalentTo(["7|inside-query|cpu=" + 1d.ToString("N1", CultureInfo.CurrentCulture) + "s|ws=1MB|age=3s|query-child"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task RecordAsync_Should_Preserve_The_Ci_Evidence_Fields_And_Cpu_Order(CancellationToken token)
     {
         var files = new MockFileSystem();
@@ -23,7 +46,7 @@ public sealed class NativeProcessSnapshotTests
         try
         {
             CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-            await new NativeProcessSnapshot(files, runner, files.Path.GetTempPath(), output).RecordAsync(root, now, token);
+            await new NativeProcessSnapshot(files, runner, files.Path.GetTempPath(), output).RecordAsync(root, () => now, token);
         }
         finally
         {

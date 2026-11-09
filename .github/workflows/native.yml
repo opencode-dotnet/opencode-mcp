@@ -25,14 +25,16 @@ jobs:
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
-      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
     outputs:
       sdk-version: ${{ steps.sdk.outputs.dotnet-version }}
       linux-matrix: ${{ steps.matrix.outputs.linux-matrix }}
       native-matrix: ${{ steps.matrix.outputs.native-matrix }}
     steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -56,23 +58,34 @@ jobs:
     container:
       image: ${{ matrix.builderImage }}
     timeout-minutes: 150
-    env:
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
-      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.linux-matrix) }}
     steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
       - name: Checkout
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Mark checked-out workspace safe for Git
+        run: |
+          git config --global --add safe.directory $env:GITHUB_WORKSPACE
+          exit $LASTEXITCODE
       - name: Setup exact .NET SDK
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
           architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - name: Build native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
       - name: Verify published native executable
         timeout-minutes: 35
         run: |
@@ -102,7 +115,7 @@ jobs:
         if: always()
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet run tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
           exit $LASTEXITCODE
       - name: Upload process snapshot
         if: always()
@@ -142,15 +155,19 @@ jobs:
     needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
-    env:
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
-      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.native-matrix) }}
     steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
+          if ($IsWindows) {
+            "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+            "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          }
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -161,6 +178,11 @@ jobs:
         with:
           dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
           architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - name: Build native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
       - name: Verify published native executable
         timeout-minutes: 35
         run: |
@@ -190,7 +212,7 @@ jobs:
         if: always()
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet run tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
           exit $LASTEXITCODE
       - name: Upload process snapshot
         if: always()
@@ -241,13 +263,15 @@ jobs:
     needs: [prepare, build-linux]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    env:
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
-      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.linux-matrix) }}
     steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -263,11 +287,26 @@ jobs:
         with:
           name: native-build-${{ matrix.rid }}
           path: artifacts/native/${{ matrix.rid }}
+      - name: Build product test runner
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release -nodeReuse:false -p:UseSharedCompilation=false
+          exit $LASTEXITCODE
+      - name: Build native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+      - name: Pull clean runtime image
+        run: |
+          $ErrorActionPreference = 'Stop'
+          docker pull ${{ matrix.runtimeImage }}
+          exit $LASTEXITCODE
       - name: Prove Linux runtime independence
         timeout-minutes: 35
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet run tools/native.cs -- prove-linux --rid ${{ matrix.rid }} --evidence artifacts/native/${{ matrix.rid }}
+          dotnet run --no-build tools/native.cs -- prove-linux --rid ${{ matrix.rid }} --evidence artifacts/native/${{ matrix.rid }}
           exit $LASTEXITCODE
       - name: List executable tests after failure
         if: ${{ failure() && !cancelled() && hashFiles(format('artifacts/test-results/native/{0}/**/execution.log', matrix.rid)) != '' }}
@@ -280,7 +319,7 @@ jobs:
         if: always()
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet run tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
           exit $LASTEXITCODE
       - name: Upload process snapshot
         if: always()
@@ -318,10 +357,12 @@ jobs:
     needs: [prepare, build-linux, build-native, prove-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
-      ASPIRE_HOME: ${{ runner.temp }}/aspire-home
     steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
       - name: Checkout
         uses: actions/checkout@v7
         with:

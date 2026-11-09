@@ -10,6 +10,22 @@ public sealed class NativeMatrixTests
 {
     [Test]
     [Timeout(30_000)]
+    public async Task WriteAsync_Should_Include_The_Runtime_Image_For_Linux_Preparation(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var manifest = await new NativeManifestStore(files).ReadAsync(await new NativeManifestFixture().WriteAsync(files, token), token);
+        var path = files.Path.Combine(files.Path.GetTempPath(), "github-output");
+        files.Initialize().WithFile(path);
+        await new NativeMatrix(files).WriteAsync(manifest, path, token);
+        var line = (await files.File.ReadAllLinesAsync(path, token))[0].Split('=', 2)[1];
+        using var linux = JsonDocument.Parse(line);
+        await Assert.That(linux.RootElement.GetProperty("include").EnumerateArray()
+            .Select(static entry => entry.TryGetProperty("runtimeImage", out var image) ? image.GetString() : null))
+            .IsEquivalentTo(Enumerable.Repeat<string?>("registry.test/runtime@sha256:" + new string('b', 64), 2), CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task WriteAsync_Should_Project_Manifest_Order_Into_Linux_And_Native_Matrices(CancellationToken token)
     {
         var files = new MockFileSystem();

@@ -9,11 +9,12 @@ internal sealed class NativeProcessSnapshot(IFileSystem files, INativeProcessRun
 {
     private const string Query = "$ErrorActionPreference='Stop'; Get-Process | Select-Object Id,ProcessName,CPU,WorkingSet64,@{Name='StartTime';Expression={try {$_.StartTime.ToUniversalTime().ToString('O')} catch {$null}}},CommandLine | ConvertTo-Json -Compress";
 
-    public async Task RecordAsync(string directory, DateTimeOffset now, CancellationToken token)
+    public async Task RecordAsync(string directory, Func<DateTimeOffset> timestamp, CancellationToken token)
     {
         files.Directory.CreateDirectory(directory);
         var json = await new NativeProcesses(runner, root).RequireAsync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", Query],
             new Dictionary<string, string?>(StringComparer.Ordinal), token).ConfigureAwait(false);
+        var now = timestamp();
         using var processes = JsonDocument.Parse(json);
         var lines = processes.RootElement.EnumerateArray().OrderByDescending(static process => Cpu(process))
             .Select(process => Format(process, now)).ToArray();

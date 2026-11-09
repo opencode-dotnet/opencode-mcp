@@ -230,11 +230,12 @@ not in the builder container, and executes downloaded binaries only from the ver
 
 Evidence, test results, symbols and process snapshots have unique per-job/per-RID artifact names
 and seven-day retention. Completed receipts are uploaded only after successful proof; validation
-has no `always()` override and starts only when all needed jobs succeed. Process snapshots run
-with `always()` through the shared `snapshot` subcommand in both workflows. Upload errors remain
+has no `always()` override and starts only when all needed jobs succeed. Both workflows prebuild
+the file-based entry in a normal step before tests. Process snapshots run with `always()` and
+`--no-build` through the shared `snapshot` subcommand in both workflows. Upload errors remain
 blocking. The validation success and its log establish the complete-set result; no index file or
-separate job-result input stands in for that dependency graph. Hosted workflow parsing and the
-complete six-RID run remain required acceptance evidence.
+separate job-result input stands in for that dependency graph. The native workflow must be green
+at the pull request's head before queue entry, including hosted parsing and all six RIDs.
 
 ### Linux builder verification
 

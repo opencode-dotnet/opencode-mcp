@@ -18,7 +18,7 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             if (command.Operation == "snapshot")
             {
                 await new NativeProcessSnapshot(files, runner, root, output).RecordAsync(
-                    files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing snapshot output."), root), (clock ?? TimeProvider.System).GetUtcNow(), token).ConfigureAwait(false);
+                    files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing snapshot output."), root), (clock ?? TimeProvider.System).GetUtcNow, token).ConfigureAwait(false);
                 return 0;
             }
             var manifest = await new NativeManifestStore(files).ReadAsync(files.Path.GetFullPath(command.Manifest, root), token).ConfigureAwait(false);

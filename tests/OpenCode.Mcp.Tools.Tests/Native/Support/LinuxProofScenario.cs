@@ -11,7 +11,7 @@ internal sealed class LinuxProofScenario
     public MockFileSystem Files => _build.Files;
     public FakeNativeProcessRunner Runner => _build.Runner;
     public FakeUnixFileModes Modes => _build.Modes;
-    public NativeProcessResult Lookup { get; set; } = new(1, "", "");
+    public NativeProcessResult Lookup { get; set; } = new(127, "", "");
     public NativeProcessResult Scan { get; set; } = new(0, "", "");
     public bool OmitTestReport { get; set; }
     public string Output => _build.Output;
@@ -30,7 +30,8 @@ internal sealed class LinuxProofScenario
             }
             if (call.FileName == "objdump")
             {
-                return Task.FromResult(new NativeProcessResult(0, call.Arguments[0] == "--version" ? "GNU objdump fixture" : "GLIBC_2.9 GLIBC_2.10 GLIBC_2.2.5", ""));
+                return Task.FromResult(new NativeProcessResult(0, call.Arguments[0] == "--version" ? "GNU objdump fixture"
+                    : "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.9)  pipe2\n0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.10) accept4\n0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.2.5) __libc_start_main", ""));
             }
             return OmitTestReport && call.Arguments[0] == "test" ? Task.FromResult(new NativeProcessResult(0, "", "")) : respond(call, cancellation);
         };

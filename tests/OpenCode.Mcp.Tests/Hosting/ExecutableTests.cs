@@ -204,6 +204,7 @@ public sealed class ExecutableTests
         };
         var request = await new ContainerLaunchBuilder(_files, runner).BuildAsync(probe,
             new Dictionary<string, string?>(new System.Diagnostics.ProcessStartInfo().Environment, StringComparer.Ordinal), token);
+        request = request with { Arguments = [.. request.Arguments.Where(static argument => argument != "-i")] };
         var owner = new NativeContainerOwner(runner, request, probe.Container.Name);
         Exception? failure = null;
         try

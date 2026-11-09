@@ -245,14 +245,17 @@ not a second distributed product. The entry is compiled separately from the solu
   the missing Native AOT export refusal. A companion file or a generic inspector failure cannot
   satisfy the control. The control does not change the native receipt or invalidate its assets.
 - `matrix --manifest <path> --github-output <file>` projects the manifest, in order, into
-  `linux-matrix` and `native-matrix` Actions outputs. Linux entries also carry the builder image.
+  `linux-matrix` and `native-matrix` Actions outputs. Linux entries also carry the builder and
+  runtime images.
 - `prove-linux --rid <RID> --evidence <downloaded-directory>` requires a matching Linux host,
   source inputs and executed SDK. It clears stale proof, verifies the complete downloaded payload,
   manifest and archive, and extracts the verified tar before executing anything downloaded. It
-  probes the manifest's clean runtime image, builds the product-test runner, runs `ExecutableTests`
+  probes the manifest's already-pulled clean runtime image and runs the prebuilt `ExecutableTests`
   in that image against the extracted command, and measures the highest numeric `GLIBC_` requirement
   with `objdump -T`. Failed, absent or malformed measurement is a refusal. Proof is written only
-  after successful tests and owned cleanup.
+  after successful tests and owned cleanup. The caller builds the product-test runner in Release
+  and pulls the manifest runtime image before this command; neither preparation runs inside the
+  test step's budget. The proof still inspects the local image before using it.
 - `snapshot --output <directory>` records PID, process name, CPU, working set, age and command line,
   sorted by CPU descending, in `processes.txt`; its first 25 rows also reach the job log.
 - `validate --receipts <dir> [--manifest <path>]` checks the manifest's complete ordered receipt set,
@@ -278,8 +281,9 @@ host and refuses Unix-mode writes on Windows.
 `RuntimeIndependence` records `Kind`, optional `Tests`, `ImageReference`, `ImageId`, `DotnetAbsent`
 and `Inspection`. Linux requires `linux-clean-container`, successful nonzero container tests, the
 exact manifest runtime reference, a recorded image ID, and `DotnetAbsent=true`. The probe requires
-the expected failed `command -v dotnet` lookup and successful same-filesystem whole-root enumeration
-with no `dotnet`, `libhostfxr.so`, `libhostpolicy.so` or `libcoreclr.so`. Linux also requires
+an exit-127 or exit-1 `command -v dotnet` lookup with empty stdout and stderr, and successful
+same-filesystem whole-root enumeration with no `dotnet`, `libhostfxr.so`, `libhostpolicy.so` or
+`libcoreclr.so`. Linux also requires
 `GlibcFloor` with the measured `Version` and `ToolVersion`. Windows/macOS require
 `matching-host-inspection` and the successful final normalized-payload export inspection;
 their glibc field is null. Receipt validation checks recorded evidence, not an inspection rerun.
@@ -341,13 +345,17 @@ the owned root and mapped explicitly; ordinary test inputs use explicit environm
 including distinct empty and removed values. The Docker CLI receives only allow-listed launch
 necessities, an owned home and empty `DOCKER_CONFIG`, and a deterministic diagnostic locale. It
 inherits no Docker host/context, credentials, proxies or SDK environment. Docker requests opt out
-of environment inheritance and use the default local socket.
+of environment inheritance and use the default local socket. Explicit `DOTNET_*`, `LANG`, `LC_ALL`
+and `PATH` test inputs are refused with a diagnostic naming the input; they are never silently
+dropped.
 
 Cleanup ends and awaits the CLI before forced exact-name removal and absence verification;
 attached reader EOF is never awaited before removal. Absence needs a recognized missing-container
 inspection response and successful all-container listing without the exact name. Unknown errors,
 daemon failure and a still-present container fail cleanup. Independent cleanup phases have fresh
 15-second guards and retain failures in operation/CLI/removal/absence/readers/handles/root order.
+A removal-already-in-progress response proceeds to the same absence proof instead of failing by
+itself.
 Unresolved termination or absence retains and names the owned root. Repeated disposal is idempotent.
 
 ### Windows prerequisites

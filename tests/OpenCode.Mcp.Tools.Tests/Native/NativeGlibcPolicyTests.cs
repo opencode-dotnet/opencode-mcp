@@ -6,11 +6,13 @@ namespace OpenCode.Mcp.Tools.Tests.Native;
 public sealed class NativeGlibcPolicyTests
 {
     [Test]
-    [Arguments("GLIBC_2.9 GLIBC_2.35 GLIBC_2.10 GLIBC_2.2.5 GLIBC_PRIVATE", "2.35")]
-    [Arguments("GLIBC_2.9 GLIBC_2.10 GLIBC_2.2.5", "2.10")]
+    [Arguments("0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.9)  pipe2\n0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.35) __memcmpeq\n0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.10) accept4\n0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.2.5) __libc_start_main", "2.35")]
+    [Arguments("0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.9)  pipe2\n0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.10) accept4\n0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.2.5) __libc_start_main", "2.10")]
     public async Task Measure_Should_Select_The_Highest_Numeric_Version(string symbols, string expected)
     {
-        var measured = NativeGlibcPolicy.Measure(new NativeProcessResult(0, "GNU objdump fixture", ""), new NativeProcessResult(0, symbols, ""));
+        NativeGlibcFloor? floor = null;
+        await Assert.That(() => floor = NativeGlibcPolicy.Measure(new NativeProcessResult(0, "GNU objdump fixture", ""), new NativeProcessResult(0, symbols, ""))).ThrowsNothing();
+        var measured = await Assert.That(floor).IsNotNull();
         await Assert.That(measured.Version).IsEqualTo(expected);
         await Assert.That(measured.ToolVersion).IsEqualTo("GNU objdump fixture");
     }
