@@ -348,6 +348,7 @@ inherits no Docker host/context, credentials, proxies or SDK environment. Docker
 of environment inheritance and use the default local socket. Explicit `DOTNET_*`, `LANG`, `LC_ALL`
 and `PATH` test inputs are refused with a diagnostic naming the input; they are never silently
 dropped.
+The Docker CLI process alone may carry the host's `DOTNET_ROOT`; it is never forwarded into the container, and explicit `DOTNET_*` container inputs stay refused.
 
 Cleanup ends and awaits the CLI before forced exact-name removal and absence verification;
 attached reader EOF is never awaited before removal. Absence needs a recognized missing-container

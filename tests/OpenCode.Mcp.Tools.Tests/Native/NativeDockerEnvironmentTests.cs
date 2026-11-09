@@ -30,6 +30,7 @@ public sealed class NativeDockerEnvironmentTests
         var environment = new NativeDockerEnvironment(files).Create(root, new Dictionary<string, string?>(StringComparer.Ordinal)
         {
             ["PATH"] = "host-path",
+            ["DOTNET_ROOT"] = "host-runtime",
             ["DOCKER_HOST"] = "remote",
             ["DOCKER_CONFIG"] = "credentials",
             ["HTTP_PROXY"] = "proxy",
@@ -37,8 +38,9 @@ public sealed class NativeDockerEnvironmentTests
             ["HOME"] = "personal",
             ["SECRET"] = "synthetic",
         });
-        await Assert.That(environment.Keys.Order(StringComparer.Ordinal)).IsEquivalentTo(["DOCKER_CONFIG", "HOME", "LANG", "LC_ALL", "PATH"], CollectionOrdering.Matching);
+        await Assert.That(environment.Keys.Order(StringComparer.Ordinal)).IsEquivalentTo(["DOCKER_CONFIG", "DOTNET_ROOT", "HOME", "LANG", "LC_ALL", "PATH"], CollectionOrdering.Matching);
         await Assert.That(environment["PATH"]).IsEqualTo("host-path");
+        await Assert.That(environment["DOTNET_ROOT"]).IsEqualTo("host-runtime");
         await Assert.That(environment["LANG"]).IsEqualTo("C");
         await Assert.That(environment["LC_ALL"]).IsEqualTo("C");
         await Assert.That(environment["HOME"]).IsEqualTo(files.Path.Combine(root, "docker-home"));

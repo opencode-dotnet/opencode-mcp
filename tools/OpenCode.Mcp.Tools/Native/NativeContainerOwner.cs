@@ -2,8 +2,9 @@ using OpenCode.Mcp.Tools.Native.Abstractions;
 
 namespace OpenCode.Mcp.Tools.Native;
 
-internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativeProcessRequest request, string name)
+internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativeProcessRequest request, string name, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private Task<IReadOnlyList<Exception>>? _cleanup;
     public bool AbsenceProven { get; private set; }
 
@@ -24,11 +25,13 @@ internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativePr
     private async Task<IReadOnlyList<Exception>> RemoveAndVerifyAsync()
     {
         var failures = new List<Exception>();
+        var removing = false;
         using (var removal = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
         {
             try
             {
                 var result = await InvokeAsync(["rm", "-f", name], removal.Token).ConfigureAwait(false);
+                removing = result.ExitCode != 0 && IsRemoving(result);
                 if (result.ExitCode != 0 && !IsMissing(result) && !IsRemoving(result))
                 {
                     failures.Add(new InvalidOperationException(result.Output.Trim()));
@@ -39,17 +42,21 @@ internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativePr
                 failures.Add(failure);
             }
         }
-        using (var absence = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
+        using (var absence = new CancellationTokenSource(TimeSpan.FromSeconds(15), _clock))
         {
             NativeProcessResult? inspection = null;
             NativeProcessResult? listing = null;
             try
             {
-                inspection = await InvokeAsync(["container", "inspect", name], absence.Token).ConfigureAwait(false);
+                inspection = await InspectAsync(removing, absence.Token).ConfigureAwait(false);
             }
             catch (Exception failure)
             {
                 failures.Add(failure);
+            }
+            if (removing && inspection is null)
+            {
+                return failures.AsReadOnly();
             }
             try
             {
@@ -72,7 +79,33 @@ internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativePr
         return failures.AsReadOnly();
     }
 
-    private string? AbsenceError(NativeProcessResult inspection, NativeProcessResult listing)
+    private async Task<NativeProcessResult> InspectAsync(bool removing, CancellationToken token)
+    {
+        var result = await InvokeAsync(["container", "inspect", name], token).ConfigureAwait(false);
+        while (removing && result.ExitCode == 0)
+        {
+            if (!string.IsNullOrWhiteSpace(result.StandardError))
+            {
+                throw new InvalidOperationException(result.StandardError.Trim());
+            }
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), _clock, token).ConfigureAwait(false);
+                result = await InvokeAsync(["container", "inspect", name], token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+        if (removing && InspectionError(result) is { } error)
+        {
+            throw new InvalidOperationException(error);
+        }
+        return result;
+    }
+
+    private string? InspectionError(NativeProcessResult inspection)
     {
         if (inspection.ExitCode == 0)
         {
@@ -85,6 +118,16 @@ internal sealed class NativeContainerOwner(INativeProcessRunner runner, NativePr
         if (inspection.StandardOutput.Trim() is not ("" or "[]"))
         {
             return "Unrecognized container inspection response";
+        }
+        return null;
+    }
+
+    private string? AbsenceError(NativeProcessResult inspection, NativeProcessResult listing)
+    {
+        var inspectionError = InspectionError(inspection);
+        if (inspectionError is not null)
+        {
+            return inspectionError;
         }
         if (listing.ExitCode != 0 || !string.IsNullOrWhiteSpace(listing.StandardError))
         {

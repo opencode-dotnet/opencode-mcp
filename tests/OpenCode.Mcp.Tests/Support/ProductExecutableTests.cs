@@ -1,6 +1,7 @@
 using System.IO.Abstractions;
 using System.Runtime.InteropServices;
 using NSubstitute;
+using OpenCode.Mcp.Tools.Native.Abstractions;
 using Testably.Abstractions;
 using Testably.Abstractions.Testing;
 using TUnit.Assertions.Enums;
@@ -19,7 +20,7 @@ public sealed class ProductExecutableTests
         var inputs = Native(executable);
         inputs["OPENCODE_MCP_TEST_CONTAINER_IMAGE"] = "registry.test/runtime@sha256:" + new string('b', 64);
         inputs["kept"] = "value";
-        var launch = new ProductExecutable(_files, "linux", Architecture.X64).Resolve(inputs);
+        var launch = new ProductExecutable(_files, "linux", Architecture.X64, Architecture.X64).Resolve(inputs);
         await Assert.That(launch.FileName).IsEqualTo("docker");
         await Assert.That(launch.Arguments).IsEmpty();
         await Assert.That(launch.Environment.Select(static item => item.Key + "=" + item.Value)).IsEquivalentTo(["kept=value"], CollectionOrdering.Matching);
@@ -28,6 +29,13 @@ public sealed class ProductExecutableTests
         await Assert.That(container.PayloadDirectory).IsEqualTo(_files.Path.GetDirectoryName(executable));
         await Assert.That(container.Executable).IsEqualTo("/opencode-mcp-payload/opencode-mcp.exe");
         await Assert.That(container.Name).Matches("^opencode-mcp-test-[0-9a-f]{32}$");
+        var runner = Substitute.For<INativeProcessRunner>();
+        runner.RunAsync(Arg.Any<NativeProcessRequest>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new NativeProcessResult(0, "1001", "")));
+        var context = await Assert.That(TestContext.Current).IsNotNull();
+        var request = await new ContainerLaunchBuilder(_files, runner).BuildAsync(launch,
+            new Dictionary<string, string?>(StringComparer.Ordinal) { ["DOTNET_ROOT"] = "host-runtime" }, context.Execution.CancellationToken);
+        await Assert.That(request.Environment["DOTNET_ROOT"]).IsEqualTo("host-runtime");
+        await Assert.That(string.Join(' ', request.Arguments)).DoesNotContain("DOTNET_ROOT");
     }
 
     [Test]
@@ -51,6 +59,7 @@ public sealed class ProductExecutableTests
 
     [Test]
     [Arguments("win", Architecture.X64, Architecture.X64)]
+    [Arguments("osx", Architecture.X64, Architecture.X64)]
     [Arguments("linux", Architecture.Arm64, Architecture.X64)]
     public async Task Resolve_Should_Require_A_Matching_Linux_Test_Host(string os, Architecture osArchitecture, Architecture processArchitecture)
     {
@@ -74,7 +83,7 @@ public sealed class ProductExecutableTests
         {
             inputs["OPENCODE_MCP_TEST_EXPECT_NATIVE"] = native;
         }
-        await Assert.That(() => new ProductExecutable(_files).Resolve(inputs)).ThrowsExactly<InvalidOperationException>()
+        await Assert.That(() => new ProductExecutable(_files, "linux", Architecture.X64, Architecture.X64).Resolve(inputs)).ThrowsExactly<InvalidOperationException>()
             .WithMessage("Container execution requires OPENCODE_MCP_TEST_EXPECT_NATIVE=true.\nContainer execution requires OPENCODE_MCP_TEST_EXECUTABLE.", StringComparison.Ordinal);
     }
 
@@ -88,7 +97,7 @@ public sealed class ProductExecutableTests
     public async Task Resolve_Should_Refuse_Invalid_Container_Inputs_In_Validation_Order(string? image)
     {
         ArrangeManaged();
-        await Assert.That(() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal)
+        await Assert.That(() => new ProductExecutable(_files, "linux", Architecture.X64, Architecture.X64).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal)
         {
             ["OPENCODE_MCP_TEST_CONTAINER_IMAGE"] = image,
         })).ThrowsExactly<InvalidOperationException>().WithMessage(
