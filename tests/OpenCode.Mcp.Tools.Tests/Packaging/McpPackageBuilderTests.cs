@@ -13,6 +13,21 @@ public sealed class McpPackageBuilderTests
     private const string ChangedPayloadDiagnostic = "win-x64: Changed payload file: required.dat";
 
     [Test]
+    public async Task PackChildAsync_Should_Preserve_A_Foreign_Packages_Directory(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        var request = await builder.Native.PrepareAsync(token);
+        var sentinel = builder.Files.Path.Combine(request.Output, "packages", "foreign.txt");
+        builder.Files.Directory.CreateDirectory(builder.Files.Path.GetDirectoryName(sentinel) ?? throw new InvalidOperationException());
+        await builder.Files.File.WriteAllTextAsync(sentinel, "foreign content", token);
+        var start = builder.Native.Runner.Calls.Count;
+        await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); })
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Output directory is not owned by the native tool: " + request.Output, StringComparison.Ordinal);
+        await Assert.That(await builder.Files.File.ReadAllTextAsync(sentinel, token)).IsEqualTo("foreign content");
+        await Assert.That(builder.Native.Runner.Calls.Skip(start)).IsEmpty();
+    }
+
+    [Test]
     public async Task PackChildAsync_Should_Not_Mistake_An_Output_Path_For_A_Warning(CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);
@@ -20,7 +35,7 @@ public sealed class McpPackageBuilderTests
         builder.PackResult = new(0, "Created C:/warning/child.nupkg", "");
         string? path = null;
         await Assert.That(async () => { path = await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); }).ThrowsNothing();
-        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64." + PackageArchiveBuilder.BuildVersion + ".nupkg"));
+        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", PackagingData.ChildFileName));
     }
 
     [Test]
@@ -29,16 +44,16 @@ public sealed class McpPackageBuilderTests
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         var request = await builder.PrepareStagedAsync(token);
         builder.Metadata.Element(builder.Metadata.Name.Namespace + "id")?.SetValue("wrong");
-        await AssertRefusalAsync(builder, request, PackageArchiveBuilder.PackageIdDiagnostic, token);
+        await AssertRefusalAsync(builder, request, PackagingData.PackageIdDiagnostic, token);
     }
 
     [Test]
     [Arguments("Rid", "Child packing requires a receipt for win-x64.")]
     [Arguments("PayloadDirectory", "win-x64: Missing staging evidence.")]
     [Arguments("SdkVersion", "Child packing requires the receipt's executed SDK.")]
-    [Arguments("SourceCommit", "Source or common build inputs changed after verification.")]
-    [Arguments("CommonInputsSha256", "Source or common build inputs changed after verification.")]
-    [Arguments("rids", "ToolPackageRuntimeIdentifiers must match the native manifest in order.")]
+    [Arguments("SourceCommit", PackagingData.InputDriftDiagnostic)]
+    [Arguments("CommonInputsSha256", PackagingData.InputDriftDiagnostic)]
+    [Arguments("rids", PackagingData.ToolRidsDiagnostic)]
     public async Task PackChildAsync_Should_Refuse_Identity_Drift_Before_Packing(string field, string diagnostic, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);
@@ -85,14 +100,15 @@ public sealed class McpPackageBuilderTests
 
     [Test]
     [Arguments("exit", PackFailureDiagnostic)]
-    [Arguments("warning", PackageArchiveBuilder.PackWarningDiagnostic)]
-    [Arguments("none", PackageArchiveBuilder.PackageCountDiagnostic)]
-    [Arguments("two", PackageArchiveBuilder.PackageCountDiagnostic)]
-    [Arguments("extra file", PackageArchiveBuilder.PackageCountDiagnostic)]
-    [Arguments("stale", PackageArchiveBuilder.PackageCountDiagnostic)]
+    [Arguments("warning", PackagingData.PackWarningDiagnostic)]
+    [Arguments("none", "count")]
+    [Arguments("two", "count")]
+    [Arguments("extra file", "count")]
+    [Arguments("empty directory", "count")]
+    [Arguments("stale", "count")]
     [Arguments("changed payload", ChangedPayloadDiagnostic)]
-    [Arguments("wrong name", PackageArchiveBuilder.PackageCountDiagnostic)]
-    [Arguments("inspection", PackageArchiveBuilder.MissingManifestDiagnostic)]
+    [Arguments("wrong name", "count")]
+    [Arguments("inspection", PackagingData.MissingManifestDiagnostic)]
     public async Task PackChildAsync_Should_Refuse_Failed_Or_Ineffective_Packs(string fault, string diagnostic, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);
@@ -113,12 +129,12 @@ public sealed class McpPackageBuilderTests
         builder.PackResult = fault switch
         {
             "exit" => new(7, "pack failed", ""),
-            "warning" => new(0, PackageArchiveBuilder.PackWarning, ""),
+            "warning" => new(0, PackagingData.PackWarning, ""),
             _ => builder.PackResult,
         };
         if (fault == "stale")
         {
-            await builder.WriteAsync(token, builder.Files.Path.Combine(packages, "OpenCodeDotNet.Mcp.win-x64." + PackageArchiveBuilder.BuildVersion + ".nupkg"));
+            await builder.WriteAsync(token, builder.Files.Path.Combine(packages, PackagingData.ChildFileName));
         }
         builder.AfterPack = async cancellation =>
         {
@@ -134,8 +150,12 @@ public sealed class McpPackageBuilderTests
             {
                 await builder.Files.File.WriteAllTextAsync(builder.Files.Path.Combine(packages, "extra.txt"), "extra", cancellation);
             }
+            else if (fault == "empty directory")
+            {
+                builder.Files.Directory.CreateDirectory(builder.Files.Path.Combine(packages, "empty"));
+            }
         };
-        await AssertRefusalAsync(builder, request, diagnostic, token);
+        await AssertRefusalAsync(builder, request, diagnostic == "count" ? PackagingData.PackageCountDiagnostic : diagnostic, token);
     }
 
     [Test]
@@ -183,7 +203,7 @@ public sealed class McpPackageBuilderTests
             "-nodeReuse:false", "-p:UseSharedCompilation=false"], CollectionOrdering.Matching);
         await Assert.That(calls.Select(static call => call.WorkingDirectory).Distinct(StringComparer.Ordinal)).IsEquivalentTo([request.Root], CollectionOrdering.Matching);
         await Assert.That(calls.Select(static call => call.Timeout).Distinct()).IsEquivalentTo([TimeSpan.FromMinutes(35)], CollectionOrdering.Matching);
-        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", "OpenCodeDotNet.Mcp.win-x64." + PackageArchiveBuilder.BuildVersion + ".nupkg"));
+        await Assert.That(path).IsEqualTo(builder.Files.Path.Combine(request.Output, "packages", PackagingData.ChildFileName));
         var package = await new McpPackageInspector(builder.Files).InspectAsync(path, token);
         await Assert.That(package.Payload).IsEquivalentTo(builder.Receipt.Payload, CollectionOrdering.Matching);
         await Assert.That(await new NativeReceiptValidator(builder.Files, builder.Native.Modes).ValidateArtifactsAsync(builder.Receipt, request.Output, token)).IsEmpty();
@@ -193,7 +213,7 @@ public sealed class McpPackageBuilderTests
     {
         ArgumentNullException.ThrowIfNull(diagnostic);
         await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); })
-            .ThrowsExactly<InvalidOperationException>().WithMessage(diagnostic.Replace("{version}", PackageArchiveBuilder.BuildVersion, StringComparison.Ordinal), StringComparison.Ordinal);
+            .ThrowsExactly<InvalidOperationException>().WithMessage(diagnostic, StringComparison.Ordinal);
         await Assert.That(builder.Files.Directory.Exists(builder.Files.Path.Combine(request.Output, "packages"))).IsFalse();
     }
 }

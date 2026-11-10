@@ -39,7 +39,7 @@ public sealed class McpPackageInspectorTests
         }
         await builder.WriteAsync(token);
         await Assert.That(async () => { await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token); })
-            .ThrowsExactly<InvalidOperationException>().WithMessage("Package: expected exactly one Command.", StringComparison.Ordinal);
+            .ThrowsExactly<InvalidOperationException>().WithMessage(PackagingData.MissingCommandDiagnostic, StringComparison.Ordinal);
     }
 
     [Test]
@@ -79,13 +79,18 @@ public sealed class McpPackageInspectorTests
         });
         await builder.WriteAsync(token);
         await Assert.That(async () => { await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token); })
-            .ThrowsExactly<InvalidOperationException>().WithMessage("Package: expected exactly one " + name + ".", StringComparison.Ordinal);
+            .ThrowsExactly<InvalidOperationException>().WithMessage(name switch
+            {
+                "nuspec" => PackagingData.MissingNuspecDiagnostic,
+                "DotnetToolSettings.xml" => PackagingData.MissingSettingsDiagnostic,
+                _ => PackagingData.MissingManifestDiagnostic,
+            }, StringComparison.Ordinal);
     }
 
     [Test]
-    [Arguments("missing", "OpenCodeDotNet.Mcp.win-x64.nuspec", "Package: expected exactly one nuspec.")]
-    [Arguments("missing", "tools/any/win-x64/DotnetToolSettings.xml", "Package: expected exactly one DotnetToolSettings.xml.")]
-    [Arguments("missing", ".mcp/server.json", PackageArchiveBuilder.MissingManifestDiagnostic)]
+    [Arguments("missing", "OpenCodeDotNet.Mcp.win-x64.nuspec", PackagingData.MissingNuspecDiagnostic)]
+    [Arguments("missing", "tools/any/win-x64/DotnetToolSettings.xml", PackagingData.MissingSettingsDiagnostic)]
+    [Arguments("missing", ".mcp/server.json", PackagingData.MissingManifestDiagnostic)]
     [Arguments("duplicate", "OpenCodeDotNet.Mcp.win-x64.nuspec", "Duplicate package path: OpenCodeDotNet.Mcp.win-x64.nuspec")]
     [Arguments("duplicate", "tools/any/win-x64/DotnetToolSettings.xml", "Duplicate package path: tools/any/win-x64/DotnetToolSettings.xml")]
     [Arguments("duplicate", ".mcp/server.json", "Duplicate package path: .mcp/server.json")]
@@ -139,7 +144,7 @@ public sealed class McpPackageInspectorTests
         await builder.WriteAsync(token);
         var result = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(result.Id).IsEqualTo("OpenCodeDotNet.Mcp.win-x64");
-        await Assert.That(result.Version).IsEqualTo(PackageArchiveBuilder.BuildVersion);
+        await Assert.That(result.Version).IsEqualTo(PackagingData.BuildVersion);
         await Assert.That(result.PackageTypes).IsEquivalentTo(["DotnetToolRidPackage"], CollectionOrdering.Matching);
         await Assert.That(result.SettingsPath).IsEqualTo("tools/fixture/win-x64/DotnetToolSettings.xml");
         await Assert.That(result.CommandName).IsEqualTo("opencode-mcp");

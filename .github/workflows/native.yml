@@ -395,3 +395,91 @@ jobs:
           $ErrorActionPreference = 'Stop'
           dotnet run tools/native.cs -- validate --receipts artifacts/native-receipts
           exit $LASTEXITCODE
+
+  packages:
+    name: Pack and inspect complete feed
+    needs: [prepare, validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
+          "OPENCODE_MCP_TEST_FEED=$(Join-Path $env:GITHUB_WORKSPACE 'artifacts/feed')" >> $env:GITHUB_ENV
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+      - name: Download completed native evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-complete-*
+          path: artifacts/native-receipts
+          merge-multiple: false
+      - name: Build native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+      - name: Build product test runner
+        id: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release -nodeReuse:false -p:UseSharedCompilation=false
+          exit $LASTEXITCODE
+      - name: Pack root and validate complete feed
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --no-build tools/native.cs -- pack-root --receipts artifacts/native-receipts --feed artifacts/feed
+          exit $LASTEXITCODE
+      - name: Test packages
+        id: test
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --report-trx --results-directory artifacts/test-results/package/product --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          exit $LASTEXITCODE
+      - name: List package tests after failure
+        if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && steps.test.outcome == 'failure' }}
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --list-tests
+          exit $LASTEXITCODE
+      - name: Record processes after tests
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-process-snapshot-packages
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload package test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-package-test-results
+          path: artifacts/test-results/package/**
+          retention-days: 7
+      - name: Upload complete package feed
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-package-feed
+          path: artifacts/feed/**
+          retention-days: 7
+          if-no-files-found: error

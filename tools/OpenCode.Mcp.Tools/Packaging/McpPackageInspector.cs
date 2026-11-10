@@ -43,6 +43,7 @@ internal sealed class McpPackageInspector(IFileSystem files)
         var settings = await ReadEntryAsync(settingsEntry.Entry, settingsEntry.Path, static (stream, cancellation) => XDocument.LoadAsync(stream, LoadOptions.None, cancellation), token).ConfigureAwait(false);
         var command = Unique(settings.Descendants("Command"), "Command");
         using var manifest = await ReadEntryAsync(manifestEntry.Entry, manifestEntry.Path, static (stream, cancellation) => JsonDocument.ParseAsync(stream, cancellationToken: cancellation), token).ConfigureAwait(false);
+        var manifestFile = await ReadPayloadAsync(manifestEntry.Entry, manifestEntry.Path, token).ConfigureAwait(false);
         var prefix = settingsEntry.Path[..(settingsEntry.Path.LastIndexOf('/') + 1)];
         var payload = new List<PayloadFile>();
         foreach (var entry in entries.Where(entry => entry != settingsEntry && entry.Path.StartsWith(prefix, StringComparison.Ordinal))
@@ -57,11 +58,14 @@ internal sealed class McpPackageInspector(IFileSystem files)
             PackageTypes = metadata.Element(ns + "packageTypes")?.Elements(ns + "packageType").Select(static type => type.Attribute("name")?.Value ?? "").ToArray() ?? [],
             SettingsPath = settingsEntry.Path,
             CommandName = command.Attribute("Name")?.Value ?? "",
-            Runner = command.Attribute("Runner")?.Value ?? "",
-            EntryPoint = command.Attribute("EntryPoint")?.Value ?? "",
+            Runner = command.Attribute("Runner")?.Value,
+            EntryPoint = command.Attribute("EntryPoint")?.Value,
+            RuntimeIdentifierPackages = [.. settings.Descendants("RuntimeIdentifierPackage")
+                .Select(static mapping => new PackageRidMapping(mapping.Attribute("RuntimeIdentifier")?.Value ?? "", mapping.Attribute("Id")?.Value ?? ""))],
             ManifestPath = manifestEntry.Path,
             Manifest = manifest.RootElement.Clone(),
             ManifestSize = manifestEntry.Entry.Length,
+            ManifestSha256 = manifestFile.Sha256,
             Payload = payload.AsReadOnly(),
             Paths = [.. entries.Select(static entry => entry.Path).Order(StringComparer.Ordinal)],
             RepositoryCommit = metadata.Element(ns + "repository")?.Attribute("commit")?.Value,

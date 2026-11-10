@@ -36,6 +36,11 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
                 await output.WriteLineAsync("Native receipt set is complete.".AsMemory(), token).ConfigureAwait(false);
                 return 0;
             }
+            if (command.Operation == "pack-root")
+            {
+                await PackRootAsync(command, host, manifest, token).ConfigureAwait(false);
+                return 0;
+            }
             var rid = command.Rid ?? throw new InvalidOperationException("Missing RID.");
             if (!manifest.Runtimes.Any(runtime => string.Equals(runtime.Rid, rid, StringComparison.Ordinal)))
             {
@@ -99,5 +104,13 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             _ => await new NativeStager(files, runner, modes).StageAsync(request, publishDirectory ?? throw new InvalidOperationException("Missing publish directory."), token).ConfigureAwait(false),
         };
         await output.WriteLineAsync((files.Path.Combine(request.Output, "receipt.json") + "\nExecutable SHA-256: " + receipt.ExecutableSha256).AsMemory(), token).ConfigureAwait(false);
+    }
+
+    private async Task PackRootAsync(NativeCommand command, NativeHost host, NativeManifest manifest, CancellationToken token)
+    {
+        var root = host.WorkingDirectory;
+        var receipts = files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root);
+        var feed = files.Path.GetFullPath(command.Feed ?? throw new InvalidOperationException("Missing feed directory."), root);
+        await new McpPackageBuilder(files, runner, modes).PackRootAsync(new NativeBuildRequest(root, receipts, "", host, manifest), feed, output, token).ConfigureAwait(false);
     }
 }

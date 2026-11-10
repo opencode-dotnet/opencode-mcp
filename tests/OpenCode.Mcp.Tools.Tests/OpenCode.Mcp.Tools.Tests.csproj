@@ -17,7 +17,8 @@
     <PackageReference Include="TUnit" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="Packaging/Fixtures/*" LogicalName="Fixtures.%(Filename)%(Extension)" />
-    <EmbeddedResource Include="../../src/OpenCode.Mcp/.mcp/server.json" Link="Packaging/Fixtures/server.json" LogicalName="Fixtures.server.json" />
+    <EmbeddedResource Include="Fixtures/*" LogicalName="Fixtures.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../src/OpenCode.Mcp/.mcp/server.json" Link="Fixtures/server.json" LogicalName="Fixtures.server.json" />
+    <EmbeddedResource Include="../../packaging/local-feed.nuget.config" Link="Fixtures/local-feed.nuget.config" LogicalName="Fixtures.local-feed.nuget.config" />
   </ItemGroup>
 </Project>

@@ -1,6 +1,6 @@
 # Roadmap
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 Operational state: what exists today, what is queued next, what is still open, and what is known to
 be incomplete. This file is a summary and shrinks as work lands. `../AGENTS.md` routes to the
@@ -12,11 +12,8 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 **Pre-release bootstrap. Nothing is installable yet, and no package or binary is published.**
 
 The managed server, transports, connectivity probe and one-resource Aspire AppHost are implemented.
-Native tooling, container proof orchestration, the native workflow and the public Linux builder
-manifest are implemented. Hosted acceptance remains
-unverified here; verification evidence belongs in pull requests.
-
-Until the merge queue and `master` protection are active, feature branches merge with the maintainer's approval.
+Native AOT payloads for the six RIDs build and pass their checks in the hosted native workflow,
+including the Linux clean-container proof. Verification evidence belongs in pull requests.
 
 ## Bootstrap, in order
 
@@ -30,13 +27,12 @@ Until the merge queue and `master` protection are active, feature branches merge
    and owned cleanup; implemented and locally tested on Windows.
 5. **AppHost** - the one-resource Aspire AppHost and its closed-box lifecycle tests
    (`architecture/hosting-and-packaging.md`); implemented.
-6. **CI** - the required CI workflow with its `CI result` check, dependency review, contribution
-   guides and HangDump references are written. The first green hosted run, then merge-queue and
-   branch-protection activation on `master`, remain pending (`engineering/workflow.md`).
-7. **Native AOT** - the builder, manifest, file-based tool, contract tests, server-only properties,
-   native selection, container ownership, structured runtime proofs, glibc measurement, negative
-   control, archive validation and the manifest-driven native workflow are implemented. Six hosted
-   receipts and real Linux clean-container acceptance remain pending.
+6. **CI** - the required CI workflow with its `CI result` check, dependency review, and the merge
+   queue on a protected `master` (`engineering/workflow.md`); implemented and active.
+7. **Native AOT** - one verified native payload per RID from the manifest-driven native workflow,
+   with the Linux builder image, the clean-container runtime-independence proof and the measured
+   glibc floor (`architecture/hosting-and-packaging.md`); implemented and green on the six hosted
+   runners.
 8. **Packages** - the NuGet MCP tool package set built from those payloads, a complete local feed,
    and the first `CHANGELOG.md` entry.
 9. **Acquisition** - isolated acquisition and packaged startup on each RID, then a package
@@ -54,9 +50,6 @@ Until the merge queue and `master` protection are active, feature branches merge
 
 ## Known Gaps
 
-- **Hosted CI and protection are unverified.** The workflows exist, but no green hosted run or
-  active merge queue/branch protection is recorded. The local check in
-  `engineering/quality-gates.md` is not a hosted `CI result` or a delivery-completion claim.
-- **Native acceptance is incomplete.** Hosted receipts for every manifest RID and Linux
-  runtime-independence proofs remain pending. No package acquisition or installer support is verified.
+- **No package acquisition or installer support is verified.** Native payloads are development
+  evidence until a package candidate is verified from one approved commit.
 - **AppHost cancellation coverage is incomplete.** Cancellation during running startup is not covered.
