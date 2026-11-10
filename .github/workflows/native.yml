@@ -29,6 +29,7 @@ jobs:
       sdk-version: ${{ steps.sdk.outputs.dotnet-version }}
       linux-matrix: ${{ steps.matrix.outputs.linux-matrix }}
       native-matrix: ${{ steps.matrix.outputs.native-matrix }}
+      consumer-matrix: ${{ steps.matrix.outputs.consumer-matrix }}
     steps:
       - name: Initialize owned SDK environment
         run: |
@@ -481,5 +482,88 @@ jobs:
         with:
           name: native-package-feed
           path: artifacts/feed/**
+          retention-days: 7
+          if-no-files-found: error
+
+  consumer:
+    name: Acquire (${{ matrix.rid }})
+    needs: [prepare, packages]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.consumer-matrix) }}
+    steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
+          if ($IsWindows) {
+            "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+            "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          }
+          "OPENCODE_MCP_TEST_FEED=$(Join-Path $env:GITHUB_WORKSPACE 'artifacts/feed')" >> $env:GITHUB_ENV
+          "OPENCODE_MCP_TEST_RID=${{ matrix.rid }}" >> $env:GITHUB_ENV
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+          architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - name: Download complete package feed
+        uses: actions/download-artifact@v8
+        with:
+          name: native-package-feed
+          path: artifacts/feed
+      - name: Build native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+      - name: Build product test runner
+        id: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release -nodeReuse:false -p:UseSharedCompilation=false
+          exit $LASTEXITCODE
+      - name: Test packages
+        id: test
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --report-trx --results-directory artifacts/test-results/package/product --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          exit $LASTEXITCODE
+      - name: List package tests after failure
+        if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && steps.test.outcome == 'failure' }}
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --list-tests
+          exit $LASTEXITCODE
+      - name: Record processes after tests
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-process-snapshot-consumer-${{ matrix.rid }}
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload package test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-package-test-results-consumer-${{ matrix.rid }}
+          path: artifacts/test-results/package/**
           retention-days: 7
           if-no-files-found: error

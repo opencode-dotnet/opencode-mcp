@@ -223,8 +223,9 @@ or dependency to that job. Local Windows evidence proves neither hosted executio
 support, package acquisition or installation.
 
 The `Native` workflow uses prepare → Linux builder/Windows/macOS build jobs → Linux host proof
-jobs → native validation → packages. Job guards are 30 minutes for preparation and validation,
-150 minutes for builds, and 90 minutes for Linux proof and packages. Every step invoking tests has
+jobs → native validation → packages → one `consumer` leg per manifest row. Job guards are 30 minutes
+for preparation and validation, 150 minutes for builds, and 90 minutes for Linux proof, packages and
+consumers. Every step invoking tests has
 a 35-minute guard; tool-owned test
 processes have a 30-minute outer guard around the 25-minute session bound. Listing steps have a
 five-minute guard and do not rerun tests. All test invocations disable TUnit's automatic artifact
@@ -271,13 +272,26 @@ path and SHA-256 equality. The `packages` job downloads its own run's six comple
 packs and validates the feed, runs `PackageContentsTests` with `/*/*/PackageContentsTests/*`, and
 uploads `native-package-feed` only on success. Its failure listing uses the same class filter.
 It always records a process snapshot and uploads package test results. A failed test gets a
-five-minute listing step, not a rerun. Native and package success at the pull request's head are
-extra acceptance conditions before queue entry; `CI result` remains the only required check.
+five-minute listing step, not a rerun. Native, package and all six consumer legs' success at the
+pull request's head are extra acceptance conditions before queue entry; `CI result` remains the
+only required check.
 Contents-only acceptance makes no acquisition or packaged-startup claim. The complete Package
 category additionally exercises cold exact-version DNX, owned tool-path/shim startup, the installed
 HTTP entry, missing-host-implementation refusal on both routes, complete payload equality, observed
 native process paths and owned cleanup. Local matching-host results establish only that host's
 development evidence; they are no hosted, six-RID, final-candidate or publication claim.
+
+The `matrix` subcommand projects `consumer-matrix` from every manifest row in manifest order, with
+only `rid` and `runner`; no second RID list is maintained. After `packages` succeeds, each consumer
+leg runs on its matching RID host, downloads its own workflow run's complete `native-package-feed`
+to `artifacts/feed`, and runs the whole `Package` category with `OPENCODE_MCP_TEST_FEED` set to that
+directory and `OPENCODE_MCP_TEST_RID` set to its matrix RID. A failed test after a successful build
+gets the same category's test listing under a five-minute guard unless cancelled, never a rerun.
+Each leg always records the prebuilt tool's post-test process snapshot and uploads
+`native-process-snapshot-consumer-<RID>` and `native-package-test-results-consumer-<RID>`, with
+seven-day retention and missing files treated as errors. Package results come only from
+`artifacts/test-results/package/**`; owned homes, caches, private SDK copies and the feed are not
+uploaded by consumers.
 
 ### Linux builder verification
 

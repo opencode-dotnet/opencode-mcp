@@ -277,8 +277,9 @@ not a second distributed product. The entry is compiled separately from the solu
   the missing Native AOT export refusal. A companion file or a generic inspector failure cannot
   satisfy the control. The control does not change the native receipt or invalidate its assets.
 - `matrix --manifest <path> --github-output <file>` projects the manifest, in order, into
-  `linux-matrix` and `native-matrix` Actions outputs. Linux entries also carry the builder and
-  runtime images.
+  `linux-matrix`, `native-matrix` and `consumer-matrix` Actions outputs, in that output order. Linux
+  build entries also carry the builder and runtime images; consumer entries contain exactly `rid`
+  and `runner` for every manifest row.
 - `prove-linux --rid <RID> --evidence <downloaded-directory>` requires a matching Linux host,
   source inputs and executed SDK. It clears stale proof, verifies the complete downloaded payload,
   manifest and archive, and extracts the verified tar before executing anything downloaded. It
@@ -321,7 +322,8 @@ same-filesystem whole-root enumeration with no `dotnet`, `libhostfxr.so`, `libho
 `matching-host-inspection` and the successful final normalized-payload export inspection;
 their glibc field is null. Receipt validation checks recorded evidence, not an inspection rerun.
 
-The `Native` workflow projects both build matrices from the manifest. Preparation resolves the SDK
+The `Native` workflow projects both build matrices and the consumer matrix from the manifest, with
+no second RID list. Preparation resolves the SDK
 from `global.json`; every later job installs that exact SDK. Linux builds run in the pinned builder
 job containers; Windows/macOS build on matching hosts. Separate Linux host jobs prove the downloaded
 archives. The native validation job runs only after every needed job succeeds, downloads completed
@@ -332,6 +334,13 @@ subsequent `packages` job downloads the completed artifacts of its own workflow 
 validates the complete feed and runs its separate package-contents pass. The workflow's artifact download
 establishes the one-run boundary; receipts prove source, common-input, SDK, version and dependency
 coherence, not workflow-run origin. Local `pack-root` makes no workflow-run-origin claim.
+After `packages`, one `consumer` leg per manifest row runs on its matching RID host and downloads
+that same workflow run's complete `native-package-feed`. Each leg sets `OPENCODE_MCP_TEST_RID` to
+its matrix RID and `OPENCODE_MCP_TEST_FEED` to the downloaded feed, then runs the whole `Package`
+category, including acquisition and package contents. Per-RID process snapshots and package test
+results, failure listing without rerun, and all-six-leg acceptance at the pull request's head follow
+the [package gate](../engineering/quality-gates.md#package-pass); `CI result` remains the only
+required check.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the

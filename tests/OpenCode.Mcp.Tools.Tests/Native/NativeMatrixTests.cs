@@ -35,7 +35,7 @@ public sealed class NativeMatrixTests
         files.Initialize().WithFile(path);
         await new NativeMatrix(files).WriteAsync(manifest, path, token);
         var outputs = (await files.File.ReadAllLinesAsync(path, token)).Select(static line => line.Split('=', 2)).ToArray();
-        await Assert.That(outputs.Select(static pair => pair[0])).IsEquivalentTo(["linux-matrix", "native-matrix"], CollectionOrdering.Matching);
+        await Assert.That(outputs.Select(static pair => pair[0])).IsEquivalentTo(["linux-matrix", "native-matrix", "consumer-matrix"], CollectionOrdering.Matching);
         using var linux = JsonDocument.Parse(outputs[0][1]);
         using var native = JsonDocument.Parse(outputs[1][1]);
         await Assert.That(linux.RootElement.GetProperty("include").EnumerateArray().Select(static item => item.GetProperty("rid").GetString() + "/" + item.GetProperty("runner").GetString()))
@@ -46,5 +46,12 @@ public sealed class NativeMatrixTests
         }
         await Assert.That(native.RootElement.GetProperty("include").EnumerateArray().Select(static item => item.GetProperty("rid").GetString() + "/" + item.GetProperty("runner").GetString()))
             .IsEquivalentTo(["osx-arm64/macos-26", "win-x64/windows-2025", "win-arm64/windows-11-arm", "osx-x64/macos-15-intel"], CollectionOrdering.Matching);
+        using var consumer = JsonDocument.Parse(outputs[2][1]);
+        await Assert.That(consumer.RootElement.GetProperty("include").EnumerateArray().Select(static item => item.GetProperty("rid").GetString() + "/" + item.GetProperty("runner").GetString()))
+            .IsEquivalentTo(["osx-arm64/macos-26", "linux-arm64/ubuntu-24.04-arm", "win-x64/windows-2025", "linux-x64/ubuntu-24.04", "win-arm64/windows-11-arm", "osx-x64/macos-15-intel"], CollectionOrdering.Matching);
+        foreach (var entry in consumer.RootElement.GetProperty("include").EnumerateArray())
+        {
+            await Assert.That(entry.EnumerateObject().Select(static property => property.Name)).IsEquivalentTo(["rid", "runner"], CollectionOrdering.Matching);
+        }
     }
 }
