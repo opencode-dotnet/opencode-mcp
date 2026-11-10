@@ -323,24 +323,20 @@ same-filesystem whole-root enumeration with no `dotnet`, `libhostfxr.so`, `libho
 their glibc field is null. Receipt validation checks recorded evidence, not an inspection rerun.
 
 The `Native` workflow projects both build matrices and the consumer matrix from the manifest, with
-no second RID list. Preparation resolves the SDK
-from `global.json`; every later job installs that exact SDK. Linux builds run in the pinned builder
-job containers; Windows/macOS build on matching hosts. Separate Linux host jobs prove the downloaded
-archives. The native validation job runs only after every needed job succeeds, downloads completed
-per-RID evidence into separate directories, and validates the receipt set. Its success and log are
-the fan-in evidence; no preparation file or receipt index is produced. This workflow has read-only
-contents permission, runs on pull requests and manual dispatch, and adds no required check. A
-subsequent `packages` job downloads the completed artifacts of its own workflow run, packs the root,
-validates the complete feed and runs its separate package-contents pass. The workflow's artifact download
-establishes the one-run boundary; receipts prove source, common-input, SDK, version and dependency
-coherence, not workflow-run origin. Local `pack-root` makes no workflow-run-origin claim.
-After `packages`, one `consumer` leg per manifest row runs on its matching RID host and downloads
-that same workflow run's complete `native-package-feed`. Each leg sets `OPENCODE_MCP_TEST_RID` to
-its matrix RID and `OPENCODE_MCP_TEST_FEED` to the downloaded feed, then runs the whole `Package`
-category, including acquisition and package contents. Per-RID process snapshots and package test
-results, failure listing without rerun, and all-six-leg acceptance at the pull request's head follow
-the [package gate](../engineering/quality-gates.md#package-pass); `CI result` remains the only
-required check.
+no second RID list. Preparation resolves the SDK from `global.json`; every later job installs that
+exact SDK. Linux builds run in the pinned builder job containers; Windows/macOS build on matching
+hosts. Separate Linux host jobs prove the downloaded archives. The native validation job runs only
+after every needed job succeeds, downloads completed per-RID evidence into separate directories,
+and validates the receipt set. Its success and log are the fan-in evidence; no preparation file or
+receipt index is produced. This workflow has read-only contents permission, runs on pull requests
+and manual dispatch, and adds no required check. A subsequent `packages` job downloads the completed
+artifacts of its own workflow run, packs the root, validates the complete feed and runs its separate
+package-contents pass. The workflow's artifact download establishes the one-run boundary; receipts
+prove source, common-input, SDK, version and dependency coherence, not workflow-run origin. Local
+`pack-root` makes no workflow-run-origin claim.
+After `packages`, one `consumer` leg per manifest row runs on its matching RID host against that
+same workflow run's complete `native-package-feed`, and the
+[package gate](../engineering/quality-gates.md#package-pass) owns its inputs, artifacts and acceptance rule.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
@@ -455,9 +451,10 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
   character bounds. Packing never rewrites the tracked manifest.
 - `.mcp/server.json` declares stdio acquisition through `dnx` with explicit
   `--transport stdio` package arguments. `dnx` receives `-v minimal` before `--`, both there and in
-  the README's manual launch command: on macOS a cold acquisition at default verbosity writes a
-  signature-verification notice to standard output before the server starts, which would corrupt
-  the protocol stream. That line is never filtered out to pass a test.
+  the [manual verification recipe](../engineering/quality-gates.md#package-pass): on macOS a cold
+  acquisition at default verbosity writes a signature-verification notice to standard output before
+  the server starts, which would corrupt the protocol stream. That line is never filtered out to
+  pass a test.
 - Native execution needs no installed .NET runtime; `dnx` acquisition still needs the .NET SDK.
   Direct native archives are the SDK-free route.
 - The packed README is `packaging/README.md`, packed as `README.md`, and contains no repository

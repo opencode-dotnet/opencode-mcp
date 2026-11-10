@@ -252,11 +252,13 @@ cannot own its server fails.
   a DNX or command-shim root exits or startup fails before protocol readiness. Retain those handles,
   start each exit wait while alive, and await every exit before deleting the root. Preserve the
   operation failure before cleanup failures. A failed acquisition whose cleanup also fails names
-  the retained root, as do unresolved container ownership and a reused process identifier. A plain
-  disposal failure of the direct process owner surfaces unchanged with its root retained.
-  A failure to capture owned processes never prevents ending the root and the processes already captured. Short SDK
-  commands use the existing process-runner seam with environment inheritance disabled. The lazy
-  private SDK copy is shared read-only for the test session and removed after its consumers finish.
+  the root when one is retained, as do unresolved container ownership and a reused process
+  identifier. A plain disposal failure of the direct process owner surfaces unchanged with its root
+  retained.
+  A failure to capture owned processes never prevents ending the root and the processes already
+  captured. Short SDK commands use the existing process-runner seam with environment inheritance
+  disabled. The lazy private SDK copy is shared read-only for the test session and removed after its
+  consumers finish.
 - **The event decides a verdict, never the clock.** The verdict rests on an event: the call result,
   the exit after end of input, the refused connection after stop, the healthy resource. A test
   whose verdict rests on a product bound passing, or not passing, runs that bound on a test-owned

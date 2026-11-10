@@ -107,7 +107,8 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
             }
             IEnumerable<Exception> failures = original is AggregateException reported && reported.InnerExceptions.Contains(cleanup)
                 ? reported.InnerExceptions : [original, cleanup];
-            throw new AggregateException("Acquisition failed; retained root: " + OwnedRoot, failures);
+            throw new AggregateException(_files.Directory.Exists(OwnedRoot)
+                ? "Acquisition failed; retained root: " + OwnedRoot : "Acquisition failed.", failures);
         }
     }
 

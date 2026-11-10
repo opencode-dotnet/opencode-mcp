@@ -23,7 +23,7 @@ public sealed class OwnedMcpProcessTests
         var launch = DiagnosticLaunch("for /L %i in (0,0,1) do @rem hold", "while :; do :; done");
         var failure = new IOException("owned root enumeration failed");
         var directory = ForwardDirectory();
-        directory.EnumerateFiles(launch.OwnedRoot, "*", SearchOption.AllDirectories).Returns(_ => throw failure);
+        directory.EnumerateFiles(Arg.Is(launch.OwnedRoot), Arg.Is("*"), SearchOption.AllDirectories).Returns(_ => throw failure);
         var decorated = DecorateDirectory(directory);
         var owner = new OwnedMcpProcess(decorated);
         await owner.StartAsync(launch, token);
@@ -60,7 +60,10 @@ public sealed class OwnedMcpProcessTests
             {
                 await Assert.That(error).IsSameReferenceAs(failure);
             }
-            _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+            if (_files.Directory.Exists(launch.OwnedRoot))
+            {
+                _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+            }
         }
     }
 
@@ -72,7 +75,7 @@ public sealed class OwnedMcpProcessTests
         var failure = new IOException("second owned root enumeration failed");
         var directory = ForwardDirectory();
         var captures = 0;
-        directory.EnumerateFiles(launch.OwnedRoot, "*", SearchOption.AllDirectories).Returns(_ => ++captures == 3
+        directory.EnumerateFiles(Arg.Is(launch.OwnedRoot), Arg.Is("*"), SearchOption.AllDirectories).Returns(_ => ++captures == 3
             ? throw failure : _files.Directory.EnumerateFiles(launch.OwnedRoot, "*", SearchOption.AllDirectories));
         Task? childExit = null;
         var stdout = Task.CompletedTask;
@@ -133,7 +136,10 @@ public sealed class OwnedMcpProcessTests
                     await Assert.That(error).IsSameReferenceAs(failure);
                 }
                 root?.Dispose();
-                _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+                if (_files.Directory.Exists(launch.OwnedRoot))
+                {
+                    _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+                }
             }
         }
     }

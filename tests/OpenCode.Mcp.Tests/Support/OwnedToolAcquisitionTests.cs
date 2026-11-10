@@ -377,6 +377,41 @@ public sealed class OwnedToolAcquisitionTests
         await owner.DisposeAsync();
     }
 
+    [Test]
+    public async Task InstallAsync_Should_Not_Claim_A_Retained_Root_When_Owned_Copy_Disposal_Fails(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var decorated = DecorateDirectory(files, out var directory);
+        var runner = ProbeRunner(files);
+        await using var owner = new OwnedToolAcquisition(decorated, runner);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
+        var copyRoot = files.Path.GetFullPath(files.Path.Combine(owner.SdkDirectory, "..", ".."));
+        var original = new InvalidOperationException("installation refused");
+        var cleanup = new IOException("copy root deletion refused");
+        directory.When(value => value.Delete(Arg.Any<string>(), recursive: true)).Do(call =>
+        {
+            var path = call.ArgAt<string>(0);
+            if (path == copyRoot)
+            {
+                throw cleanup;
+            }
+            files.Directory.Delete(path, recursive: true);
+        });
+        runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == "tool"), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<NativeProcessResult>(original));
+        var failure = await Assert.That(async () => { await owner.InstallAsync("version", token); }).ThrowsExactly<AggregateException>();
+        var combined = await Assert.That(failure).IsNotNull();
+        await Assert.That(combined.InnerExceptions.Select(static error => error.Message))
+            .IsEquivalentTo(["installation refused", "copy root deletion refused"], CollectionOrdering.Matching);
+        await Assert.That(combined.InnerExceptions[0]).IsSameReferenceAs(original);
+        await Assert.That(combined.InnerExceptions[1]).IsSameReferenceAs(cleanup);
+        await Assert.That(combined.Message).IsEqualTo("Acquisition failed. (installation refused) (copy root deletion refused)");
+        await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsFalse();
+        await Assert.That(files.Directory.Exists(copyRoot)).IsTrue();
+        await owner.DisposeAsync();
+    }
+
     private static IFileSystem DecorateDirectory(MockFileSystem files, out IDirectory directory)
     {
         directory = Substitute.For<IDirectory>();

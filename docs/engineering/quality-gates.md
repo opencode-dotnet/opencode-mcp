@@ -225,13 +225,12 @@ support, package acquisition or installation.
 The `Native` workflow uses prepare → Linux builder/Windows/macOS build jobs → Linux host proof
 jobs → native validation → packages → one `consumer` leg per manifest row. Job guards are 30 minutes
 for preparation and validation, 150 minutes for builds, and 90 minutes for Linux proof, packages and
-consumers. Every step invoking tests has
-a 35-minute guard; tool-owned test
-processes have a 30-minute outer guard around the 25-minute session bound. Listing steps have a
-five-minute guard and do not rerun tests. All test invocations disable TUnit's automatic artifact
-upload and use unique phase result directories. Every job owns `DOTNET_INSTALL_DIR` under
-`runner.temp`; Windows sets `TEMP` and `TMP` there before SDK setup. Linux proof runs on hosts,
-not in the builder container, and executes downloaded binaries only from the verified extracted tar.
+consumers. Every step invoking tests has a 35-minute guard; tool-owned test processes have a
+30-minute outer guard around the 25-minute session bound. Listing steps have a five-minute guard
+and do not rerun tests. All test invocations disable TUnit's automatic artifact upload and use unique
+phase result directories. Every job owns `DOTNET_INSTALL_DIR` under `runner.temp`; Windows sets
+`TEMP` and `TMP` there before SDK setup. Linux proof runs on hosts, not in the builder container,
+and executes downloaded binaries only from the verified extracted tar.
 
 Evidence, test results, symbols and process snapshots have unique per-job/per-RID artifact names
 and seven-day retention. Completed receipts are uploaded only after successful proof; validation
@@ -265,6 +264,26 @@ acquisition test starts. Absent, blank, unknown and host/private-dotnet-mismatch
 instructively, never default or skip. Package-contents inspection needs only the feed. Acquisition
 runs on a host matching the claimed manifest RID and uses the private SDK without shared ASP.NET
 Core; unownable ambient NuGet configuration fails before an acquisition launch.
+
+The acquisition tests run these two command vectors, which maintainers can also run by hand:
+
+```text
+dotnet dnx -v minimal OpenCodeDotNet.Mcp@<version> --configfile <config> --yes -- --transport stdio
+dotnet tool install OpenCodeDotNet.Mcp --version <version> --tool-path <tool-path> --configfile <config> --framework net10.0 -v minimal
+```
+
+`<version>` is the feed's product version, and `<tool-path>` is a directory the caller owns.
+`<config>` is the NuGet configuration described by the
+[complete-local-feed contract](../architecture/hosting-and-packaging.md#root-package-and-complete-local-feed).
+See the [acquisition and native-execution prerequisites](../architecture/hosting-and-packaging.md#nuget-mcp-tool-package)
+for the SDK/runtime boundary.
+See the [installed-command contract](../architecture/hosting-and-packaging.md#payload-candidate-and-acquisition)
+for Windows and Unix launch forms.
+The second command carries `--framework net10.0` because without it, on Windows Arm64 and macOS
+Arm64, the SDK asks for the x64 apphost pack, which a feed holding only this product's packages
+cannot supply.
+The acquisition tests run these vectors inside the [owned-process isolation](testing-style.md#6-owned-processes-are-hermetic);
+a run by hand uses the caller's own NuGet stores unless the caller isolates them.
 
 Package acceptance requires seven real SDK-produced packages, their coherent native receipts and
 payload manifests, exact root RID mappings, byte-identical packed MCP manifests, and whole-payload
