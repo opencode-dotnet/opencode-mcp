@@ -139,7 +139,7 @@ public sealed class PackageAcquisitionTests(PrivateSdkCopy sdk) : IAsyncDisposab
         {
             await Assert.That(async () => { await owner.InstallAsync(_bootstrap.ExpectedVersion, token); }).ThrowsExactly<InvalidOperationException>();
             result = await Assert.That(owner.InstallResult).IsNotNull();
-            commands = owner.InstalledCommands;
+            commands = await Assert.That<IReadOnlyList<string>>(owner.InstalledCommands).IsNotNull();
         }
         await OwnedToolAcquisition.AssertMissingImplementationAsync(result, rid, _bootstrap.ExpectedVersion, commands);
         await LogAsync(string.Create(CultureInfo.InvariantCulture, $"{route} missing-child exit={result.ExitCode}\n{result.Output}"));

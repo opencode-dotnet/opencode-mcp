@@ -333,19 +333,11 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Forced termination and owned reader completion.
         try
         {
-            Exception? captureFailure = null;
-            try
-            {
-                CaptureOwnedProcesses();
-            }
-            catch (Exception failure)
-            {
-                captureFailure = failure;
-            }
+            var captureFailure = CaptureOwnedProcessFailure();
             await EndRootAsync(guard.Token);
             if (captureFailure is null)
             {
-                CaptureOwnedProcesses(); // The launcher can exit before its native entry does.
+                captureFailure = CaptureOwnedProcessFailure(); // The launcher can exit before its native entry does.
             }
             foreach (var (process, identity) in _ownedProcesses)
             {
@@ -416,6 +408,19 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         return ObserveOwnedExecutables().Values.SingleOrDefault(path => string.Equals(path, expectedExecutable,
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             ?? throw new InvalidOperationException("The packaged native entry is not running: " + expectedExecutable);
+    }
+
+    private Exception? CaptureOwnedProcessFailure()
+    {
+        try
+        {
+            CaptureOwnedProcesses();
+            return null;
+        }
+        catch (Exception failure)
+        {
+            return failure;
+        }
     }
 
     private async Task EndRootAsync(CancellationToken token)

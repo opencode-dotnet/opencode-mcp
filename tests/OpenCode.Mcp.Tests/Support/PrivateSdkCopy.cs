@@ -42,14 +42,15 @@ public sealed class PrivateSdkCopy : IAsyncDisposable
         }
         lock (_gate)
         {
-            // The session owns the copy; cancellation applies to each consumer's wait only.
-            return (_copy ??= CopyAsync(installation, sdkVersion, CancellationToken.None)).WaitAsync(token);
+            // The session owns the scheduled copy, not the first caller's critical section or cancellation.
+            return (_copy ??= Task.Run(() => CopyAsync(installation, sdkVersion), CancellationToken.None)).WaitAsync(token);
         }
     }
 
-    private async Task CopyAsync(string installation, string sdkVersion, CancellationToken token)
+    private async Task CopyAsync(string installation, string sdkVersion)
     {
-        var configuration = JsonNode.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(installation, "sdk", sdkVersion, "dotnet.runtimeconfig.json"), token));
+        // The session joins this read on disposal even when every consumer has cancelled its wait.
+        var configuration = JsonNode.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(installation, "sdk", sdkVersion, "dotnet.runtimeconfig.json"), CancellationToken.None));
         var framework = configuration?["runtimeOptions"]?["framework"] ?? throw new InvalidOperationException("The selected SDK has no required framework.");
         if (framework["name"]?.GetValue<string>() != "Microsoft.NETCore.App")
         {
@@ -65,7 +66,6 @@ public sealed class PrivateSdkCopy : IAsyncDisposable
             var source = _files.Path.Combine(installation, relative);
             foreach (var file in _files.Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
             {
-                token.ThrowIfCancellationRequested();
                 CopyFile(installation, _files.Path.GetRelativePath(installation, file));
             }
         }

@@ -22,11 +22,7 @@ public sealed class OwnedMcpProcessTests
     {
         var launch = DiagnosticLaunch("for /L %i in (0,0,1) do @rem hold", "while :; do :; done");
         var failure = new IOException("owned root enumeration failed");
-        var directory = Substitute.For<IDirectory>();
-        directory.CreateDirectory(Arg.Any<string>()).Returns(call => _files.Directory.CreateDirectory(call.Arg<string>()));
-        directory.Exists(Arg.Any<string>()).Returns(call => _files.Directory.Exists(call.Arg<string>()));
-        directory.ResolveLinkTarget(Arg.Any<string>(), returnFinalTarget: true)
-            .Returns(call => _files.Directory.ResolveLinkTarget(call.Arg<string>(), returnFinalTarget: true));
+        var directory = ForwardDirectory();
         directory.EnumerateFiles(launch.OwnedRoot, "*", SearchOption.AllDirectories).Returns(_ => throw failure);
         var decorated = DecorateDirectory(directory);
         var owner = new OwnedMcpProcess(decorated);
@@ -34,11 +30,14 @@ public sealed class OwnedMcpProcessTests
         using var root = Process.GetProcessById(owner.ProcessId);
         var exit = root.WaitForExitAsync(CancellationToken.None); // Backstop ownership is independent of disposal.
         var input = owner.StandardInput;
+        Task? disposal = null;
+        using var guard = CancellationTokenSource.CreateLinkedTokenSource(token);
+        guard.CancelAfter(TimeSpan.FromSeconds(45)); // Bounds only the disposal wait, not its expected capture failure.
         try
         {
             await Assert.That(root.HasExited).IsFalse();
-            var disposal = owner.DisposeAsync().AsTask();
-            await Assert.That(() => disposal.WaitAsync(token)).ThrowsExactly<IOException>()
+            disposal = owner.DisposeAsync().AsTask();
+            await Assert.That(() => disposal.WaitAsync(guard.Token)).ThrowsExactly<IOException>()
                 .WithMessage("owned root enumeration failed", StringComparison.Ordinal);
             await Assert.That(owner.ExitCompleted).IsTrue(); // Before the backstop kill, including when stdin has closed.
             await Assert.That(root.HasExited).IsTrue();
@@ -53,7 +52,89 @@ public sealed class OwnedMcpProcessTests
                 root.Kill(entireProcessTree: true);
             }
             await exit.WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None);
+            try
+            {
+                await owner.DisposeAsync(); // Joins the retained disposal after the independent backstop finishes.
+            }
+            catch (Exception error)
+            {
+                await Assert.That(error).IsSameReferenceAs(failure);
+            }
             _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task DisposeAsync_Should_End_Previously_Captured_Processes_When_The_Second_Capture_Fails(CancellationToken token)
+    {
+        var launch = DiagnosticLaunch("set /p hold=", "read hold");
+        using var child = CreateOwnedChild(launch);
+        var failure = new IOException("second owned root enumeration failed");
+        var directory = ForwardDirectory();
+        var captures = 0;
+        directory.EnumerateFiles(launch.OwnedRoot, "*", SearchOption.AllDirectories).Returns(_ => ++captures == 3
+            ? throw failure : _files.Directory.EnumerateFiles(launch.OwnedRoot, "*", SearchOption.AllDirectories));
+        Task? childExit = null;
+        var stdout = Task.CompletedTask;
+        var stderr = Task.CompletedTask;
+        Process? root = null;
+        Task? rootExit = null;
+        Task? disposal = null;
+        using var guard = CancellationTokenSource.CreateLinkedTokenSource(token);
+        guard.CancelAfter(TimeSpan.FromSeconds(45)); // Bounds only the disposal wait; the capture failure remains the oracle.
+        var owner = new OwnedMcpProcess(DecorateDirectory(directory));
+        try
+        {
+            foreach (var entry in owner.CreateEnvironment(launch))
+            {
+                child.StartInfo.Environment[entry.Key] = entry.Value;
+            }
+            child.Start();
+            childExit = child.WaitForExitAsync(CancellationToken.None); // Independent evidence survives owner disposal.
+            stdout = child.StandardOutput.ReadToEndAsync(token);
+            stderr = child.StandardError.ReadToEndAsync(token);
+            await owner.StartAsync(launch, token);
+            root = Process.GetProcessById(owner.ProcessId);
+            rootExit = root.WaitForExitAsync(CancellationToken.None); // The test owns its backstop independently.
+            await Assert.That(owner.ObserveOwnedExecutables().Keys).Contains(child.Id);
+            await Assert.That(child.HasExited).IsFalse();
+            disposal = owner.DisposeAsync().AsTask();
+            var error = await Assert.That(() => disposal.WaitAsync(guard.Token)).ThrowsExactly<IOException>();
+            await Assert.That(child.HasExited).IsTrue(); // Before any backstop: a second-capture failure must not skip the kill loop.
+            await Assert.That(error).IsSameReferenceAs(failure);
+            await Assert.That(owner.ExitCompleted).IsTrue();
+            await Assert.That(root.HasExited).IsTrue();
+            await Assert.That(captures).IsEqualTo(3);
+            await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsTrue();
+        }
+        finally
+        {
+            try
+            {
+                if (root is not null && !root.HasExited)
+                {
+                    root.Kill(entireProcessTree: true);
+                }
+                if (childExit is not null && !child.HasExited)
+                {
+                    child.Kill();
+                }
+                await Task.WhenAll(childExit ?? Task.CompletedTask, stdout, stderr, rootExit ?? Task.CompletedTask)
+                    .WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None); // Backstop cleanup must finish after caller cancellation.
+            }
+            finally
+            {
+                try
+                {
+                    await owner.DisposeAsync(); // Joins the retained disposal after both independently held processes exit.
+                }
+                catch (Exception error)
+                {
+                    await Assert.That(error).IsSameReferenceAs(failure);
+                }
+                root?.Dispose();
+                _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+            }
         }
     }
 
@@ -74,31 +155,8 @@ public sealed class OwnedMcpProcessTests
     public async Task DisposeAsync_Should_Await_Every_Process_With_An_Executable_Inside_The_Root(bool rootExited, CancellationToken token)
     {
         var launch = DiagnosticLaunch(rootExited ? "exit /b 0" : "set /p hold=", rootExited ? "exit 0" : "read hold");
-        var childPath = _files.Path.Combine(launch.OwnedRoot, OperatingSystem.IsWindows() ? "owned-child.exe" : "owned-child");
-        var childSource = OperatingSystem.IsWindows() ? launch.FileName : "/bin/cat";
-        _files.File.Copy(childSource, childPath);
-        if (!OperatingSystem.IsWindows())
-        {
-            _files.File.SetUnixFileMode(childPath, _files.File.GetUnixFileMode(childSource));
-        }
-        using var child = new Process
-        {
-            StartInfo = new ProcessStartInfo(childPath)
-            {
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                Arguments = OperatingSystem.IsWindows() ? "/d /e:on /v:off /c set /p hold=" : "",
-            },
-        };
-        var directory = Substitute.For<IDirectory>();
-        directory.CreateDirectory(Arg.Any<string>()).Returns(call => _files.Directory.CreateDirectory(call.Arg<string>()));
-        directory.Exists(Arg.Any<string>()).Returns(call => _files.Directory.Exists(call.Arg<string>()));
-        directory.ResolveLinkTarget(Arg.Any<string>(), returnFinalTarget: true)
-            .Returns(call => _files.Directory.ResolveLinkTarget(call.Arg<string>(), returnFinalTarget: true));
-        directory.EnumerateFiles(Arg.Any<string>(), Arg.Any<string>(), SearchOption.AllDirectories)
-            .Returns(call => _files.Directory.EnumerateFiles(call.ArgAt<string>(0), call.ArgAt<string>(1), SearchOption.AllDirectories));
+        using var child = CreateOwnedChild(launch);
+        var directory = ForwardDirectory();
         directory.When(value => value.Delete(launch.OwnedRoot, recursive: true)).Do(_ =>
         {
             // Keep a live image available for the independent HasExited oracle, rather than a Windows delete error.
@@ -109,7 +167,6 @@ public sealed class OwnedMcpProcessTests
         });
         var observedFiles = DecorateDirectory(directory);
         await using var owner = new OwnedMcpProcess(observedFiles);
-        child.StartInfo.Environment.Clear();
         foreach (var entry in owner.CreateEnvironment(launch))
         {
             child.StartInfo.Environment[entry.Key] = entry.Value;
@@ -700,6 +757,42 @@ public sealed class OwnedMcpProcessTests
     }
 
     private ProcessLaunch Launch() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal));
+
+    private Process CreateOwnedChild(ProcessLaunch launch)
+    {
+        var path = _files.Path.Combine(launch.OwnedRoot, OperatingSystem.IsWindows() ? "owned-child.exe" : "owned-child");
+        var source = OperatingSystem.IsWindows() ? launch.FileName : "/bin/cat";
+        _files.File.Copy(source, path);
+        if (!OperatingSystem.IsWindows())
+        {
+            _files.File.SetUnixFileMode(path, _files.File.GetUnixFileMode(source));
+        }
+        var child = new Process
+        {
+            StartInfo = new ProcessStartInfo(path)
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                Arguments = OperatingSystem.IsWindows() ? "/d /e:on /v:off /c set /p hold=" : "",
+            },
+        };
+        child.StartInfo.Environment.Clear();
+        return child;
+    }
+
+    private IDirectory ForwardDirectory()
+    {
+        var directory = Substitute.For<IDirectory>();
+        directory.CreateDirectory(Arg.Any<string>()).Returns(call => _files.Directory.CreateDirectory(call.Arg<string>()));
+        directory.Exists(Arg.Any<string>()).Returns(call => _files.Directory.Exists(call.Arg<string>()));
+        directory.ResolveLinkTarget(Arg.Any<string>(), returnFinalTarget: true)
+            .Returns(call => _files.Directory.ResolveLinkTarget(call.Arg<string>(), returnFinalTarget: true));
+        directory.EnumerateFiles(Arg.Any<string>(), Arg.Any<string>(), SearchOption.AllDirectories)
+            .Returns(call => _files.Directory.EnumerateFiles(call.ArgAt<string>(0), call.ArgAt<string>(1), SearchOption.AllDirectories));
+        return directory;
+    }
 
     private IFileSystem DecorateDirectory(IDirectory directory)
     {

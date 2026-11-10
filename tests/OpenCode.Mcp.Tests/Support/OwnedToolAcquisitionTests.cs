@@ -14,13 +14,51 @@ namespace OpenCode.Mcp.Tests.Support;
 public sealed class OwnedToolAcquisitionTests
 {
     [Test]
+    public async Task PrepareAsync_Should_Release_Both_Roots_And_Report_An_Owned_Copy_Failure_Once(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var failure = new IOException("private host copy failed");
+        var copyRoot = "";
+        var copyRootExisted = false;
+        var file = Substitute.For<IFile>();
+        file.ReadAllTextAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => files.File.ReadAllTextAsync(call.Arg<string>(), call.Arg<CancellationToken>()));
+        file.WriteAllTextAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => files.File.WriteAllTextAsync(call.ArgAt<string>(0), call.ArgAt<string>(1), call.Arg<CancellationToken>()));
+        file.Create(Arg.Any<string>()).Returns(call => files.File.Create(call.Arg<string>()));
+        file.When(value => value.Copy(Arg.Any<string>(), Arg.Any<string>())).Do(call =>
+        {
+            var source = call.ArgAt<string>(0);
+            var destination = call.ArgAt<string>(1);
+            if (files.Path.GetFileName(source) == (OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"))
+            {
+                copyRoot = files.Path.GetDirectoryName(destination) ?? throw new InvalidOperationException();
+                copyRootExisted = files.Directory.Exists(copyRoot);
+                throw failure;
+            }
+            files.File.Copy(source, destination);
+        });
+        var decorated = Substitute.For<IFileSystem>();
+        decorated.File.Returns(file);
+        decorated.Directory.Returns(files.Directory);
+        decorated.Path.Returns(files.Path);
+        await using var owner = new OwnedToolAcquisition(decorated, ProbeRunner(files));
+        var error = await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.403", token)).Throws<Exception>();
+        await Assert.That(copyRootExisted).IsTrue();
+        await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsFalse();
+        await Assert.That(files.Directory.Exists(copyRoot)).IsFalse();
+        await Assert.That(error).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task PrepareAsync_Should_Refuse_An_Unexpected_Private_Host_Inventory(bool runtimeInventory, CancellationToken token)
     {
         var files = new MockFileSystem();
-        var repository = await PrepareRepositoryAsync(files, token);
-        var runner = ProbeRunner(files);
+        var repository = await PrepareRepositoryAsync(files, token, "10.0.404");
+        var runner = ProbeRunner(files, "10.0.404");
         await using var sdk = new PrivateSdkCopy(files);
         await using var owner = new OwnedToolAcquisition(files, runner, sdk);
         var output = "10.0.405";
@@ -34,10 +72,10 @@ public sealed class OwnedToolAcquisitionTests
             }
             return Task.FromResult(new NativeProcessResult(0, output, ""));
         });
-        var failure = await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.403", token)).ThrowsExactly<InvalidOperationException>();
+        var failure = await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.404", token)).ThrowsExactly<InvalidOperationException>();
         var error = await Assert.That(failure).IsNotNull();
         await Assert.That(error.Message).IsEqualTo((runtimeInventory ? "The private SDK must list only its required Core runtime: "
-            : "The private SDK selected for global.json 10.0.403 must be 10.0.403: ") + output + "\n");
+            : "The private SDK selected for global.json 10.0.403 must be 10.0.404: ") + output + "\n");
         string[] expected = runtimeInventory ? ["--version", "--list-runtimes"] : ["--version"];
         await Assert.That(runner.ReceivedCalls().Select(call => call.GetArguments()[0]).OfType<NativeProcessRequest>().Select(request => request.Arguments[0]))
             .IsEquivalentTo(expected, CollectionOrdering.Matching);
@@ -134,8 +172,9 @@ public sealed class OwnedToolAcquisitionTests
             .WithMessage("Tool-path installation failed: opencodedotnet.mcp.win-x64 version", StringComparison.Ordinal);
         await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsFalse();
         var result = await Assert.That(owner.InstallResult).IsNotNull();
-        await Assert.That(owner.InstalledCommands).IsEquivalentTo([command], CollectionOrdering.Matching);
-        await Assert.That(() => OwnedToolAcquisition.AssertMissingImplementationAsync(result, "win-x64", "version", owner.InstalledCommands)).ThrowsExactly<AssertionException>();
+        var commands = await Assert.That<IReadOnlyList<string>>(owner.InstalledCommands).IsNotNull();
+        await Assert.That(commands).IsEquivalentTo([command], CollectionOrdering.Matching);
+        await Assert.That(() => OwnedToolAcquisition.AssertMissingImplementationAsync(result, "win-x64", "version", commands)).ThrowsExactly<AssertionException>();
     }
 
     [Test]
@@ -464,6 +503,31 @@ public sealed class OwnedToolAcquisitionTests
         var temp = files.Path.TrimEndingDirectorySeparator(files.Path.GetTempPath());
         var paths = new[] { files.Path.Combine(temp, name), files.Path.Combine(files.Path.GetPathRoot(temp) ?? throw new InvalidOperationException(), name) }
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        foreach (var path in paths.Reverse())
+        {
+            await files.File.WriteAllTextAsync(path, "foreign configuration, never read", token);
+        }
+        await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.403", token)).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("Ambient NuGet configuration cannot be owned:\n" + string.Join('\n', paths), StringComparison.Ordinal);
+        await Assert.That(runner.ReceivedCalls()).IsEmpty();
+        foreach (var path in paths)
+        {
+            await Assert.That(await files.File.ReadAllTextAsync(path, token)).IsEqualTo("foreign configuration, never read");
+        }
+    }
+
+    [Test]
+    public async Task PrepareAsync_Should_Refuse_Physical_Ancestors_And_List_Shared_Ancestors_Once(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var runner = ProbeRunner(files);
+        await using var owner = new OwnedToolAcquisition(files, runner);
+        var physicalParent = files.Path.Combine(files.Path.GetTempPath(), "physical-only");
+        var physicalWork = files.Path.Combine(physicalParent, "work");
+        files.Directory.CreateDirectory(physicalWork);
+        files.Directory.CreateSymbolicLink(files.Path.Combine(owner.OwnedRoot, "work"), physicalWork);
+        string[] paths = [files.Path.Combine(files.Path.GetTempPath(), "NuGet.Config"), files.Path.Combine(physicalParent, "NuGet.Config")];
         foreach (var path in paths.Reverse())
         {
             await files.File.WriteAllTextAsync(path, "foreign configuration, never read", token);

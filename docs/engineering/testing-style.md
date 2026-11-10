@@ -204,7 +204,7 @@ cannot own its server fails.
   An owned configuration copies the cleared,
   single-source local-feed configuration with the absolute feed path. The working directory holds
   only a byte copy of `global.json`. The selected SDK version is the one the validated feed's receipt names.
-  Before any acquisition launch, applicable ancestor NuGet
+  Before any acquisition launch, applicable logical and physical ancestor NuGet
   configuration and macOS fixed machine configuration are refused with ordered offending paths;
   the fixture never reads, edits or hides those files.
   `DOTNET_NOLOGO=1`, `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`,
@@ -253,7 +253,8 @@ cannot own its server fails.
   start each exit wait while alive, and await every exit before deleting the root. Preserve the
   operation failure before cleanup failures. A failed acquisition whose cleanup also fails names
   the retained root, as do unresolved container ownership and a reused process identifier. A plain
-  disposal failure surfaces unchanged with its root retained. Short SDK
+  disposal failure of the direct process owner surfaces unchanged with its root retained.
+  A failure to capture owned processes never prevents ending the root and the processes already captured. Short SDK
   commands use the existing process-runner seam with environment inheritance disabled. The lazy
   private SDK copy is shared read-only for the test session and removed after its consumers finish.
 - **The event decides a verdict, never the clock.** The verdict rests on an event: the call result,

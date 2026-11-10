@@ -35,7 +35,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     public string ToolPath => _files.Path.Combine(OwnedRoot, "tool-path");
     public string? InstalledExecutable { get; private set; }
     public NativeProcessResult? InstallResult { get; private set; }
-    public IReadOnlyList<string> InstalledCommands { get; private set; } = [];
+    public IReadOnlyList<string>? InstalledCommands { get; private set; }
     public static async Task AssertMissingImplementationAsync(NativeProcessResult result, string rid, string version, IReadOnlyList<string> commands)
     {
         await Assert.That(result.ExitCode).IsNotEqualTo(0);
@@ -100,7 +100,11 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         }
         catch (Exception cleanup)
         {
-            _dispose = Task.CompletedTask; // The combined failure reports cleanup once; later disposal must not replace it.
+            _dispose = Task.CompletedTask; // Cleanup is reported here once; later disposal must not replace it.
+            if (ReferenceEquals(original, cleanup))
+            {
+                throw;
+            }
             IEnumerable<Exception> failures = original is AggregateException reported && reported.InnerExceptions.Contains(cleanup)
                 ? reported.InnerExceptions : [original, cleanup];
             throw new AggregateException("Acquisition failed; retained root: " + OwnedRoot, failures);
@@ -220,9 +224,13 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     private void RefuseAmbientConfiguration()
     {
         var paths = new List<string>();
-        for (var ancestor = _files.Path.Combine(OwnedRoot, "work"); ancestor is not null; ancestor = _files.Path.GetDirectoryName(ancestor))
+        var work = _files.Path.Combine(OwnedRoot, "work");
+        foreach (var directory in new[] { work, new PhysicalPathResolver(_files).Resolve(work) }.Distinct(StringComparer.Ordinal))
         {
-            paths.AddRange(_files.Directory.EnumerateFiles(ancestor).Where(path => string.Equals(_files.Path.GetFileName(path), "nuget.config", StringComparison.OrdinalIgnoreCase)));
+            for (var ancestor = directory; ancestor is not null; ancestor = _files.Path.GetDirectoryName(ancestor))
+            {
+                paths.AddRange(_files.Directory.EnumerateFiles(ancestor).Where(path => string.Equals(_files.Path.GetFileName(path), "nuget.config", StringComparison.OrdinalIgnoreCase)));
+            }
         }
         const string machine = "/Library/Application Support/NuGet/Config";
         if (OperatingSystem.IsMacOS() && _files.Directory.Exists(machine))
@@ -232,7 +240,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         }
         if (paths.Count != 0)
         {
-            throw new InvalidOperationException("Ambient NuGet configuration cannot be owned:\n" + string.Join('\n', paths.Order(StringComparer.Ordinal)));
+            throw new InvalidOperationException("Ambient NuGet configuration cannot be owned:\n" + string.Join('\n', paths.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)));
         }
     }
 
@@ -281,13 +289,19 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     private async Task CleanupAsync()
     {
         await Process.DisposeAsync();
-        if (_ownsSdk)
+        try
         {
-            await _sdk.DisposeAsync();
+            if (_ownsSdk)
+            {
+                await _sdk.DisposeAsync();
+            }
         }
-        if (_files.Directory.Exists(OwnedRoot))
+        finally
         {
-            _files.Directory.Delete(OwnedRoot, recursive: true);
+            if (_files.Directory.Exists(OwnedRoot))
+            {
+                _files.Directory.Delete(OwnedRoot, recursive: true);
+            }
         }
     }
 }
