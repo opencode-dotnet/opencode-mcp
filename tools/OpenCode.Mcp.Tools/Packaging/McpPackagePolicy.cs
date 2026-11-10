@@ -7,7 +7,7 @@ namespace OpenCode.Mcp.Tools.Packaging;
 
 internal static partial class McpPackagePolicy
 {
-    private static readonly string[] RootFiles = ["README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"];
+    private static readonly string[] RootFiles = ["README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "icon.png"];
 
     public static IReadOnlyList<string> PackageNames(PackageIdentity identity)
     {
@@ -109,6 +109,14 @@ internal static partial class McpPackagePolicy
 
     private static void CheckChannel(PackageInspection package, PackageIdentity identity, string sourceCommit, List<string> diagnostics)
     {
+        if (package.Authors != "Deniz İrgin")
+        {
+            diagnostics.Add("Package authors must be Deniz İrgin.");
+        }
+        if (package.ProjectUrl != "https://github.com/opencode-dotnet/opencode-mcp")
+        {
+            diagnostics.Add("Package project URL must be https://github.com/opencode-dotnet/opencode-mcp.");
+        }
         if (package.ManifestPath != ".mcp/server.json")
         {
             diagnostics.Add("Package manifest must be .mcp/server.json.");

@@ -3,16 +3,20 @@
   <metadata>
     <id>OpenCodeDotNet.Mcp</id>
     <version>0.1.0-preview.1</version>
-    <authors>OpenCode.Mcp</authors>
+    <authors>Deniz İrgin</authors>
     <license type="expression">MIT</license>
     <licenseUrl>https://licenses.nuget.org/MIT</licenseUrl>
+    <icon>icon.png</icon>
     <readme>README.md</readme>
+    <projectUrl>https://github.com/opencode-dotnet/opencode-mcp</projectUrl>
     <description>Local OpenCode MCP bootstrap preview with a harmless connectivity tool.</description>
+    <copyright>Copyright (c) 2026 Deniz İrgin</copyright>
+    <tags>opencode mcp mcp-server model-context-protocol ai agent dotnet-tool native-aot</tags>
     <packageTypes>
       <packageType name="DotnetTool" />
       <packageType name="McpServer" />
     </packageTypes>
-    <repository type="git" url="https://github.com/opencode-dotnet/opencode-mcp.git" commit="1b9e2ab7c53850173c238d056ceaf1dbbacfa0ee" />
+    <repository type="git" url="https://github.com/opencode-dotnet/opencode-mcp.git" commit="94c5892315fad973c9f762031ab1aa352bc026f9" />
     <frameworkReferences>
       <group targetFramework="net10.0">
         <frameworkReference name="Microsoft.AspNetCore.App" />

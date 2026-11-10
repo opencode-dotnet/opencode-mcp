@@ -32,6 +32,7 @@ public sealed partial class McpPackagePolicyTests
 
     [Test]
     [Arguments("content/extra.dat")]
+    [Arguments("content/icon.png")]
     [Arguments("package/services/metadata/core-properties/not-metadata.txt")]
     public async Task ChildDiagnostics_Should_Refuse_An_Entry_Outside_The_Closed_Set(string path, CancellationToken token)
     {
@@ -120,6 +121,7 @@ public sealed partial class McpPackagePolicyTests
     [Arguments("README.md")]
     [Arguments("LICENSE")]
     [Arguments("THIRD-PARTY-NOTICES.md")]
+    [Arguments("icon.png")]
     public async Task ChildDiagnostics_Should_Require_Root_Channel_Files(string name, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);

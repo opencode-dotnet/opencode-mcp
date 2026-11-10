@@ -248,8 +248,8 @@ not a second distributed product. The entry is compiled separately from the solu
   and no other file-system entry, and checks its identity, sole child type, command settings,
   whole-payload digests, channel metadata and repository commit. Outside the tool directory, the
   entry set is closed: only `<package ID>.nuspec` at the package root, `.mcp/server.json`,
-  `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md`, `[Content_Types].xml`, `_rels/.rels` and one `.psmdcp`
-  under `package/services/metadata/core-properties/` are allowed. A post-pack refusal deletes
+  `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md`, `icon.png`, `[Content_Types].xml`, `_rels/.rels`
+  and one `.psmdcp` under `package/services/metadata/core-properties/` are allowed. A post-pack refusal deletes
   `packages/` again; a cleanup failure follows the original refusal in the ordered failure list.
   In an evidence directory carrying the ownership marker, after `pack-child` returns, `packages/`
   exists only when it holds the package that this run accepted; when cleanup itself fails, the
@@ -418,6 +418,14 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
 - The product packs as a .NET tool with the MCP server package type: `PackAsTool=true`,
   `PackageType=McpServer`, the SDK-added `DotnetTool` type, the command `opencode-mcp`, and
   `.mcp/server.json` at the package root.
+- The package set carries the family's package metadata: authors and company `Deniz İrgin`,
+  copyright `Copyright (c) 2026 Deniz İrgin`, project URL
+  `https://github.com/opencode-dotnet/opencode-mcp`, tags
+  `opencode;mcp;mcp-server;model-context-protocol;ai;agent;dotnet-tool;native-aot`, and the sibling
+  OpenCode .NET SDK repository's byte-identical icon as `icon.png` at the package root. Package
+  inspection pins the authors and project URL to these exact values for the root and every child;
+  tags, copyright and the nuspec icon element are not pinned. The icon stays outside the native
+  payload and publish output.
 - `ToolPackageRuntimeIdentifiers` lists exactly the six native RIDs. The SDK generates one
   implementation package per RID, `OpenCodeDotNet.Mcp.<RID>` of type `DotnetToolRidPackage`, at the
   same version. The root package never maps an absent child, and no `any` mapping exists.
@@ -457,6 +465,8 @@ each to `<PackageId>.<RID>`: no missing, extra, reordered or `any` mapping is ac
 directory name. No implementation file may sit beside the settings. The root has the same closed
 channel-metadata entry set as a child, including the exact root nuspec name, and its repository
 commit equals the native receipts' source commit.
+Both the root and every child require `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md` and `icon.png`
+at the package root. The closed channel-metadata entry set allows `icon.png` only there.
 
 `native-package-feed` contains exactly seven flat packages and
 `evidence/<RID>/receipt.json` plus `evidence/<RID>/payload-manifest.json` for every manifest RID.

@@ -145,18 +145,20 @@ public sealed class McpPackageInspectorTests
         var result = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(result.Id).IsEqualTo("OpenCodeDotNet.Mcp.win-x64");
         await Assert.That(result.Version).IsEqualTo(PackagingData.BuildVersion);
+        await Assert.That(result.Authors).IsEqualTo("Deniz İrgin");
+        await Assert.That(result.ProjectUrl).IsEqualTo("https://github.com/opencode-dotnet/opencode-mcp");
         await Assert.That(result.PackageTypes).IsEquivalentTo(["DotnetToolRidPackage"], CollectionOrdering.Matching);
         await Assert.That(result.SettingsPath).IsEqualTo("tools/fixture/win-x64/DotnetToolSettings.xml");
         await Assert.That(result.CommandName).IsEqualTo("opencode-mcp");
         await Assert.That(result.Runner).IsEqualTo("executable");
         await Assert.That(result.EntryPoint).IsEqualTo("opencode-mcp.exe");
-        await Assert.That(result.RepositoryCommit).IsEqualTo("3aea200c08618f7d12dd5dd336f584ec3ebc5684");
+        await Assert.That(result.RepositoryCommit).IsEqualTo("94c5892315fad973c9f762031ab1aa352bc026f9");
         await Assert.That(result.ManifestPath).IsEqualTo(".mcp/server.json");
         await Assert.That(result.Manifest.GetProperty("name").GetString()).IsEqualTo("io.github.opencode-dotnet/opencode-mcp");
         await Assert.That(result.ManifestSize).IsEqualTo(System.Text.Encoding.UTF8.GetByteCount(builder.Manifest.ToJsonString()));
         await Assert.That(result.Payload).IsEquivalentTo(builder.Inventory(), CollectionOrdering.Matching);
         await Assert.That(result.Paths).IsEquivalentTo([".mcp/server.json", "LICENSE", "OpenCodeDotNet.Mcp.win-x64.nuspec", "README.md", "THIRD-PARTY-NOTICES.md",
-            "[Content_Types].xml", "_rels/.rels", "package/services/metadata/core-properties/fixture.psmdcp",
+            "[Content_Types].xml", "_rels/.rels", "icon.png", "package/services/metadata/core-properties/fixture.psmdcp",
             "tools/fixture/win-x64/DotnetToolSettings.xml", "tools/fixture/win-x64/LICENSE", "tools/fixture/win-x64/THIRD-PARTY-NOTICES.md",
             "tools/fixture/win-x64/opencode-mcp.exe", "tools/fixture/win-x64/payload.json"], CollectionOrdering.Matching);
     }

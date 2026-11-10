@@ -21,6 +21,8 @@ internal static class PackagingData
     public const string CommandDiagnostic = "Package command must be opencode-mcp.";
     public const string ManifestPathDiagnostic = "Package manifest must be .mcp/server.json.";
     public const string RepositoryCommitDiagnostic = "Package repository commit differs from native receipt.";
+    public const string AuthorsDiagnostic = "Package authors must be Deniz İrgin.";
+    public const string ProjectUrlDiagnostic = "Package project URL must be https://github.com/opencode-dotnet/opencode-mcp.";
     public const string MappingsDiagnostic = "Root package RID mappings must match the native manifest in order; observed: ";
     public const string ManifestsDifferDiagnostic = "Packed manifests must be byte-identical.";
     public const string MissingLicenseDiagnostic = "Missing payload file: LICENSE";

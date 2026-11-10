@@ -9,6 +9,7 @@
     <ToolCommandName>opencode-mcp</ToolCommandName>
     <ToolPackageRuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</ToolPackageRuntimeIdentifiers>
     <PackageDescription>Local OpenCode MCP bootstrap preview with a harmless connectivity tool.</PackageDescription>
+    <PackageTags>opencode;mcp;mcp-server;model-context-protocol;ai;agent;dotnet-tool;native-aot</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PublishAot>true</PublishAot>

@@ -94,7 +94,7 @@ internal sealed class PackageArchiveBuilder
         await AddAsync(archive, SettingsPath, Settings.ToString(), token);
         var manifest = Manifest.ToJsonString();
         await AddAsync(archive, ManifestPath, ManifestSize is { } size ? manifest.PadRight(size) : manifest, token);
-        foreach (var name in new[] { "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "[Content_Types].xml", "_rels/.rels", "package/services/metadata/core-properties/fixture.psmdcp" })
+        foreach (var name in new[] { "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "icon.png", "[Content_Types].xml", "_rels/.rels", "package/services/metadata/core-properties/fixture.psmdcp" })
         {
             await AddAsync(archive, name, name, token);
         }

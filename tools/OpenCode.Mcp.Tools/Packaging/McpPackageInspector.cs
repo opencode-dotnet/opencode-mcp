@@ -53,8 +53,10 @@ internal sealed class McpPackageInspector(IFileSystem files)
         }
         return new PackageInspection
         {
-            Id = metadata.Element(ns + "id")?.Value ?? "",
-            Version = metadata.Element(ns + "version")?.Value ?? "",
+            Id = MetadataValue(metadata, "id"),
+            Version = MetadataValue(metadata, "version"),
+            Authors = MetadataValue(metadata, "authors"),
+            ProjectUrl = MetadataValue(metadata, "projectUrl"),
             PackageTypes = metadata.Element(ns + "packageTypes")?.Elements(ns + "packageType").Select(static type => type.Attribute("name")?.Value ?? "").ToArray() ?? [],
             SettingsPath = settingsEntry.Path,
             CommandName = command.Attribute("Name")?.Value ?? "",
@@ -77,6 +79,8 @@ internal sealed class McpPackageInspector(IFileSystem files)
         var matches = entries.ToArray();
         return matches.Length == 1 ? matches[0] : throw new InvalidOperationException("Package: expected exactly one " + name + ".");
     }
+
+    private static string MetadataValue(XElement metadata, string name) => metadata.Element(metadata.Name.Namespace + name)?.Value ?? "";
 
     private static async Task<T> ReadEntryAsync<T>(ZipArchiveEntry entry, string path, Func<Stream, CancellationToken, Task<T>> read, CancellationToken token)
     {

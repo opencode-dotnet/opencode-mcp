@@ -7,6 +7,8 @@ internal sealed record PackageInspection
 {
     public required string Id { get; init; }
     public required string Version { get; init; }
+    public required string Authors { get; init; }
+    public required string ProjectUrl { get; init; }
     public required IReadOnlyList<string> PackageTypes { get; init; }
     public required string SettingsPath { get; init; }
     public required string CommandName { get; init; }

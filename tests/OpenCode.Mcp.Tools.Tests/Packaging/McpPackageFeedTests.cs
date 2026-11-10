@@ -60,7 +60,7 @@ public sealed class McpPackageFeedTests
     [Test]
     [Arguments("empty", "Unexpected feed directory: empty")]
     [Arguments("evidence/win-x64/empty", "Unexpected feed directory: evidence/win-x64/empty")]
-    [Arguments("nonempty", "Unexpected feed file: nonempty/extra.txt\nUnexpected feed directory: nonempty")]
+    [Arguments("nonempty", PackagingData.UnexpectedFeedFile + "nonempty/extra.txt\nUnexpected feed directory: nonempty")]
     public async Task ValidateAsync_Should_Refuse_An_Extra_Directory(string relative, string diagnostic, CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(diagnostic);
@@ -84,12 +84,14 @@ public sealed class McpPackageFeedTests
         var identity = new PackageIdentity("OpenCodeDotNet.Mcp", PackagingData.BuildVersion, "opencode-mcp", [.. manifest.Runtimes.Select(static runtime => runtime.Rid)]);
         var feed = files.Path.Combine(files.Path.GetTempPath(), "feed");
         files.Directory.CreateDirectory(feed);
+        files.Directory.CreateDirectory(files.Path.Combine(feed, "evidence\\win-arm64"));
         await files.File.WriteAllTextAsync(files.Path.Combine(feed, "evidence\\win-x64\\receipt.json"), "extra", token);
         string[] expected = [PackagingData.MissingFeedFile + identity.Id + "." + identity.Version + ".nupkg",
             .. manifest.Runtimes.Select(runtime => PackagingData.MissingFeedFile + identity.Id + "." + runtime.Rid + "." + identity.Version + ".nupkg"),
             .. manifest.Runtimes.SelectMany(static runtime => new[] { PackagingData.MissingFeedFile + "evidence/" + runtime.Rid + "/receipt.json",
                 PackagingData.MissingFeedFile + "evidence/" + runtime.Rid + "/payload-manifest.json" }),
-            PackagingData.UnexpectedFeedFile + "evidence\\win-x64\\receipt.json"];
+            PackagingData.UnexpectedFeedFile + "evidence\\win-x64\\receipt.json",
+            "Unexpected feed directory: evidence\\win-arm64"];
         await Assert.That(await new McpPackageFeed(files).ValidateAsync(feed, manifest, identity, token))
             .IsEquivalentTo(expected, CollectionOrdering.Matching);
     }

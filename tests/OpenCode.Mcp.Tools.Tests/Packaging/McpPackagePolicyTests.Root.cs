@@ -8,6 +8,34 @@ namespace OpenCode.Mcp.Tools.Tests.Packaging;
 public sealed partial class McpPackagePolicyTests
 {
     [Test]
+    [Arguments(true, "authors", "wrong", PackagingData.AuthorsDiagnostic)]
+    [Arguments(false, "authors", "wrong", PackagingData.AuthorsDiagnostic)]
+    [Arguments(true, "authors", null, PackagingData.AuthorsDiagnostic)]
+    [Arguments(false, "authors", null, PackagingData.AuthorsDiagnostic)]
+    [Arguments(true, "projectUrl", "wrong", PackagingData.ProjectUrlDiagnostic)]
+    [Arguments(false, "projectUrl", "wrong", PackagingData.ProjectUrlDiagnostic)]
+    [Arguments(true, "projectUrl", null, PackagingData.ProjectUrlDiagnostic)]
+    [Arguments(false, "projectUrl", null, PackagingData.ProjectUrlDiagnostic)]
+    public async Task Diagnostics_Should_Pin_Family_Metadata(bool root, string field, string? value, string diagnostic, CancellationToken token)
+    {
+        var builder = root ? await PackageArchiveBuilder.CreateRootAsync(token) : await PackageArchiveBuilder.CreateAsync(token);
+        var element = builder.Metadata.Element(builder.Metadata.Name.Namespace + field);
+        if (value is null)
+        {
+            element?.Remove();
+        }
+        else
+        {
+            builder.Metadata.SetElementValue(builder.Metadata.Name.Namespace + field, value);
+        }
+        await builder.WriteAsync(token);
+        var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
+        var diagnostics = root ? McpPackagePolicy.RootDiagnostics(package, builder.Identity, builder.Receipt.SourceCommit)
+            : McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() });
+        await Assert.That(diagnostics).IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task RootDiagnostics_Should_Accept_The_Sdk_Pointer_Without_Implementation(CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);
@@ -36,6 +64,8 @@ public sealed partial class McpPackagePolicyTests
     [Arguments("readme", PackagingData.MissingRootFile + "README.md")]
     [Arguments("license", PackagingData.MissingRootFile + "LICENSE")]
     [Arguments("notices", PackagingData.MissingRootFile + "THIRD-PARTY-NOTICES.md")]
+    [Arguments("icon", PackagingData.MissingRootFile + "icon.png")]
+    [Arguments("nested icon", PackagingData.UnexpectedEntry + "content/icon.png")]
     [Arguments("commit", PackagingData.RepositoryCommitDiagnostic)]
     [Arguments("renamed nuspec", PackagingData.UnexpectedEntry + "renamed.nuspec")]
     [Arguments("nested nuspec", PackagingData.UnexpectedEntry + "nested/OpenCodeDotNet.Mcp.nuspec")]
@@ -60,6 +90,8 @@ public sealed partial class McpPackagePolicyTests
             case "readme": builder.Omitted.Add("README.md"); break;
             case "license": builder.Omitted.Add("LICENSE"); break;
             case "notices": builder.Omitted.Add("THIRD-PARTY-NOTICES.md"); break;
+            case "icon": builder.Omitted.Add("icon.png"); break;
+            case "nested icon": builder.AdditionalFiles.Add("content/icon.png", "extra"); break;
             case "commit": builder.Metadata.Element(ns + "repository")?.SetAttributeValue("commit", "wrong"); break;
             case "renamed nuspec": builder.NuspecPath = "renamed.nuspec"; break;
             case "nested nuspec": builder.NuspecPath = "nested/OpenCodeDotNet.Mcp.nuspec"; break;
