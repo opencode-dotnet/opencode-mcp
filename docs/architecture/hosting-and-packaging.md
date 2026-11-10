@@ -418,14 +418,14 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
 - The product packs as a .NET tool with the MCP server package type: `PackAsTool=true`,
   `PackageType=McpServer`, the SDK-added `DotnetTool` type, the command `opencode-mcp`, and
   `.mcp/server.json` at the package root.
-- The package set carries the family's package metadata: authors and company `Deniz İrgin`,
-  copyright `Copyright (c) 2026 Deniz İrgin`, project URL
-  `https://github.com/opencode-dotnet/opencode-mcp`, tags
-  `opencode;mcp;mcp-server;model-context-protocol;ai;agent;dotnet-tool;native-aot`, and the sibling
-  OpenCode .NET SDK repository's byte-identical icon as `icon.png` at the package root. Package
-  inspection pins the authors and project URL to these exact values for the root and every child;
-  tags, copyright and the nuspec icon element are not pinned. The icon stays outside the native
-  payload and publish output.
+- The packages carry the same package metadata as the OpenCode .NET SDK packages: authors,
+  copyright, the project URL, tags, and that repository's icon as `icon.png` at the package root.
+  `Directory.Build.props` owns the values, and the product project owns its tags. `Company` and
+  `Copyright` also stamp the assemblies; a package has no company field. Package inspection pins
+  the authors to `Deniz İrgin` and the project URL to
+  `https://github.com/opencode-dotnet/opencode-mcp`, for the root and every child; tags, copyright
+  and the nuspec icon element are not pinned. The icon stays outside the native payload and
+  publish output.
 - `ToolPackageRuntimeIdentifiers` lists exactly the six native RIDs. The SDK generates one
   implementation package per RID, `OpenCodeDotNet.Mcp.<RID>` of type `DotnetToolRidPackage`, at the
   same version. The root package never maps an absent child, and no `any` mapping exists.
