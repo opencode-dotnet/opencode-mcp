@@ -282,8 +282,10 @@ The installed command is a `.cmd` file on Windows and a symbolic link on Linux a
 The second command carries `--framework net10.0` because without it, on Windows Arm64 and macOS
 Arm64, the SDK asks for the x64 apphost pack, which a feed holding only this product's packages
 cannot supply.
-The acquisition tests run these vectors inside the [owned-process isolation](testing-style.md#6-owned-processes-are-hermetic);
-a run by hand uses the caller's own NuGet stores unless the caller isolates them.
+The acquisition tests run these vectors inside the
+[owned-process isolation](testing-style.md#6-owned-processes-are-hermetic); a run by hand uses the
+caller's own NuGet stores unless the caller isolates them, so it does not establish cold acquisition
+or prove that the launched payload came from this feed.
 
 Package acceptance requires seven real SDK-produced packages, their coherent native receipts and
 payload manifests, exact root RID mappings, byte-identical packed MCP manifests, and whole-payload

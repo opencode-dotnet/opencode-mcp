@@ -333,10 +333,10 @@ and manual dispatch, and adds no required check. A subsequent `packages` job dow
 artifacts of its own workflow run, packs the root, validates the complete feed and runs its separate
 package-contents pass. The workflow's artifact download establishes the one-run boundary; receipts
 prove source, common-input, SDK, version and dependency coherence, not workflow-run origin. Local
-`pack-root` makes no workflow-run-origin claim.
-After `packages`, one `consumer` leg per manifest row runs on its matching RID host against that
-same workflow run's complete `native-package-feed`, and the
-[package gate](../engineering/quality-gates.md#package-pass) owns its inputs, artifacts and acceptance rule.
+`pack-root` makes no workflow-run-origin claim. After `packages`, one `consumer` leg per manifest
+row runs on its matching RID host against that same workflow run's complete `native-package-feed`,
+and the [package gate](../engineering/quality-gates.md#package-pass) owns its inputs, artifacts and
+acceptance rule.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
