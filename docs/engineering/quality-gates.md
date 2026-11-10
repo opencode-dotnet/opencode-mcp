@@ -252,10 +252,12 @@ dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Rele
 
 Build the owning test project in Release before the no-build test pass. Set
 `OPENCODE_MCP_TEST_FEED` explicitly to the complete feed directory before testing; a relative value
-resolves against the repository root, not the runner's working directory. An absent, empty,
-whitespace-only, nonexistent or incomplete feed fails instructively. There is no skip or default
-feed. The Package category lives in the product-test project only. Its input-refusal rows pass
-their values explicitly and never modify the process environment.
+resolves against the repository root, not the runner's working directory. An absent, empty or
+whitespace-only input, or a nonexistent feed directory, fails with the instruction to build
+`native-package-feed` with `pack-root` after the native pass and set `OPENCODE_MCP_TEST_FEED` to its
+directory. An incomplete feed fails with the feed validator's diagnostics. There is no skip or
+default feed. The Package category lives in the product-test project only. Its input-refusal rows
+pass their values explicitly and never modify the process environment.
 
 Package acceptance requires seven real SDK-produced packages, their coherent native receipts and
 payload manifests, exact root RID mappings, byte-identical packed MCP manifests, and whole-payload

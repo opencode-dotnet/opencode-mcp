@@ -47,9 +47,13 @@ internal sealed class McpPackageFeed(IFileSystem files)
     {
         string[] expected = [.. packages, .. manifest.Runtimes.SelectMany(static runtime => new[] { "evidence/" + runtime.Rid + "/receipt.json", "evidence/" + runtime.Rid + "/payload-manifest.json" })];
         var actual = files.Directory.Exists(directory) ? files.Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
-            .Select(path => files.Path.GetRelativePath(directory, path).Replace('\\', '/')).ToArray() : [];
+            .Select(path => files.Path.GetRelativePath(directory, path).Replace(files.Path.DirectorySeparatorChar, '/')).ToArray() : [];
+        string[] expectedDirectories = ["evidence", .. manifest.Runtimes.Select(static runtime => "evidence/" + runtime.Rid)];
+        var directories = files.Directory.Exists(directory) ? files.Directory.EnumerateDirectories(directory, "*", SearchOption.AllDirectories)
+            .Select(path => files.Path.GetRelativePath(directory, path).Replace(files.Path.DirectorySeparatorChar, '/')).ToArray() : [];
         return [.. expected.Except(actual, StringComparer.Ordinal).Select(static path => "Missing feed file: " + path),
-            .. actual.Except(expected, StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(static path => "Unexpected feed file: " + path)];
+            .. actual.Except(expected, StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(static path => "Unexpected feed file: " + path),
+            .. directories.Except(expectedDirectories, StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(static path => "Unexpected feed directory: " + path)];
     }
 
     private async Task<IReadOnlyList<string>> InspectPackagesAsync(string directory, PackageIdentity identity, List<NativeReceipt> receipts, CancellationToken token)

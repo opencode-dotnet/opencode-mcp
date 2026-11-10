@@ -22,6 +22,7 @@ public sealed class McpPackageFeedTests
     [Arguments("receipt")]
     [Arguments("payload manifest")]
     [Arguments("extra")]
+    [Arguments("extra evidence")]
     public async Task ValidateAsync_Should_Require_The_Exact_File_Set(string fault, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);
@@ -33,10 +34,11 @@ public sealed class McpPackageFeedTests
             "child" => PackagingData.ChildFileName,
             "receipt" => "evidence/win-x64/receipt.json",
             "payload manifest" => "evidence/win-x64/payload-manifest.json",
+            "extra evidence" => "evidence/win-x64/extra.txt",
             _ => "extra.txt",
         };
         var path = builder.Files.Path.Combine(builder.Feed, relative);
-        if (fault == "extra")
+        if (fault is "extra" or "extra evidence")
         {
             await builder.Files.File.WriteAllTextAsync(path, "extra", token);
         }
@@ -45,7 +47,32 @@ public sealed class McpPackageFeedTests
             builder.Files.File.Delete(path);
         }
         await Assert.That(await new McpPackageFeed(builder.Files).ValidateAsync(builder.Feed, request.Manifest, builder.Identity, token))
-            .IsEquivalentTo([(fault == "extra" ? PackagingData.UnexpectedFeedFile : PackagingData.MissingFeedFile) + relative], CollectionOrdering.Matching);
+            .IsEquivalentTo([(fault is "extra" or "extra evidence" ? PackagingData.UnexpectedFeedFile : PackagingData.MissingFeedFile) + relative], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Arguments("empty", "Unexpected feed directory: empty")]
+    [Arguments("evidence/win-x64/empty", "Unexpected feed directory: evidence/win-x64/empty")]
+    public async Task ValidateAsync_Should_Refuse_An_Extra_Empty_Directory(string relative, string diagnostic, CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateRootAsync(token);
+        var request = await builder.PrepareCompleteAsync(token);
+        await builder.WriteFeedAsync(token);
+        builder.Files.Directory.CreateDirectory(builder.Files.Path.Combine(builder.Feed, relative));
+        await Assert.That(await new McpPackageFeed(builder.Files).ValidateAsync(builder.Feed, request.Manifest, builder.Identity, token))
+            .IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task ValidateAsync_Should_Normalize_Only_The_Platform_Directory_Separator(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateRootAsync(token);
+        var request = await builder.PrepareCompleteAsync(token);
+        await builder.WriteFeedAsync(token);
+        var relative = builder.Files.Path.DirectorySeparatorChar == '\\' ? "evidence/win-x64/extra.txt" : "evidence\\win-x64\\receipt.json";
+        await builder.Files.File.WriteAllTextAsync(builder.Files.Path.Combine(builder.Feed, relative), "extra", token);
+        await Assert.That(await new McpPackageFeed(builder.Files).ValidateAsync(builder.Feed, request.Manifest, builder.Identity, token))
+            .IsEquivalentTo([PackagingData.UnexpectedFeedFile + relative], CollectionOrdering.Matching);
     }
 
     [Test]

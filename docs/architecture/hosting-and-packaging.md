@@ -251,19 +251,21 @@ not a second distributed product. The entry is compiled separately from the solu
   `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md`, `[Content_Types].xml`, `_rels/.rels` and one `.psmdcp`
   under `package/services/metadata/core-properties/` are allowed. A post-pack refusal deletes
   `packages/` again; a cleanup failure follows the original refusal in the ordered failure list.
-  After `pack-child` returns, `packages/` exists only when it holds the package that this run
-  accepted; when the cleanup itself fails, the refusal lists both failures and the directory can
-  remain. This rule covers `pack-child`'s own run: a later `verify` does not remove `packages/`.
+  In an evidence directory carrying the ownership marker, after `pack-child` returns, `packages/`
+  exists only when it holds the package that this run accepted; when cleanup itself fails, the
+  refusal lists both failures and the directory can remain. An unmarked directory is left untouched.
+  This rule covers `pack-child`'s own run: a later `verify` does not remove `packages/`.
   Success prints the package path and SHA-256. It requires neither the six-RID set nor the later
   Linux runtime-independence proof.
 - `pack-root --receipts <directory> --feed <directory>` first requires the complete native validation
-  and six matching child packages, then packs the SDK-generated root pointer in Release, without a
+  and six matching child packages, then packs the SDK-generated root package in Release, without a
   RID or payload override. The executing SDK, source commit and common-input digest must match the
   coherent receipt set, and the evaluated tool RIDs must match the manifest in order. Each evidence
   directory's `packages/` must hold exactly its expected child and no other entry; every child
   passes the child policy against its native receipt. The feed directory must be absent or empty;
-  a non-empty directory is refused without a write or deletion. The command owns the absent or
-  empty directory, packs the root, copies the children and their evidence, and validates the feed.
+  a non-empty directory or a file at that path is refused without a write or deletion. The command
+  owns the absent or empty directory, packs the root, copies the children and their evidence, and
+  validates the feed.
   Any pack warning, nonzero exit or later refusal deletes that owned feed; a cleanup failure follows
   the original refusal. Success prints the feed path and all seven package names and SHA-256 values,
   root first and then in manifest RID order.
@@ -444,7 +446,7 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
 - The packed README is `packaging/README.md`, packed as `README.md`, and contains no repository
   links. No `McpName` property and no unverified repository URL is set.
 
-### Root pointer and complete local feed
+### Root package and complete local feed
 
 The root is packed only after the complete native set and all six children pass. Its ID and version
 equal the evaluated product identity, and its package types are exactly `DotnetTool` and
@@ -458,8 +460,9 @@ commit equals the native receipts' source commit.
 
 `native-package-feed` contains exactly seven flat packages and
 `evidence/<RID>/receipt.json` plus `evidence/<RID>/payload-manifest.json` for every manifest RID.
-No other file is accepted. Evidence is copied byte-for-byte from the completed native directories;
-payload directories and archives are not duplicated in the feed. The shared feed validator checks
+No other file is accepted. Only `evidence/` and `evidence/<RID>/` directories may exist; an extra
+directory, empty or not, is refused. Evidence is copied byte-for-byte from the completed native
+directories; payload directories and archives are not duplicated in the feed. The shared feed validator checks
 the complete receipt policy, every receipt's version against the expected product version, equality
 of each receipt's payload list and its retained manifest, the root and child package policies, and
 byte-identical MCP manifests in all seven packages. Children are linked to native evidence by

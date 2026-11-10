@@ -6,21 +6,21 @@ namespace OpenCode.Mcp.Tools.Packaging;
 
 internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner runner, IUnixFileModes modes)
 {
-    public async Task<IReadOnlyList<string>> PackRootAsync(NativeBuildRequest request, string feedDirectory, TextWriter output, CancellationToken token)
+    public async Task PackRootAsync(NativeBuildRequest request, string feedDirectory, TextWriter output, CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(output);
         NativeDiagnostics.Refuse(await new NativeReceiptValidator(files, modes).ValidateAsync(request.Manifest, request.Output, token).ConfigureAwait(false));
         var locations = await ReadLocationsAsync(request.Output, token).ConfigureAwait(false);
-        var first = await new NativeEvidenceStore(files).ReadAsync<NativeReceipt>(files.Path.Combine(locations[request.Manifest.Runtimes[0].Rid], "receipt.json"), token).ConfigureAwait(false);
+        var first = locations[request.Manifest.Runtimes[0].Rid].Receipt;
         var processes = new NativeProcesses(runner, request.Root);
         var identity = await RequireIdentityAsync(request, first, processes, "Root", token).ConfigureAwait(false);
         await RequireChildrenAsync(request.Manifest, identity, locations, token).ConfigureAwait(false);
-        if (files.Directory.Exists(feedDirectory) && files.Directory.EnumerateFileSystemEntries(feedDirectory).Any())
+        if (files.File.Exists(feedDirectory) || (files.Directory.Exists(feedDirectory) && files.Directory.EnumerateFileSystemEntries(feedDirectory).Any()))
         {
             throw new InvalidOperationException("Feed directory must be absent or empty: " + feedDirectory);
         }
-        return await BuildInOwnedDirectoryAsync<IReadOnlyList<string>>(feedDirectory, async () =>
+        await BuildInOwnedDirectoryAsync(feedDirectory, async () =>
         {
             var result = await processes.RunAsync("dotnet", ["pack", NativeProjectProperties.ProductProject, "-c", "Release", "-o", feedDirectory,
                 "-nodeReuse:false", "-p:UseSharedCompilation=false"], request.Host.Environment, token).ConfigureAwait(false);
@@ -34,7 +34,6 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
                 var digest = await new NativeEvidenceStore(files).DigestAsync(path, token).ConfigureAwait(false);
                 await output.WriteLineAsync((files.Path.GetFileName(path) + " SHA-256: " + digest).AsMemory(), token).ConfigureAwait(false);
             }
-            return paths;
         }).ConfigureAwait(false);
     }
 
@@ -57,24 +56,20 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
         var processes = new NativeProcesses(runner, request.Root);
         var identity = await RequireIdentityAsync(request, receipt, processes, "Child", token).ConfigureAwait(false);
         var payload = files.Path.Combine(request.Output, receipt.PayloadDirectory ?? throw new InvalidOperationException("Missing payload directory."));
-        return await BuildInOwnedDirectoryAsync(packages, async () =>
+        var name = McpPackagePolicy.PackageNames(identity with { RuntimeIdentifiers = [request.Rid] })[1];
+        var packagePath = files.Path.Combine(packages, name);
+        await BuildInOwnedDirectoryAsync(packages, async () =>
         {
             var result = await processes.RunAsync("dotnet", ["pack", NativeProjectProperties.ProductProject, "-c", "Release", "-r", request.Rid, "--no-build", "--no-restore", "-p:IsPublishable=false",
                 "-p:PublishDir=" + files.Path.TrimEndingDirectorySeparator(payload) + files.Path.DirectorySeparatorChar, "-p:ToolEntryPoint=" + new NativeRid(request.Rid).CommandName,
                 "-o", packages, "-nodeReuse:false", "-p:UseSharedCompilation=false"], request.Host.Environment, token).ConfigureAwait(false);
             NativeDiagnostics.Refuse(McpPackagePolicy.PackDiagnostics(result));
             NativeDiagnostics.Refuse(await validator.ValidateArtifactsAsync(receipt, request.Output, token).ConfigureAwait(false));
-            var name = identity.Id + "." + request.Rid + "." + identity.Version + ".nupkg";
-            var paths = files.Directory.EnumerateFileSystemEntries(packages).ToArray();
-            var packagePath = files.Path.Combine(packages, name);
-            if (paths.Length != 1 || paths[0] != packagePath)
-            {
-                throw new InvalidOperationException("Expected exactly one child package named " + name + ".");
-            }
+            RequireSinglePackage(packages, name);
             var package = await new McpPackageInspector(files).InspectAsync(packagePath, token).ConfigureAwait(false);
             NativeDiagnostics.Refuse(McpPackagePolicy.ChildDiagnostics(package, identity, receipt));
-            return packagePath;
         }).ConfigureAwait(false);
+        return packagePath;
     }
 
     private void DeletePackages(string packages)
@@ -105,37 +100,33 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
         return identity;
     }
 
-    private async Task<Dictionary<string, string>> ReadLocationsAsync(string directory, CancellationToken token)
+    private async Task<Dictionary<string, (NativeReceipt Receipt, string Directory)>> ReadLocationsAsync(string directory, CancellationToken token)
     {
-        var locations = new Dictionary<string, string>(StringComparer.Ordinal);
+        var locations = new Dictionary<string, (NativeReceipt Receipt, string Directory)>(StringComparer.Ordinal);
         foreach (var path in files.Directory.EnumerateFiles(directory, "receipt.json", SearchOption.AllDirectories))
         {
             var receipt = await new NativeEvidenceStore(files).ReadAsync<NativeReceipt>(path, token).ConfigureAwait(false);
-            locations.Add(receipt.Rid, files.Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Receipt needs a parent directory."));
+            locations.Add(receipt.Rid, (receipt, files.Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Receipt needs a parent directory.")));
         }
         return locations;
     }
 
-    private async Task RequireChildrenAsync(NativeManifest manifest, PackageIdentity identity, Dictionary<string, string> locations, CancellationToken token)
+    private async Task RequireChildrenAsync(NativeManifest manifest, PackageIdentity identity, Dictionary<string, (NativeReceipt Receipt, string Directory)> locations, CancellationToken token)
     {
         var diagnostics = new List<string>();
-        foreach (var rid in manifest.Runtimes.Select(static runtime => runtime.Rid))
+        var names = McpPackagePolicy.PackageNames(identity);
+        for (var index = 0; index < manifest.Runtimes.Count; index++)
         {
-            var directory = locations[rid];
-            var packages = files.Path.Combine(directory, "packages");
-            var name = identity.Id + "." + rid + "." + identity.Version + ".nupkg";
+            var rid = manifest.Runtimes[index].Rid;
+            var location = locations[rid];
+            var packages = files.Path.Combine(location.Directory, "packages");
+            var name = names[index + 1];
             var path = files.Path.Combine(packages, name);
-            var entries = files.Directory.Exists(packages) ? files.Directory.EnumerateFileSystemEntries(packages).ToArray() : [];
-            if (entries.Length != 1 || entries[0] != path)
-            {
-                diagnostics.Add(rid + ": Expected exactly one child package named " + name + ".");
-                continue;
-            }
             try
             {
-                var receipt = await new NativeEvidenceStore(files).ReadAsync<NativeReceipt>(files.Path.Combine(directory, "receipt.json"), token).ConfigureAwait(false);
+                RequireSinglePackage(packages, name);
                 var package = await new McpPackageInspector(files).InspectAsync(path, token).ConfigureAwait(false);
-                diagnostics.AddRange(McpPackagePolicy.ChildDiagnostics(package, identity, receipt).Select(error => rid + ": " + error));
+                diagnostics.AddRange(McpPackagePolicy.ChildDiagnostics(package, identity, location.Receipt).Select(error => rid + ": " + error));
             }
             catch (InvalidOperationException error)
             {
@@ -145,12 +136,14 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
         NativeDiagnostics.Refuse(diagnostics);
     }
 
-    private void CopyEvidence(string feed, PackageIdentity identity, Dictionary<string, string> locations)
+    private void CopyEvidence(string feed, PackageIdentity identity, Dictionary<string, (NativeReceipt Receipt, string Directory)> locations)
     {
-        foreach (var rid in identity.RuntimeIdentifiers)
+        var names = McpPackagePolicy.PackageNames(identity);
+        for (var index = 0; index < identity.RuntimeIdentifiers.Count; index++)
         {
-            var directory = locations[rid];
-            var name = identity.Id + "." + rid + "." + identity.Version + ".nupkg";
+            var rid = identity.RuntimeIdentifiers[index];
+            var directory = locations[rid].Directory;
+            var name = names[index + 1];
             files.File.Copy(files.Path.Combine(directory, "packages", name), files.Path.Combine(feed, name));
             var evidence = files.Path.Combine(feed, "evidence", rid);
             files.Directory.CreateDirectory(evidence);
@@ -161,12 +154,21 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
         }
     }
 
-    private async Task<T> BuildInOwnedDirectoryAsync<T>(string directory, Func<Task<T>> build)
+    private void RequireSinglePackage(string directory, string name)
+    {
+        var entries = files.Directory.Exists(directory) ? files.Directory.EnumerateFileSystemEntries(directory).ToArray() : [];
+        if (entries.Length != 1 || entries[0] != files.Path.Combine(directory, name))
+        {
+            throw new InvalidOperationException("Expected exactly one child package named " + name + ".");
+        }
+    }
+
+    private async Task BuildInOwnedDirectoryAsync(string directory, Func<Task> build)
     {
         try
         {
             files.Directory.CreateDirectory(directory);
-            return await build().ConfigureAwait(false);
+            await build().ConfigureAwait(false);
         }
         catch (Exception refusal)
         {

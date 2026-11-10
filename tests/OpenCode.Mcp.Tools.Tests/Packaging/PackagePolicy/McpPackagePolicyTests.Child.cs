@@ -3,9 +3,9 @@ using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging;
+namespace OpenCode.Mcp.Tools.Tests.Packaging.PackagePolicy;
 
-public sealed class McpPackagePolicyTests
+public sealed partial class McpPackagePolicyTests
 {
     [Test]
     [Arguments("renamed.nuspec")]
@@ -142,7 +142,7 @@ public sealed class McpPackagePolicyTests
     }
 
     [Test]
-    [Arguments("version", "wrong", "version")]
+    [MethodDataSource(nameof(ChildVersionCases))]
     [Arguments("packageType", "DotnetTool", PackagingData.ChildTypesDiagnostic)]
     [Arguments("secondType", "McpServer", PackagingData.ChildTypesDiagnostic)]
     [Arguments("Name", "wrong", PackagingData.CommandDiagnostic)]
@@ -170,8 +170,10 @@ public sealed class McpPackagePolicyTests
         await builder.WriteAsync(token);
         var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
         await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() }))
-            .IsEquivalentTo([field == "version" ? PackagingData.PackageVersionDiagnostic : diagnostic], CollectionOrdering.Matching);
+            .IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
     }
+
+    public static IEnumerable<object[]> ChildVersionCases() => [["version", "wrong", PackagingData.PackageVersionDiagnostic]];
 
     [Test]
     public async Task ChildDiagnostics_Should_Refuse_A_Wrong_Id(CancellationToken token)

@@ -46,6 +46,7 @@ internal sealed class PackageArchiveBuilder
     public string PackageFileName => Metadata.Element(Metadata.Name.Namespace + "id")?.Value + "." + Identity.Version + ".nupkg";
     public XElement Metadata => Nuspec.Root?.Element(Nuspec.Root.Name.Namespace + "metadata") ?? throw new InvalidOperationException();
     public XElement Command => Settings.Descendants("Command").Single();
+    public string EvidenceDirectory(string rid) => Files.Path.Combine(ReceiptsDirectory, "native-complete-" + rid);
 
     public IReadOnlyList<PayloadFile> Inventory() => [.. Payload.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
         .Select(static pair => new PayloadFile(pair.Key, Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(pair.Value))), Encoding.UTF8.GetByteCount(pair.Value), null))];
@@ -235,14 +236,14 @@ internal sealed class PackageArchiveBuilder
             Files.Directory.CreateDirectory(evidence);
             foreach (var name in new[] { "receipt.json", "payload-manifest.json" })
             {
-                Files.File.Copy(Files.Path.Combine(ReceiptsDirectory, child.Receipt.Rid, name), Files.Path.Combine(evidence, name));
+                Files.File.Copy(Files.Path.Combine(EvidenceDirectory(child.Receipt.Rid), name), Files.Path.Combine(evidence, name));
             }
         }
     }
 
     private async Task WriteNativeEvidenceAsync(CancellationToken token)
     {
-        var directory = Files.Path.Combine(ReceiptsDirectory, Receipt.Rid);
+        var directory = EvidenceDirectory(Receipt.Rid);
         var payload = Files.Path.Combine(directory, "payload");
         Files.Directory.CreateDirectory(payload);
         foreach (var pair in Payload)

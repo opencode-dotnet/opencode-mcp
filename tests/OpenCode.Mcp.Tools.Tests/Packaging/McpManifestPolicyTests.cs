@@ -11,9 +11,9 @@ public sealed class McpManifestPolicyTests
     public async Task Diagnostics_Should_Accept_The_Tracked_Manifest_With_The_Build_Version(CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateAsync(token);
-        var content = await PackageArchiveBuilder.FixtureAsync("server.json", token);
-        using var manifest = System.Text.Json.JsonDocument.Parse(content);
-        await Assert.That(McpManifestPolicy.Diagnostics(manifest.RootElement, System.Text.Encoding.UTF8.GetByteCount(content), builder.Identity)).IsEmpty();
+        await using var stream = typeof(PackageArchiveBuilder).Assembly.GetManifestResourceStream("Fixtures.server.json") ?? throw new InvalidOperationException("Missing tracked manifest.");
+        using var manifest = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: token);
+        await Assert.That(McpManifestPolicy.Diagnostics(manifest.RootElement, stream.Length, builder.Identity)).IsEmpty();
     }
 
     [Test]
@@ -79,7 +79,7 @@ public sealed class McpManifestPolicyTests
     [Arguments("name", PackagingData.ManifestNameDiagnostic)]
     [Arguments("empty description", "Manifest description must have 1 to 100 characters.")]
     [Arguments("long description", "Manifest description must have 1 to 100 characters.")]
-    [Arguments("version", "version")]
+    [MethodDataSource(nameof(ListingVersionCases))]
     [Arguments("no packages", "Manifest must contain exactly one package.")]
     [Arguments("two packages", "Manifest must contain exactly one package.")]
     [Arguments("size", "Manifest UTF-8 size must be under 20000 bytes.")]
@@ -95,11 +95,13 @@ public sealed class McpManifestPolicyTests
             case "size": builder.ManifestSize = 20000; break;
             default: builder.Manifest[fault] = "wrong"; break;
         }
-        await AssertRefusalAsync(builder, fault == "version" ? "Manifest version must be " + PackagingData.BuildVersion + "." : diagnostic, token);
+        await AssertRefusalAsync(builder, diagnostic, token);
     }
 
+    public static IEnumerable<object[]> ListingVersionCases() => [["version", "Manifest version must be " + PackagingData.BuildVersion + "."]];
+
     [Test]
-    [Arguments("version", "version")]
+    [MethodDataSource(nameof(ManifestPackageVersionCases))]
     [Arguments("registryType", "Manifest registryType must be nuget.")]
     [Arguments("identifier", "Manifest identifier must be OpenCodeDotNet.Mcp.")]
     [Arguments("registryBaseUrl", "Manifest registryBaseUrl must be https://api.nuget.org/v3/index.json.")]
@@ -118,8 +120,10 @@ public sealed class McpManifestPolicyTests
         {
             package[field] = "wrong";
         }
-        await AssertRefusalAsync(builder, field == "version" ? "Manifest package version must be " + PackagingData.BuildVersion + "." : diagnostic, token);
+        await AssertRefusalAsync(builder, diagnostic, token);
     }
+
+    public static IEnumerable<object[]> ManifestPackageVersionCases() => [["version", "Manifest package version must be " + PackagingData.BuildVersion + "."]];
 
     [Test]
     [Arguments("runtimeArguments", "type")]

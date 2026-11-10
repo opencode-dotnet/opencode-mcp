@@ -3,9 +3,9 @@ using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging;
+namespace OpenCode.Mcp.Tools.Tests.Packaging.PackagePolicy;
 
-public sealed class McpPackageRootPolicyTests
+public sealed partial class McpPackagePolicyTests
 {
     [Test]
     public async Task RootDiagnostics_Should_Accept_The_Sdk_Pointer_Without_Implementation(CancellationToken token)
@@ -25,7 +25,7 @@ public sealed class McpPackageRootPolicyTests
 
     [Test]
     [Arguments("id", "Package ID must be OpenCodeDotNet.Mcp.")]
-    [Arguments("version", "version")]
+    [MethodDataSource(nameof(RootVersionCases))]
     [Arguments("type", PackagingData.RootTypesDiagnostic)]
     [Arguments("extra type", PackagingData.RootTypesDiagnostic)]
     [Arguments("command", PackagingData.CommandDiagnostic)]
@@ -49,7 +49,7 @@ public sealed class McpPackageRootPolicyTests
         switch (fault)
         {
             case "id": builder.Metadata.Element(ns + "id")?.SetValue("wrong"); break;
-            case "version": builder.Metadata.Element(ns + "version")?.SetValue("wrong"); diagnostic = PackagingData.PackageVersionDiagnostic; break;
+            case "version": builder.Metadata.Element(ns + "version")?.SetValue("wrong"); break;
             case "type": builder.Metadata.Descendants(ns + "packageType").First().Remove(); break;
             case "extra type": builder.Metadata.Element(ns + "packageTypes")?.Add(new XElement(ns + "packageType", new XAttribute("name", "DotnetToolRidPackage"))); break;
             case "command": builder.Command.SetAttributeValue("Name", "wrong"); break;
@@ -71,6 +71,8 @@ public sealed class McpPackageRootPolicyTests
         await Assert.That(McpPackagePolicy.RootDiagnostics(package, builder.Identity, builder.Receipt.SourceCommit))
             .IsEquivalentTo(diagnostic.Split('\n'), CollectionOrdering.Matching);
     }
+
+    public static IEnumerable<object[]> RootVersionCases() => [["version", PackagingData.PackageVersionDiagnostic]];
 
     [Test]
     [Arguments("any")]

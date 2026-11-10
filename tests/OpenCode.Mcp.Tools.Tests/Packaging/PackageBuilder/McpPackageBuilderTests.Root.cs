@@ -1,13 +1,14 @@
 using System.IO.Abstractions;
+using System.Security.Cryptography;
 using NSubstitute;
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging;
+namespace OpenCode.Mcp.Tools.Tests.Packaging.PackageBuilder;
 
-public sealed class McpPackageRootBuilderTests
+public sealed partial class McpPackageBuilderTests
 {
     [Test]
     public async Task PackRootAsync_Should_Join_The_Evidence_And_Use_Only_The_Ordered_Root_Requests(CancellationToken token)
@@ -15,10 +16,18 @@ public sealed class McpPackageRootBuilderTests
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);
         var request = await builder.PrepareCompleteAsync(token);
         var start = builder.Native.Runner.Calls.Count;
-        var result = await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackRootAsync(request, builder.Feed, TextWriter.Null, token);
-        await Assert.That(result).IsEquivalentTo(new[] { builder.PackageFileName }
-            .Concat(request.Manifest.Runtimes.Select(runtime => builder.Identity.Id + "." + runtime.Rid + "." + PackagingData.BuildVersion + ".nupkg"))
-            .Select(name => builder.Files.Path.Combine(builder.Feed, name)), CollectionOrdering.Matching);
+        using var output = new StringWriter();
+        await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackRootAsync(request, builder.Feed, output, token);
+        string[] names = [builder.PackageFileName, .. request.Manifest.Runtimes.Select(runtime => builder.Identity.Id + "." + runtime.Rid + "." + PackagingData.BuildVersion + ".nupkg")];
+        var lines = new List<string> { builder.Feed };
+        foreach (var name in names)
+        {
+            var bytes = await builder.Files.File.ReadAllBytesAsync(builder.Files.Path.Combine(builder.Feed, name), token);
+            lines.Add(name + " SHA-256: " + Convert.ToHexStringLower(SHA256.HashData(bytes)));
+        }
+        await Assert.That(output.ToString()).IsEqualTo(string.Join(Environment.NewLine, lines) + Environment.NewLine);
+        await Assert.That(builder.Files.Directory.EnumerateFiles(builder.Feed, "*", SearchOption.AllDirectories).Select(path => builder.Files.Path.GetRelativePath(builder.Feed, path).Replace(builder.Files.Path.DirectorySeparatorChar, '/')).Order(StringComparer.Ordinal))
+            .IsEquivalentTo(names.Concat(request.Manifest.Runtimes.SelectMany(static runtime => new[] { "evidence/" + runtime.Rid + "/receipt.json", "evidence/" + runtime.Rid + "/payload-manifest.json" })).Order(StringComparer.Ordinal), CollectionOrdering.Matching);
         var calls = builder.Native.Runner.Calls.Skip(start).ToArray();
         await Assert.That(calls.Select(static call => call.FileName)).IsEquivalentTo(["dotnet", "git", "git", "git", "dotnet", "dotnet"], CollectionOrdering.Matching);
         await Assert.That(calls[0].Arguments).IsEquivalentTo(["--version"], CollectionOrdering.Matching);
@@ -36,7 +45,7 @@ public sealed class McpPackageRootBuilderTests
             foreach (var name in new[] { "receipt.json", "payload-manifest.json" })
             {
                 await Assert.That(await builder.Files.File.ReadAllBytesAsync(builder.Files.Path.Combine(builder.Feed, "evidence", child.Receipt.Rid, name), token))
-                    .IsEquivalentTo(await builder.Files.File.ReadAllBytesAsync(builder.Files.Path.Combine(request.Output, child.Receipt.Rid, name), token), CollectionOrdering.Matching);
+                    .IsEquivalentTo(await builder.Files.File.ReadAllBytesAsync(builder.Files.Path.Combine(builder.EvidenceDirectory(child.Receipt.Rid), name), token), CollectionOrdering.Matching);
             }
         }
     }
@@ -47,19 +56,17 @@ public sealed class McpPackageRootBuilderTests
     [Arguments("source", PackagingData.InputDriftDiagnostic)]
     [Arguments("inputs", PackagingData.InputDriftDiagnostic)]
     [Arguments("rids", PackagingData.ToolRidsDiagnostic)]
-    [Arguments("child missing", "count")]
-    [Arguments("child extra file", "count")]
-    [Arguments("child empty directory", "count")]
-    [Arguments("child policy", PackagingData.ChildTypesDiagnostic)]
+    [MethodDataSource(nameof(ChildCountCases))]
+    [Arguments("child policy", "win-x64: " + PackagingData.ChildTypesDiagnostic)]
     public async Task PackRootAsync_Should_Not_Pack_After_A_Refused_Precondition(string fault, string diagnostic, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);
         var request = await builder.PrepareCompleteAsync(token);
         var child = builder.Children.Single(static child => child.Receipt.Rid == "win-x64");
-        var packages = builder.Files.Path.Combine(request.Output, "win-x64", "packages");
+        var packages = builder.Files.Path.Combine(builder.EvidenceDirectory("win-x64"), "packages");
         if (fault == "native")
         {
-            builder.Files.File.Delete(builder.Files.Path.Combine(request.Output, "win-x64", "receipt.json"));
+            builder.Files.File.Delete(builder.Files.Path.Combine(builder.EvidenceDirectory("win-x64"), "receipt.json"));
         }
         else if (fault is "sdk" or "source" or "inputs")
         {
@@ -71,7 +78,7 @@ public sealed class McpPackageRootBuilderTests
                     "source" => entry.Receipt with { SourceCommit = "different" },
                     _ => entry.Receipt with { CommonInputsSha256 = "different" },
                 };
-                await new NativeEvidenceStore(builder.Files).WriteAsync(builder.Files.Path.Combine(request.Output, entry.Receipt.Rid, "receipt.json"), receipt, token);
+                await new NativeEvidenceStore(builder.Files).WriteAsync(builder.Files.Path.Combine(builder.EvidenceDirectory(entry.Receipt.Rid), "receipt.json"), receipt, token);
             }
         }
         else if (fault == "rids")
@@ -95,18 +102,17 @@ public sealed class McpPackageRootBuilderTests
             child.Metadata.Descendants(child.Metadata.Name.Namespace + "packageType").Single().SetAttributeValue("name", "wrong");
             await child.WriteAsync(token, builder.Files.Path.Combine(packages, child.PackageFileName));
         }
-        if (diagnostic == "count")
-        {
-            diagnostic = "win-x64: Expected exactly one child package named " + PackagingData.ChildFileName + ".";
-        }
-        else if (fault == "child policy")
-        {
-            diagnostic = "win-x64: " + diagnostic;
-        }
         var start = builder.Native.Runner.Calls.Count;
-        await AssertRefusalAsync(builder, request, diagnostic, token);
+        await AssertRootRefusalAsync(builder, request, diagnostic, token);
         await Assert.That(builder.Native.Runner.Calls.Skip(start).Where(static call => call.Arguments[0] == "pack")).IsEmpty();
     }
+
+    public static IEnumerable<object[]> ChildCountCases() =>
+    [
+        ["child missing", "win-x64: " + PackagingData.PackageCountDiagnostic],
+        ["child extra file", "win-x64: " + PackagingData.PackageCountDiagnostic],
+        ["child empty directory", "win-x64: " + PackagingData.PackageCountDiagnostic],
+    ];
 
     [Test]
     [Arguments("exit")]
@@ -127,7 +133,20 @@ public sealed class McpPackageRootBuilderTests
             case "extra": builder.PackageCount = 2; diagnostic = PackagingData.UnexpectedFeedFile + "extra.nupkg"; break;
             case "invalid": builder.Command.SetAttributeValue("Runner", "dotnet"); diagnostic = builder.PackageFileName + ": " + PackagingData.RootRunnerDiagnostic; break;
         }
-        await AssertRefusalAsync(builder, request, diagnostic, token);
+        await AssertRootRefusalAsync(builder, request, diagnostic, token);
+    }
+
+    [Test]
+    public async Task PackRootAsync_Should_Preserve_A_File_At_The_Feed_Path(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateRootAsync(token);
+        var request = await builder.PrepareCompleteAsync(token);
+        await builder.Files.File.WriteAllTextAsync(builder.Feed, "foreign", token);
+        var start = builder.Native.Runner.Calls.Count;
+        await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackRootAsync(request, builder.Feed, TextWriter.Null, token); })
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Feed directory must be absent or empty: " + builder.Feed, StringComparison.Ordinal);
+        await Assert.That(await builder.Files.File.ReadAllTextAsync(builder.Feed, token)).IsEqualTo("foreign");
+        await Assert.That(builder.Native.Runner.Calls.Skip(start).Where(static call => call.Arguments[0] == "pack")).IsEmpty();
     }
 
     [Test]
@@ -169,7 +188,7 @@ public sealed class McpPackageRootBuilderTests
         await Assert.That(failure.InnerExceptions[1]).IsSameReferenceAs(cleanup);
     }
 
-    private static async Task AssertRefusalAsync(PackageArchiveBuilder builder, NativeBuildRequest request, string diagnostic, CancellationToken token)
+    private static async Task AssertRootRefusalAsync(PackageArchiveBuilder builder, NativeBuildRequest request, string diagnostic, CancellationToken token)
     {
         await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackRootAsync(request, builder.Feed, TextWriter.Null, token); })
             .ThrowsExactly<InvalidOperationException>().WithMessage(diagnostic, StringComparison.Ordinal);

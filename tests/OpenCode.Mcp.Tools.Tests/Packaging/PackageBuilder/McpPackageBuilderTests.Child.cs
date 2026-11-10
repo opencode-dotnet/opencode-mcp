@@ -5,9 +5,9 @@ using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging;
+namespace OpenCode.Mcp.Tools.Tests.Packaging.PackageBuilder;
 
-public sealed class McpPackageBuilderTests
+public sealed partial class McpPackageBuilderTests
 {
     private const string PackFailureDiagnostic = "Child pack exited 7:\npack failed\n";
     private const string ChangedPayloadDiagnostic = "win-x64: Changed payload file: required.dat";
@@ -24,6 +24,7 @@ public sealed class McpPackageBuilderTests
         await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); })
             .ThrowsExactly<InvalidOperationException>().WithMessage("Output directory is not owned by the native tool: " + request.Output, StringComparison.Ordinal);
         await Assert.That(await builder.Files.File.ReadAllTextAsync(sentinel, token)).IsEqualTo("foreign content");
+        await Assert.That(builder.Files.File.Exists(builder.Files.Path.Combine(request.Output, ".opencode-mcp-native"))).IsFalse();
         await Assert.That(builder.Native.Runner.Calls.Skip(start)).IsEmpty();
     }
 
@@ -44,7 +45,7 @@ public sealed class McpPackageBuilderTests
         var builder = await PackageArchiveBuilder.CreateAsync(token);
         var request = await builder.PrepareStagedAsync(token);
         builder.Metadata.Element(builder.Metadata.Name.Namespace + "id")?.SetValue("wrong");
-        await AssertRefusalAsync(builder, request, PackagingData.PackageIdDiagnostic, token);
+        await AssertChildRefusalAsync(builder, request, PackagingData.PackageIdDiagnostic, token);
     }
 
     [Test]
@@ -75,7 +76,7 @@ public sealed class McpPackageBuilderTests
         }
         await new NativeEvidenceStore(builder.Files).WriteAsync(builder.Files.Path.Combine(request.Output, "receipt.json"), receipt, token);
         var start = builder.Native.Runner.Calls.Count;
-        await AssertRefusalAsync(builder, request, diagnostic, token);
+        await AssertChildRefusalAsync(builder, request, diagnostic, token);
         await Assert.That(builder.Native.Runner.Calls.Skip(start).Where(static call => call.Arguments[0] == "pack")).IsEmpty();
     }
 
@@ -94,20 +95,15 @@ public sealed class McpPackageBuilderTests
         await builder.BreakStagingAsync(request, fault, token);
         await builder.WriteAsync(token, builder.Files.Path.Combine(request.Output, "packages", "stale.nupkg"));
         var start = builder.Native.Runner.Calls.Count;
-        await AssertRefusalAsync(builder, request, diagnostic, token);
+        await AssertChildRefusalAsync(builder, request, diagnostic, token);
         await Assert.That(builder.Native.Runner.Calls.Skip(start)).IsEmpty();
     }
 
     [Test]
     [Arguments("exit", PackFailureDiagnostic)]
     [Arguments("warning", PackagingData.PackWarningDiagnostic)]
-    [Arguments("none", "count")]
-    [Arguments("two", "count")]
-    [Arguments("extra file", "count")]
-    [Arguments("empty directory", "count")]
-    [Arguments("stale", "count")]
+    [MethodDataSource(nameof(PackageCountCases))]
     [Arguments("changed payload", ChangedPayloadDiagnostic)]
-    [Arguments("wrong name", "count")]
     [Arguments("inspection", PackagingData.MissingManifestDiagnostic)]
     public async Task PackChildAsync_Should_Refuse_Failed_Or_Ineffective_Packs(string fault, string diagnostic, CancellationToken token)
     {
@@ -155,8 +151,18 @@ public sealed class McpPackageBuilderTests
                 builder.Files.Directory.CreateDirectory(builder.Files.Path.Combine(packages, "empty"));
             }
         };
-        await AssertRefusalAsync(builder, request, diagnostic == "count" ? PackagingData.PackageCountDiagnostic : diagnostic, token);
+        await AssertChildRefusalAsync(builder, request, diagnostic, token);
     }
+
+    public static IEnumerable<object[]> PackageCountCases() =>
+    [
+        ["none", PackagingData.PackageCountDiagnostic],
+        ["two", PackagingData.PackageCountDiagnostic],
+        ["extra file", PackagingData.PackageCountDiagnostic],
+        ["empty directory", PackagingData.PackageCountDiagnostic],
+        ["stale", PackagingData.PackageCountDiagnostic],
+        ["wrong name", PackagingData.PackageCountDiagnostic],
+    ];
 
     [Test]
     public async Task PackChildAsync_Should_Keep_The_Refusal_Before_A_Cleanup_Failure(CancellationToken token)
@@ -209,7 +215,7 @@ public sealed class McpPackageBuilderTests
         await Assert.That(await new NativeReceiptValidator(builder.Files, builder.Native.Modes).ValidateArtifactsAsync(builder.Receipt, request.Output, token)).IsEmpty();
     }
 
-    private static async Task AssertRefusalAsync(PackageArchiveBuilder builder, NativeBuildRequest request, string diagnostic, CancellationToken token)
+    private static async Task AssertChildRefusalAsync(PackageArchiveBuilder builder, NativeBuildRequest request, string diagnostic, CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(diagnostic);
         await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackChildAsync(request, token); })

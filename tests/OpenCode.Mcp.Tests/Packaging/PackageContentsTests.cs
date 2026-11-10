@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using OpenCode.Mcp.Tests.Packaging.Support;
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Packaging;
@@ -84,15 +85,7 @@ public sealed class PackageContentsTests
     }
 
     [Test]
-    [Arguments("type", "Root package types must be exactly DotnetTool, McpServer.")]
-    [Arguments("version", "version")]
-    [Arguments("missing child", "missing child")]
-    [Arguments("manifest path", "Package manifest must be .mcp/server.json.\nUnexpected package entry: other/server.json")]
-    [Arguments("any", "any")]
-    [Arguments("missing payload", "Missing payload file: THIRD-PARTY-NOTICES.md")]
-    [Arguments("changed payload", "Changed payload file: THIRD-PARTY-NOTICES.md")]
-    [Arguments("source", "Mixed receipt field: SourceCommit")]
-    [Arguments("inputs", "Mixed receipt field: CommonInputsSha256")]
+    [MethodDataSource(nameof(MutatedRealFeedCases))]
     public async Task ValidateAsync_Should_Refuse_Each_Mutated_Real_Feed(string fault, string diagnostic, CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(diagnostic);
@@ -102,33 +95,38 @@ public sealed class PackageContentsTests
         var copy = await fixture.CopyAsync(token);
         var root = identity.Id + "." + identity.Version + ".nupkg";
         var child = identity.Id + "." + manifest.Runtimes[0].Rid + "." + identity.Version + ".nupkg";
-        string[] expected;
         if (fault == "missing child")
         {
             _files.File.Delete(_files.Path.Combine(copy, child));
-            expected = ["Missing feed file: " + child];
         }
         else if (fault is "source" or "inputs")
         {
             await fixture.MutateReceiptAsync(copy, manifest.Runtimes[0].Rid, fault, token);
-            expected = [diagnostic];
         }
         else
         {
             var name = fault is "missing payload" or "changed payload" ? child : root;
             await fixture.MutatePackageAsync(_files.Path.Combine(copy, name), fault, token);
-            if (fault == "any")
-            {
-                diagnostic = "Root package RID mappings must match the native manifest in order; observed: "
-                    + string.Join(", ", manifest.Runtimes.Select(runtime => runtime.Rid + "=" + identity.Id + "." + runtime.Rid)) + ", any=" + identity.Id + ".any";
-            }
-            else if (fault == "version")
-            {
-                diagnostic = "Package version must be " + BuildVersion() + ".";
-            }
-            expected = [.. diagnostic.Split('\n').Select(message => name + ": " + message)];
         }
-        await Assert.That(await new McpPackageFeed(_files).ValidateAsync(copy, manifest, identity, token)).IsEquivalentTo(expected, CollectionOrdering.Matching);
+        await Assert.That(await new McpPackageFeed(_files).ValidateAsync(copy, manifest, identity, token)).IsEquivalentTo(diagnostic.Split('\n'), CollectionOrdering.Matching);
+    }
+
+    public async IAsyncEnumerable<object[]> MutatedRealFeedCases([EnumeratorCancellation] CancellationToken token = default)
+    {
+        await using var fixture = new PackageFeedFixture(_files, null);
+        var manifest = await ManifestAsync(fixture, token);
+        var root = "OpenCodeDotNet.Mcp." + BuildVersion() + ".nupkg: ";
+        var child = "OpenCodeDotNet.Mcp." + manifest.Runtimes[0].Rid + "." + BuildVersion() + ".nupkg";
+        yield return ["type", root + "Root package types must be exactly DotnetTool, McpServer."];
+        yield return ["version", root + "Package version must be " + BuildVersion() + "."];
+        yield return ["missing child", "Missing feed file: " + child];
+        yield return ["manifest path", root + "Package manifest must be .mcp/server.json.\n" + root + "Unexpected package entry: other/server.json"];
+        yield return ["any", root + "Root package RID mappings must match the native manifest in order; observed: "
+            + string.Join(", ", manifest.Runtimes.Select(static runtime => runtime.Rid + "=OpenCodeDotNet.Mcp." + runtime.Rid)) + ", any=OpenCodeDotNet.Mcp.any"];
+        yield return ["missing payload", child + ": Missing payload file: THIRD-PARTY-NOTICES.md"];
+        yield return ["changed payload", child + ": Changed payload file: THIRD-PARTY-NOTICES.md"];
+        yield return ["source", "Mixed receipt field: SourceCommit"];
+        yield return ["inputs", "Mixed receipt field: CommonInputsSha256"];
     }
 
     private PackageFeedFixture ConfiguredFeed() => new(_files, Environment.GetEnvironmentVariable("OPENCODE_MCP_TEST_FEED"));
