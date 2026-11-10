@@ -37,7 +37,7 @@ including the Linux clean-container proof. Verification evidence belongs in pull
    and the first `CHANGELOG.md` entry; implemented, built and inspected in the hosted native
    workflow.
 9. **Acquisition** - cold DNX and owned tool-path acquisition and packaged startup are verified on the
-   six hosted RIDs. A package candidate verified from one approved commit is still required.
+   six hosted RIDs, and a package candidate is verified from the approved commit `657f9b3`.
 
 ## Later
 
@@ -51,7 +51,6 @@ including the Linux clean-container proof. Verification evidence belongs in pull
 
 ## Known Gaps
 
-- **No installer support or final package candidate is verified.** Native receipts and
-  package-acquisition results remain development evidence until a package candidate is verified from
-  one approved commit.
+- **No installer support is verified.** The verified package candidate belongs to commit `657f9b3`; a
+  source or build-input change needs a new candidate.
 - **AppHost cancellation coverage is incomplete.** Cancellation during running startup is not covered.
