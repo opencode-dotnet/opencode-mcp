@@ -273,12 +273,12 @@ dotnet tool install OpenCodeDotNet.Mcp --version <version> --tool-path <tool-pat
 ```
 
 `<version>` is the feed's product version, and `<tool-path>` is a directory the caller owns.
-`<config>` is the NuGet configuration described by the
+`<config>` is a NuGet configuration that names only the complete local feed; see the
 [complete-local-feed contract](../architecture/hosting-and-packaging.md#root-package-and-complete-local-feed).
-See the [acquisition and native-execution prerequisites](../architecture/hosting-and-packaging.md#nuget-mcp-tool-package)
-for the SDK/runtime boundary.
-See the [installed-command contract](../architecture/hosting-and-packaging.md#payload-candidate-and-acquisition)
-for Windows and Unix launch forms.
+Acquisition needs the .NET SDK, and the native server needs no installed .NET runtime; see the
+[package prerequisites](../architecture/hosting-and-packaging.md#nuget-mcp-tool-package).
+The installed command is a `.cmd` file on Windows and a symbolic link on Linux and macOS; see the
+[installed-command contract](../architecture/hosting-and-packaging.md#payload-candidate-and-acquisition).
 The second command carries `--framework net10.0` because without it, on Windows Arm64 and macOS
 Arm64, the SDK asks for the x64 apphost pack, which a feed holding only this product's packages
 cannot supply.
