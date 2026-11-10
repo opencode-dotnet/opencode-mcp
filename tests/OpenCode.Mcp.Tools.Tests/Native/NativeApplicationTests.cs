@@ -130,7 +130,7 @@ public sealed class NativeApplicationTests
         await Assert.That(result).IsEqualTo(0);
         await Assert.That(scenario.Files.File.Exists(path)).IsTrue();
         await Assert.That((await scenario.Files.File.ReadAllLinesAsync(path, token)).Select(static line => line.Split('=', 2)[0]))
-            .IsEquivalentTo(["linux-matrix", "native-matrix"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+            .IsEquivalentTo(["linux-matrix", "native-matrix", "consumer-matrix"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
         await Assert.That(scenario.Runner.Calls).IsEmpty();
     }
 

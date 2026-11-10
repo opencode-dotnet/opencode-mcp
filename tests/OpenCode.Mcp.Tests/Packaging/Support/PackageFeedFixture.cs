@@ -3,11 +3,28 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Xml.Linq;
+using OpenCode.Mcp.Tools.Native;
 
 namespace OpenCode.Mcp.Tests.Packaging.Support;
 
 internal sealed class PackageFeedFixture(IFileSystem files, string? input) : IAsyncDisposable
 {
+    internal static string ResolveRid(string? rid, NativeManifest manifest, string hostRid, string sdkRid)
+    {
+        if (string.IsNullOrWhiteSpace(rid))
+        {
+            throw new InvalidOperationException("OPENCODE_MCP_TEST_RID is absent or blank. Set it to the manifest RID matching the host and private dotnet process.");
+        }
+        if (!manifest.Runtimes.Any(runtime => runtime.Rid == rid))
+        {
+            throw new InvalidOperationException("OPENCODE_MCP_TEST_RID is not in the native manifest: " + rid);
+        }
+        if (rid != hostRid || rid != sdkRid)
+        {
+            throw new InvalidOperationException($"OPENCODE_MCP_TEST_RID {rid} must match host {hostRid} and private dotnet {sdkRid}.");
+        }
+        return rid;
+    }
     private readonly List<string> _owned = [];
     private const string Instruction = "Build native-package-feed with pack-root after the native pass and set OPENCODE_MCP_TEST_FEED to its directory.";
     public string RepositoryRoot

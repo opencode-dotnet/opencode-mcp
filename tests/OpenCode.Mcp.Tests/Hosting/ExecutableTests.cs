@@ -1,10 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Text;
-using System.Text.Json;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol;
 using OpenCode.Mcp.Tests.Support;
 using OpenCode.Mcp.Tools.Native;
 using Testably.Abstractions;
@@ -18,9 +15,7 @@ namespace OpenCode.Mcp.Tests.Hosting;
 public sealed class ExecutableTests
 {
     private readonly RealFileSystem _files = new();
-    private static readonly string?[] ModernMethods = [ProtocolData.DiscoverMethod, ProtocolData.ListMethod, ProtocolData.CallMethod];
-    private static readonly string?[] CompleteResults = [ProtocolData.CompleteResult, ProtocolData.CompleteResult, ProtocolData.CompleteResult];
-    private static readonly string?[] SupportedVersions = [ProtocolData.Revision];
+    private readonly BootstrapAssertions _bootstrap = new();
     private static readonly string[] HealthPaths = ["/health", "/alive"];
 
     [Test]
@@ -54,11 +49,11 @@ public sealed class ExecutableTests
         else
         {
             var client = await process.ConnectStdioAsync(guard.Token);
-            await AssertBootstrapAsync(client, guard.Token);
+            await _bootstrap.AssertBootstrapAsync(client, guard.Token);
             await process.CloseInputAsync();
             await Assert.That(await process.WaitForExitAsync(guard.Token)).IsEqualTo(0);
-            await Assert.That(process.Transcript.Methods).IsEquivalentTo(ModernMethods, CollectionOrdering.Matching);
-            await AssertResultsAsync(process.Transcript.Results);
+            await Assert.That(process.Transcript.Methods).IsEquivalentTo(BootstrapAssertions.ModernMethods, CollectionOrdering.Matching);
+            await _bootstrap.AssertResultsAsync(process.Transcript.Results);
             if (launch.Container is null)
             {
                 var artifact = launch.Arguments.FirstOrDefault(static argument => argument.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) ?? launch.FileName;
@@ -83,13 +78,13 @@ public sealed class ExecutableTests
         using var connect = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Startup, discovery, list and call.
         await process.StartAsync(Launch(arguments), connect.Token);
         var client = await process.ConnectStdioAsync(connect.Token);
-        await AssertBootstrapAsync(client, connect.Token);
+        await _bootstrap.AssertBootstrapAsync(client, connect.Token);
         await Assert.That(process.HasExited).IsFalse();
         await process.CloseInputAsync();
         using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(45)); // Host stop and SDK reader completion after EOF.
         await Assert.That(await process.WaitForExitAsync(exit.Token)).IsEqualTo(0);
-        await Assert.That(process.Transcript.Methods).IsEquivalentTo(ModernMethods, CollectionOrdering.Matching);
-        await AssertResultsAsync(process.Transcript.Results);
+        await Assert.That(process.Transcript.Methods).IsEquivalentTo(BootstrapAssertions.ModernMethods, CollectionOrdering.Matching);
+        await _bootstrap.AssertResultsAsync(process.Transcript.Results);
         await Assert.That(process.Transcript.MalformedLines).IsEquivalentTo(Array.Empty<string>(), CollectionOrdering.Matching);
         await Assert.That(process.StandardError).Contains("      Application started. Press Ctrl+C to shut down.");
         await Assert.That(process.StandardError).Contains("      Application is shutting down...");
@@ -240,7 +235,7 @@ public sealed class ExecutableTests
         // HTTP has no portable graceful-stop seam here. The owner forces termination only in teardown.
     }
 
-    private static async Task WithHttpClientAsync(OwnedMcpProcess process, Func<Uri, RecordingHttpHandler, HttpClient, CancellationToken, Task> observation,
+    private async Task WithHttpClientAsync(OwnedMcpProcess process, Func<Uri, RecordingHttpHandler, HttpClient, CancellationToken, Task> observation,
         CancellationToken token)
     {
         var address = await process.WaitForHttpEndpointAsync(token);
@@ -262,10 +257,10 @@ public sealed class ExecutableTests
             DiscoverProbeTimeout = TimeSpan.FromSeconds(30),
             InitializationTimeout = TimeSpan.FromSeconds(30),
         }, cancellationToken: token);
-        await AssertBootstrapAsync(client, token);
+        await _bootstrap.AssertBootstrapAsync(client, token);
         await Assert.That(recorder.Requests.Select(static frame => frame.GetProperty("method").GetString()))
-            .IsEquivalentTo(ModernMethods, CollectionOrdering.Matching);
-        await AssertResultsAsync([.. recorder.Responses.Select(static frame => frame.GetProperty("result"))]);
+            .IsEquivalentTo(BootstrapAssertions.ModernMethods, CollectionOrdering.Matching);
+        await _bootstrap.AssertResultsAsync([.. recorder.Responses.Select(static frame => frame.GetProperty("result"))]);
         foreach (var headers in recorder.RequestHeaders.Concat(recorder.ResponseHeaders))
         {
             await Assert.That(headers.Keys).DoesNotContain("Mcp-Session-Id", StringComparer.OrdinalIgnoreCase);
@@ -273,45 +268,4 @@ public sealed class ExecutableTests
         }
         await observation(endpoint, recorder, http, token);
     }
-
-    private static async Task AssertBootstrapAsync(McpClient client, CancellationToken token)
-    {
-        await Assert.That(client.NegotiatedProtocolVersion).IsEqualTo(ProtocolData.Revision);
-        var identity = await Assert.That(client.ServerInfo).IsNotNull();
-        await Assert.That(identity.Name).IsEqualTo("opencode-mcp");
-        await Assert.That(identity.Version).IsEqualTo(ExpectedVersion());
-        var capabilities = await Assert.That(client.ServerCapabilities).IsNotNull();
-        await Assert.That(capabilities.Tools).IsNotNull();
-        var tools = await client.ListToolsAsync(cancellationToken: token);
-        await Assert.That(tools.Select(static tool => tool.Name)).IsEquivalentTo([ProtocolData.PingTool], CollectionOrdering.Matching);
-        var tool = tools.Single().ProtocolTool;
-        await Assert.That(tool.Description).IsEqualTo("Returns pong with this server's name and version to verify connectivity; performs no external work.");
-        var hints = await Assert.That(tool.Annotations).IsNotNull();
-        await Assert.That(hints.ReadOnlyHint).IsTrue();
-        await Assert.That(hints.IdempotentHint).IsTrue();
-        await Assert.That(hints.DestructiveHint).IsFalse();
-        await Assert.That(hints.OpenWorldHint).IsFalse();
-        await Assert.That(tool.InputSchema.GetProperty("type").GetString()).IsEqualTo("object");
-        await Assert.That(tool.InputSchema.GetProperty("properties").EnumerateObject()).IsEmpty();
-        var result = await client.CallToolAsync(ProtocolData.PingTool, cancellationToken: token);
-        await Assert.That(result.IsError).IsNotEqualTo(true);
-        await Assert.That(result.Content.Select(static content => content.Type)).IsEquivalentTo(["text"], CollectionOrdering.Matching);
-        await Assert.That(result.Content.OfType<TextContentBlock>().Select(static content => content.Text))
-            .IsEquivalentTo([$"pong opencode-mcp {ExpectedVersion()}"], CollectionOrdering.Matching);
-    }
-
-    private static async Task AssertResultsAsync(IReadOnlyList<JsonElement> results)
-    {
-        await Assert.That(results.Select(static result => result.GetProperty("resultType").GetString()))
-            .IsEquivalentTo(CompleteResults, CollectionOrdering.Matching);
-        await Assert.That(results[0].GetProperty("supportedVersions").EnumerateArray().Select(static value => value.GetString()))
-            .IsEquivalentTo(SupportedVersions, CollectionOrdering.Matching);
-        var identity = results[0].GetProperty("_meta").GetProperty(MetaKeys.ServerInfo);
-        await Assert.That(identity.GetProperty("name").GetString()).IsEqualTo("opencode-mcp");
-        await Assert.That(identity.GetProperty("version").GetString()).IsEqualTo(ExpectedVersion());
-        await Assert.That(results[0].GetProperty("capabilities").EnumerateObject().Select(static property => property.Name)).Contains("tools");
-    }
-
-    private static string ExpectedVersion() => typeof(McpApp).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-        ?.InformationalVersion.Split('+')[0] ?? throw new InvalidOperationException("Product informational version is missing.");
 }

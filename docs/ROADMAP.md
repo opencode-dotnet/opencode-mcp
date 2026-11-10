@@ -9,7 +9,7 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 
 ## Status
 
-**Pre-release bootstrap. Nothing is installable yet, and no package or binary is published.**
+**Pre-release bootstrap. Packages can be acquired from the complete local feed; no package or binary is published.**
 
 The managed server, transports, connectivity probe and one-resource Aspire AppHost are implemented.
 Native AOT payloads for the six RIDs build and pass their checks in the hosted native workflow,
@@ -36,8 +36,8 @@ including the Linux clean-container proof. Verification evidence belongs in pull
 8. **Packages** - the NuGet MCP tool package set built from those payloads, a complete local feed,
    and the first `CHANGELOG.md` entry; implemented, built and inspected in the hosted native
    workflow.
-9. **Acquisition** - isolated acquisition and packaged startup on each RID, then a package
-   candidate verified from one approved commit.
+9. **Acquisition** - cold DNX and owned tool-path acquisition and packaged startup are verified on the
+   six hosted RIDs. A package candidate verified from one approved commit is still required.
 
 ## Later
 
@@ -51,6 +51,7 @@ including the Linux clean-container proof. Verification evidence belongs in pull
 
 ## Known Gaps
 
-- **No package acquisition or installer support is verified.** Native payloads are development
-  evidence until a package candidate is verified from one approved commit.
+- **No installer support or final package candidate is verified.** Native receipts and
+  package-acquisition results remain development evidence until a package candidate is verified from
+  one approved commit.
 - **AppHost cancellation coverage is incomplete.** Cancellation during running startup is not covered.

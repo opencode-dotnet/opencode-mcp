@@ -223,14 +223,14 @@ or dependency to that job. Local Windows evidence proves neither hosted executio
 support, package acquisition or installation.
 
 The `Native` workflow uses prepare → Linux builder/Windows/macOS build jobs → Linux host proof
-jobs → native validation → packages. Job guards are 30 minutes for preparation and validation,
-150 minutes for builds, and 90 minutes for Linux proof and packages. Every step invoking tests has
-a 35-minute guard; tool-owned test
-processes have a 30-minute outer guard around the 25-minute session bound. Listing steps have a
-five-minute guard and do not rerun tests. All test invocations disable TUnit's automatic artifact
-upload and use unique phase result directories. Every job owns `DOTNET_INSTALL_DIR` under
-`runner.temp`; Windows sets `TEMP` and `TMP` there before SDK setup. Linux proof runs on hosts,
-not in the builder container, and executes downloaded binaries only from the verified extracted tar.
+jobs → native validation → packages → one `consumer` leg per manifest row. Job guards are 30 minutes
+for preparation and validation, 150 minutes for builds, and 90 minutes for Linux proof, packages and
+consumers. Every step invoking tests has a 35-minute guard; tool-owned test processes have a
+30-minute outer guard around the 25-minute session bound. Listing steps have a five-minute guard
+and do not rerun tests. All test invocations disable TUnit's automatic artifact upload and use unique
+phase result directories. Every job owns `DOTNET_INSTALL_DIR` under `runner.temp`; Windows sets
+`TEMP` and `TMP` there before SDK setup. Linux proof runs on hosts, not in the builder container,
+and executes downloaded binaries only from the verified extracted tar.
 
 Evidence, test results, symbols and process snapshots have unique per-job/per-RID artifact names
 and seven-day retention. Completed receipts are uploaded only after successful proof; validation
@@ -259,14 +259,60 @@ directory. An incomplete feed fails with the feed validator's diagnostics. There
 default feed. The Package category lives in the product-test project only. Its input-refusal rows
 pass their values explicitly and never modify the process environment.
 
+Acquisition tests additionally require explicit `OPENCODE_MCP_TEST_RID`, resolved only when an
+acquisition test starts. Absent, blank, unknown and host/private-dotnet-mismatched values fail
+instructively, never default or skip. Package-contents inspection needs only the feed. Acquisition
+runs on a host matching the claimed manifest RID and uses the private SDK without shared ASP.NET
+Core; unownable ambient NuGet configuration fails before an acquisition launch.
+
+The acquisition tests run these two command vectors, which maintainers can also run by hand:
+
+```text
+dotnet dnx -v minimal OpenCodeDotNet.Mcp@<version> --configfile <config> --yes -- --transport stdio
+dotnet tool install OpenCodeDotNet.Mcp --version <version> --tool-path <tool-path> --configfile <config> --framework net10.0 -v minimal
+```
+
+`<version>` is the feed's product version, and `<tool-path>` is a directory the caller owns.
+`<config>` is a NuGet configuration that names only the complete local feed; see the
+[complete-local-feed contract](../architecture/hosting-and-packaging.md#root-package-and-complete-local-feed).
+Acquisition needs the .NET SDK, and the native server needs no installed .NET runtime; see the
+[package prerequisites](../architecture/hosting-and-packaging.md#nuget-mcp-tool-package).
+The installed command is a `.cmd` file on Windows and a symbolic link on Linux and macOS; see the
+[installed-command contract](../architecture/hosting-and-packaging.md#payload-candidate-and-acquisition).
+The second command carries `--framework net10.0` because without it, on Windows Arm64 and macOS
+Arm64, the SDK asks for the x64 apphost pack, which a feed holding only this product's packages
+cannot supply.
+The acquisition tests run these vectors inside the
+[owned-process isolation](testing-style.md#6-owned-processes-are-hermetic); a run by hand uses the
+caller's own NuGet stores unless the caller isolates them, so it does not establish cold acquisition
+or prove that the launched payload came from this feed.
+
 Package acceptance requires seven real SDK-produced packages, their coherent native receipts and
 payload manifests, exact root RID mappings, byte-identical packed MCP manifests, and whole-payload
 path and SHA-256 equality. The `packages` job downloads its own run's six completed artifacts,
-packs and validates the feed, runs that pass, and uploads `native-package-feed` only on success.
+packs and validates the feed, runs `PackageContentsTests` with `/*/*/PackageContentsTests/*`, and
+uploads `native-package-feed` only on success. Its failure listing uses the same class filter.
 It always records a process snapshot and uploads package test results. A failed test gets a
-five-minute listing step, not a rerun. Native and package success at the pull request's head are
-extra acceptance conditions before queue entry; `CI result` remains the only required check.
-This pass makes no acquisition, installation or publication claim.
+five-minute listing step, not a rerun. Native, package and all six consumer legs' success at the
+pull request's head are extra acceptance conditions before queue entry; `CI result` remains the
+only required check.
+Contents-only acceptance makes no acquisition or packaged-startup claim. The complete Package
+category additionally exercises cold exact-version DNX, owned tool-path/shim startup, the installed
+HTTP entry, missing-host-implementation refusal on both routes, complete payload equality, observed
+native process paths and owned cleanup. Local matching-host results establish only that host's
+development evidence; they are no hosted, six-RID, final-candidate or publication claim.
+
+The `matrix` subcommand projects `consumer-matrix` from every manifest row in manifest order, with
+only `rid` and `runner`; no second RID list is maintained. After `packages` succeeds, each consumer
+leg runs on its matching RID host, downloads its own workflow run's complete `native-package-feed`
+to `artifacts/feed`, and runs the whole `Package` category with `OPENCODE_MCP_TEST_FEED` set to that
+directory and `OPENCODE_MCP_TEST_RID` set to its matrix RID. A failed test after a successful build
+gets the same category's test listing under a five-minute guard unless cancelled, never a rerun.
+Each leg always records the prebuilt tool's post-test process snapshot and uploads
+`native-process-snapshot-consumer-<RID>` and `native-package-test-results-consumer-<RID>`, with
+seven-day retention and missing files treated as errors. Package results come only from
+`artifacts/test-results/package/**`; owned homes, caches, private SDK copies and the feed are not
+uploaded by consumers.
 
 ### Linux builder verification
 

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Abstractions;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Client;
@@ -28,6 +29,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     private NativeContainerOwner? _container;
     private readonly Process _process = new();
     private readonly List<string> _errors = [];
+    private readonly List<string> _completeErrors = [];
     private readonly Lock _gate = new();
     private readonly TaskCompletionSource<Uri> _endpoint = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private RecordingDuplexStream? _input;
@@ -42,6 +44,8 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     private string[] _diagnosticRoots = [];
     private bool _started;
     private bool _startAttempted;
+    private readonly Dictionary<Process, DateTime> _ownedProcesses = [];
+    private readonly List<Task> _ownedExits = [];
 
     /// <summary>Receives the filesystem used for the child's isolated run.</summary>
     public OwnedMcpProcess(IFileSystem fileSystem, INativeProcessRunner? runner = null)
@@ -56,9 +60,20 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
 
     internal RecordingDuplexStream StandardInput => _input ?? throw new InvalidOperationException("The child has not started.");
     internal bool HasExited => _process.HasExited;
+    internal int ProcessId => _process.Id;
     internal bool DiagnosticsCompleted => _drain.IsCompletedSuccessfully;
     internal bool ExitCompleted => _exit.IsCompletedSuccessfully;
     internal bool OutputDrainStarted => _stdoutDrain is not null;
+    internal IReadOnlyList<string> CompleteStandardError
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return Array.AsReadOnly(_completeErrors.ToArray());
+            }
+        }
+    }
     internal IReadOnlyDictionary<string, string?> ChildEnvironment => new System.Collections.ObjectModel.ReadOnlyDictionary<string, string?>(_process.StartInfo.Environment);
     internal static TimeSpan ListeningExpressionTimeout => ListeningEndpointRegex().MatchTimeout;
 
@@ -156,6 +171,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     public async Task<int> WaitForExitAsync(CancellationToken cancellationToken)
     {
         await Task.WhenAll(_exit, _drain, DrainOutput()).WaitAsync(cancellationToken);
+        await Task.WhenAll(_ownedExits).WaitAsync(cancellationToken);
         if (_client is not null)
         {
             await _client.Completion.WaitAsync(cancellationToken);
@@ -172,6 +188,17 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
 
     /// <summary>Finishes child termination, readers and handles before removing owned files.</summary>
     public ValueTask DisposeAsync() => new(_dispose ??= CleanupAsync());
+
+    internal IReadOnlyDictionary<string, string?> CreateEnvironment(ProcessLaunch launch)
+        => CreateEnvironment(launch, new Dictionary<string, string?>(new ProcessStartInfo().Environment, StringComparer.Ordinal));
+
+    internal IReadOnlyDictionary<string, string?> CreateEnvironment(ProcessLaunch launch, IReadOnlyDictionary<string, string?> inheritedEnvironment)
+    {
+        ArgumentNullException.ThrowIfNull(launch);
+        var start = new ProcessStartInfo();
+        ConfigureEnvironment(start, launch.Environment, launch.OwnedRoot, inheritedEnvironment);
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, string?>(start.Environment);
+    }
 
     private Task CleanupAsync() => _container is null ? CleanupDirectAsync() : CleanupContainerAsync();
 
@@ -199,11 +226,18 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         }
         else
         {
-            ConfigureEnvironment(start, launch.Environment);
+            ConfigureEnvironment(start, launch.Environment, launch.OwnedRoot, new Dictionary<string, string?>(start.Environment, StringComparer.Ordinal));
         }
-        foreach (var argument in arguments)
+        if (launch.VerbatimCommandLine is { } commandLine)
         {
-            start.ArgumentList.Add(argument);
+            start.Arguments = commandLine;
+        }
+        else
+        {
+            foreach (var argument in arguments)
+            {
+                start.ArgumentList.Add(argument);
+            }
         }
         return start;
     }
@@ -299,17 +333,33 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Forced termination and owned reader completion.
         try
         {
-            if (_started)
+            var captureFailure = CaptureOwnedProcessFailure();
+            await EndRootAsync(guard.Token);
+            if (captureFailure is null)
             {
-                if (!_process.HasExited)
-                {
-                    _process.Kill(entireProcessTree: true);
-                }
-                await Task.WhenAll(_exit, _drain, DrainOutput()).WaitAsync(guard.Token);
+                captureFailure = CaptureOwnedProcessFailure(); // The launcher can exit before its native entry does.
             }
+            foreach (var (process, identity) in _ownedProcesses)
+            {
+                if (!process.HasExited)
+                {
+                    using var current = Process.GetProcessById(process.Id);
+                    if (current.StartTime != identity)
+                    {
+                        throw new InvalidOperationException("An owned PID was reused; retained root: " + _root);
+                    }
+                    process.Kill();
+                }
+            }
+            await Task.WhenAll(_ownedExits).WaitAsync(guard.Token);
+            await Task.WhenAll(_drain, DrainOutput()).WaitAsync(guard.Token);
             if (_client is not null)
             {
                 await _client.DisposeAsync().AsTask().WaitAsync(guard.Token);
+            }
+            if (captureFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(captureFailure).Throw();
             }
         }
         finally
@@ -338,6 +388,10 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
                     }
                     finally
                     {
+                        foreach (var owned in _ownedProcesses.Keys)
+                        {
+                            owned.Dispose();
+                        }
                         _process.Dispose();
                     }
                 }
@@ -349,13 +403,92 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         }
     }
 
+    internal string ObserveExpectedExecutable(string expectedExecutable)
+    {
+        return ObserveOwnedExecutables().Values.SingleOrDefault(path => string.Equals(path, expectedExecutable,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            ?? throw new InvalidOperationException("The packaged native entry is not running: " + expectedExecutable);
+    }
+
+    private Exception? CaptureOwnedProcessFailure()
+    {
+        try
+        {
+            CaptureOwnedProcesses();
+            return null;
+        }
+        catch (Exception failure)
+        {
+            return failure;
+        }
+    }
+
+    private async Task EndRootAsync(CancellationToken token)
+    {
+        if (_started)
+        {
+            if (!_process.HasExited)
+            {
+                _process.Kill(entireProcessTree: true);
+            }
+            await _exit.WaitAsync(token);
+        }
+    }
+
+    internal IReadOnlyDictionary<int, string> ObserveOwnedExecutables()
+    {
+        CaptureOwnedProcesses();
+        return _ownedProcesses.Keys.Where(static process => !process.HasExited)
+            .ToDictionary(static process => process.Id, static process => process.MainModule?.FileName ?? throw new InvalidOperationException("An owned process has no executable path."));
+    }
+
+    private void CaptureOwnedProcesses()
+    {
+        if (_root is null || !_files.Directory.Exists(_root))
+        {
+            return;
+        }
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var names = _files.Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories)
+            .Where(path => !OperatingSystem.IsWindows() || path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            .Select(_files.Path.GetFileNameWithoutExtension).ToHashSet(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (names.Count == 0)
+        {
+            return;
+        }
+        var physicalRoot = new PhysicalPathResolver(_files).Resolve(_root) + _files.Path.DirectorySeparatorChar;
+        foreach (var process in Process.GetProcesses())
+        {
+            var retained = false;
+            try
+            {
+                if (_ownedProcesses.Keys.All(owned => owned.Id != process.Id)
+                    && names.Contains(process.ProcessName) && !process.HasExited
+                    && process.MainModule?.FileName is { } path && path.StartsWith(physicalRoot, comparison))
+                {
+                    _ = process.SafeHandle;
+                    _ownedProcesses.Add(process, process.StartTime);
+                    _ownedExits.Add(process.WaitForExitAsync(CancellationToken.None)); // Ownership survives startup cancellation.
+                    retained = true;
+                }
+            }
+            finally
+            {
+                if (!retained)
+                {
+                    process.Dispose();
+                }
+            }
+        }
+    }
+
     private Task DrainOutput() => _client is null && _output is not null
         ? _stdoutDrain ??= _output.CopyToAsync(Stream.Null)
         : Task.CompletedTask;
 
-    private void ConfigureEnvironment(ProcessStartInfo start, IReadOnlyDictionary<string, string?> explicitInputs)
+    private void ConfigureEnvironment(ProcessStartInfo start, IReadOnlyDictionary<string, string?> explicitInputs, string root, IReadOnlyDictionary<string, string?> inheritedEnvironment)
     {
-        var inherited = new Dictionary<string, string?>(start.Environment, OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        var inherited = new Dictionary<string, string?>(inheritedEnvironment, OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         start.Environment.Clear();
         foreach (var name in LaunchVariables)
         {
@@ -367,7 +500,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         var isolation = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var group in IsolationGroups)
         {
-            var path = _files.Path.Combine(_root ?? throw new InvalidOperationException("No owned run root."), group[0]);
+            var path = _files.Path.Combine(root, group[0]);
             _files.Directory.CreateDirectory(path);
             foreach (var name in group.Skip(1))
             {
@@ -381,7 +514,14 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             {
                 throw new ArgumentException("Explicit environment input cannot replace an isolation path: " + name, nameof(explicitInputs));
             }
-            start.Environment[name] = value;
+            if (value is null)
+            {
+                start.Environment.Remove(name);
+            }
+            else
+            {
+                start.Environment[name] = value;
+            }
         }
         foreach (var (name, value) in isolation)
         {
@@ -433,6 +573,18 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
 
     private bool ObserveError(string line, bool lifetime, bool truncated)
     {
+        var diagnostic = Redact(line);
+        if (truncated || diagnostic.Length > 2000)
+        {
+            diagnostic = diagnostic[..Math.Min(diagnostic.Length, 1986)] + "...[truncated]";
+        }
+        lock (_gate)
+        {
+            if (_completeErrors.Count < 200)
+            {
+                _completeErrors.Add(diagnostic);
+            }
+        }
         if (line.Length > 0 && !char.IsWhiteSpace(line[0]))
         {
             lifetime = line.Contains("Microsoft.Hosting.Lifetime[", StringComparison.Ordinal);
@@ -446,16 +598,11 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         if (lifetime || line.StartsWith("fail:", StringComparison.Ordinal) || line.StartsWith("crit:", StringComparison.Ordinal)
             || line.StartsWith("Select 'stdio' or 'http' once", StringComparison.Ordinal))
         {
-            var selected = Redact(line);
-            if (truncated || selected.Length > 2000)
-            {
-                selected = selected[..Math.Min(selected.Length, 1986)] + "...[truncated]";
-            }
             lock (_gate)
             {
                 if (_errors.Count < 200)
                 {
-                    _errors.Add(selected);
+                    _errors.Add(diagnostic);
                 }
             }
         }

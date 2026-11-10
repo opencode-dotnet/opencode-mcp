@@ -58,9 +58,9 @@ public sealed class McpPackageFeedTests
     ];
 
     [Test]
-    [Arguments("empty", "Unexpected feed directory: empty")]
-    [Arguments("evidence/win-x64/empty", "Unexpected feed directory: evidence/win-x64/empty")]
-    [Arguments("nonempty", PackagingData.UnexpectedFeedFile + "nonempty/extra.txt\nUnexpected feed directory: nonempty")]
+    [Arguments("empty", PackagingData.UnexpectedFeedDirectory + "empty")]
+    [Arguments("evidence/win-x64/empty", PackagingData.UnexpectedFeedDirectory + "evidence/win-x64/empty")]
+    [Arguments("nonempty", PackagingData.UnexpectedFeedFile + "nonempty/extra.txt\n" + PackagingData.UnexpectedFeedDirectory + "nonempty")]
     public async Task ValidateAsync_Should_Refuse_An_Extra_Directory(string relative, string diagnostic, CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(diagnostic);
@@ -91,7 +91,7 @@ public sealed class McpPackageFeedTests
             .. manifest.Runtimes.SelectMany(static runtime => new[] { PackagingData.MissingFeedFile + "evidence/" + runtime.Rid + "/receipt.json",
                 PackagingData.MissingFeedFile + "evidence/" + runtime.Rid + "/payload-manifest.json" }),
             PackagingData.UnexpectedFeedFile + "evidence\\win-x64\\receipt.json",
-            "Unexpected feed directory: evidence\\win-arm64"];
+            PackagingData.UnexpectedFeedDirectory + "evidence\\win-arm64"];
         await Assert.That(await new McpPackageFeed(files).ValidateAsync(feed, manifest, identity, token))
             .IsEquivalentTo(expected, CollectionOrdering.Matching);
     }

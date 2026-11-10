@@ -85,6 +85,8 @@ public sealed partial class McpPackagePolicyTests
         var receipt = builder.Receipt with { Payload = builder.Inventory() };
         builder.Metadata.Element(builder.Metadata.Name.Namespace + "id")?.SetValue("wrong");
         builder.Metadata.Element(builder.Metadata.Name.Namespace + "version")?.SetValue("wrong");
+        builder.Metadata.Element(builder.Metadata.Name.Namespace + "authors")?.SetValue("wrong");
+        builder.Metadata.Element(builder.Metadata.Name.Namespace + "projectUrl")?.SetValue("wrong");
         builder.Payload.Remove("LICENSE");
         builder.Payload["THIRD-PARTY-NOTICES.md"] = "NOTICES";
         builder.Manifest["name"] = "wrong";
@@ -94,6 +96,7 @@ public sealed partial class McpPackagePolicyTests
         await Assert.That(McpPackagePolicy.ChildDiagnostics(package, builder.Identity, receipt)).IsEquivalentTo([
             PackagingData.PackageIdDiagnostic, PackagingData.PackageVersionDiagnostic,
             PackagingData.MissingLicenseDiagnostic, PackagingData.ChangedNoticesDiagnostic,
+            PackagingData.AuthorsDiagnostic, PackagingData.ProjectUrlDiagnostic,
             PackagingData.ManifestNameDiagnostic, PackagingData.MissingRootFile + "README.md"], CollectionOrdering.Matching);
     }
 

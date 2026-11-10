@@ -277,8 +277,9 @@ not a second distributed product. The entry is compiled separately from the solu
   the missing Native AOT export refusal. A companion file or a generic inspector failure cannot
   satisfy the control. The control does not change the native receipt or invalidate its assets.
 - `matrix --manifest <path> --github-output <file>` projects the manifest, in order, into
-  `linux-matrix` and `native-matrix` Actions outputs. Linux entries also carry the builder and
-  runtime images.
+  `linux-matrix`, `native-matrix` and `consumer-matrix` Actions outputs, in that output order. Linux
+  build entries also carry the builder and runtime images; consumer entries contain exactly `rid`
+  and `runner` for every manifest row.
 - `prove-linux --rid <RID> --evidence <downloaded-directory>` requires a matching Linux host,
   source inputs and executed SDK. It clears stale proof, verifies the complete downloaded payload,
   manifest and archive, and extracts the verified tar before executing anything downloaded. It
@@ -321,17 +322,21 @@ same-filesystem whole-root enumeration with no `dotnet`, `libhostfxr.so`, `libho
 `matching-host-inspection` and the successful final normalized-payload export inspection;
 their glibc field is null. Receipt validation checks recorded evidence, not an inspection rerun.
 
-The `Native` workflow projects both build matrices from the manifest. Preparation resolves the SDK
-from `global.json`; every later job installs that exact SDK. Linux builds run in the pinned builder
-job containers; Windows/macOS build on matching hosts. Separate Linux host jobs prove the downloaded
-archives. The native validation job runs only after every needed job succeeds, downloads completed
-per-RID evidence into separate directories, and validates the receipt set. Its success and log are
-the fan-in evidence; no preparation file or receipt index is produced. This workflow has read-only
-contents permission, runs on pull requests and manual dispatch, and adds no required check. A
-subsequent `packages` job downloads the completed artifacts of its own workflow run, packs the root,
-validates the complete feed and runs its separate Package pass. The workflow's artifact download
-establishes the one-run boundary; receipts prove source, common-input, SDK, version and dependency
-coherence, not workflow-run origin. Local `pack-root` makes no workflow-run-origin claim.
+The `Native` workflow projects both build matrices and the consumer matrix from the manifest, with
+no second RID list. Preparation resolves the SDK from `global.json`; every later job installs that
+exact SDK. Linux builds run in the pinned builder job containers; Windows/macOS build on matching
+hosts. Separate Linux host jobs prove the downloaded archives. The native validation job runs only
+after every needed job succeeds, downloads completed per-RID evidence into separate directories,
+and validates the receipt set. Its success and log are the fan-in evidence; no preparation file or
+receipt index is produced. This workflow has read-only contents permission, runs on pull requests
+and manual dispatch, and adds no required check. A subsequent `packages` job downloads the completed
+artifacts of its own workflow run, packs the root, validates the complete feed and runs its separate
+package-contents pass. The workflow's artifact download establishes the one-run boundary; receipts
+prove source, common-input, SDK, version and dependency coherence, not workflow-run origin. Local
+`pack-root` makes no workflow-run-origin claim. After `packages`, one `consumer` leg per manifest
+row runs on its matching RID host against that same workflow run's complete `native-package-feed`,
+and the [package gate](../engineering/quality-gates.md#package-pass) owns its inputs, artifacts and
+acceptance rule.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
@@ -446,9 +451,10 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
   character bounds. Packing never rewrites the tracked manifest.
 - `.mcp/server.json` declares stdio acquisition through `dnx` with explicit
   `--transport stdio` package arguments. `dnx` receives `-v minimal` before `--`, both there and in
-  the README's manual launch command: on macOS a cold acquisition at default verbosity writes a
-  signature-verification notice to standard output before the server starts, which would corrupt
-  the protocol stream. That line is never filtered out to pass a test.
+  the [manual verification recipe](../engineering/quality-gates.md#package-pass): on macOS a cold
+  acquisition at default verbosity writes a signature-verification notice to standard output before
+  the server starts, which would corrupt the protocol stream. That line is never filtered out to
+  pass a test.
 - Native execution needs no installed .NET runtime; `dnx` acquisition still needs the .NET SDK.
   Direct native archives are the SDK-free route.
 - The packed README is `packaging/README.md`, packed as `README.md`, and contains no repository
@@ -496,11 +502,26 @@ or packaged-startup claim.
   evidence, not candidate evidence. A source or build-input change makes a new candidate that is
   verified again; an earlier artifact or receipt is never relabeled as produced from a later
   commit.
-- Acquisition tests use a controlled, complete local feed and fresh test-owned home, configuration,
-  cache, and tool directories, with the .NET SDK already available. They prove package selection and
-  packaged startup without personal settings, earlier packages, or development output. They do not
-  require external network denial, do not promise offline installation, and never install globally
-  or publish.
+- Acquisition uses an exact product version and the complete controlled local feed through both
+  `dotnet dnx` and an owned tool-path installation; neither route installs globally or changes a
+  product tool manifest.
+  Windows launches the SDK's `.cmd` through the absolute system command interpreter with a verbatim
+  command tail; Unix launches the installed symbolic link directly, never by changing `PATH`.
+- Acquisition children use the process owner's isolation policy, extended with owned NuGet package,
+  HTTP, plugin, scratch and tool stores, an empty plugin-discovery directory, and a private-SDK/OS-only
+  `PATH`. Windows Program Files paths and Linux common application data are owned. Ambient ancestor
+  NuGet configuration and macOS's fixed machine configuration are refused, never read or hidden.
+  `../engineering/testing-style.md` section 6 owns the exact environment and SDK-first-use boundary.
+  Cold means empty package, tool and temporary acquisition stores, not execution of SDK first use.
+- A lazy session-owned real copy of the selected SDK contains only its host, complete SDK directory,
+  required Core runtime and matching hostfxr. Acquisition and native startup run without a shared
+  ASP.NET Core runtime. Contents-only tests and the managed pass do not create that copy.
+- Packaged startup requires the observed running native entry to be the selected implementation
+  package's exact version and its complete payload to match the feed evidence by path and SHA-256.
+  Managed and development-output fallbacks are forbidden. Process ownership includes every live
+  executable inside the owned root, before protocol readiness too; root exit alone proves nothing.
+  Acquisition is distinct from native runtime independence and OpenCode integration. It requires no
+  external network denial, promises no offline installation, and authorizes no publication.
 
 ## Installation and release boundaries
 

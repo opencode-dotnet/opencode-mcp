@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in
@@ -193,6 +193,31 @@ cannot own its server fails.
   HTTP endpoint discovery also starts that drain. The transcript counts raw server bytes and retains
   every server line, including blank lines, errors and notifications; an empty result list alone
   never proves empty stdout.
+- **Acquisition extends the same environment policy.** Every acquisition child receives explicit
+  owned `NUGET_PACKAGES`, `NUGET_HTTP_CACHE_PATH`, `NUGET_PLUGINS_CACHE_PATH`, `NUGET_SCRATCH` and
+  `NUGET_PLUGIN_PATHS`; the last names an empty directory to stop profile/PATH plugin discovery.
+  Windows `ProgramFiles` and `ProgramFiles(x86)`, and Linux `NUGET_COMMON_APPLICATION_DATA`, name
+  owned directories. `ProgramData` and `ALLUSERSPROFILE` remain unset. `DOTNET_ROOT`, `DOTNET_ROOT_X64`,
+  `DOTNET_ROOT_ARM64` and `DOTNET_HOST_PATH` are absent as keys from every acquisition child's
+  environment. Acquisition `PATH` contains only the private SDK and the Windows system directory,
+  or on Unix the private SDK, `/usr/bin` and `/bin`, in that order: the SDK runs `chmod` by name.
+  An owned configuration copies the cleared,
+  single-source local-feed configuration with the absolute feed path. The working directory holds
+  only a byte copy of `global.json`. The selected SDK version is the one the validated feed's receipt names.
+  Before any acquisition launch, applicable logical and physical ancestor NuGet
+  configuration and macOS fixed machine configuration are refused with ordered offending paths;
+  the fixture never reads, edits or hides those files.
+  `DOTNET_NOLOGO=1`, `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`,
+  `DOTNET_CLI_TELEMETRY_OPTOUT=1`, `DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false`,
+  `DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=true` and `DOTNET_CLI_UI_LANGUAGE=en` apply to every child.
+  Before even an SDK probe, seed only
+  `<owned CLI home>/.dotnet/<SDK version>.dotnetFirstUseSentinel`. This is a reviewed dependency on
+  the pinned SDK implementation, not a documented isolation API: it suppresses NuGet migration,
+  first-use messages and the first-use workload branch, not the independent certificate, PATH or
+  telemetry branches. Cold package acquisition requires empty package, HTTP, plugin, scratch and
+  tool stores; it does not mean SDK-first-use operations ran. Environment, ambient refusal,
+  cold-store refusal, sentinel, private-SDK layout and cleanup are proven using synthetic state;
+  a mutant of an isolation input runs only against that state, never a developer profile.
 - **Bounded diagnostic retention is not a drain limit.** The owner drains stderr through EOF even
   after it has retained 200 selected lines. Each selected line is limited to 2,000 characters;
   oversized lines carry a truncation marker. Lifetime-category lines, selector refusals, and the
@@ -201,6 +226,9 @@ cannot own its server fails.
   A sensitive separator at the end of a token also redacts the next whitespace-separated token.
   A valid numeric loopback listening announcement completes endpoint discovery even
   when diagnostic retention is full.
+  Acquisition refusals may also inspect the complete redacted line sequence, under the same
+  200-line/2,000-character retention bounds; this does not change the selected-diagnostic contract
+  or filter standard output.
 - **An OpenCode server process extends the boundary, never weakens it.** A fixture that starts one
   sets every variable and configuration root that could steer it at the developer's data inside
   the fixture's run root, refuses the launch while machine-wide configuration that no variable
@@ -220,6 +248,16 @@ cannot own its server fails.
   HTTP process tests force termination in teardown only; endpoint refusal proves listener release,
   not graceful HTTP shutdown. EOF exit has a 45-second outer hang guard around the host's
   30-second shutdown default and SDK reader cleanup. Forced cleanup has its own 15-second guard.
+  Ownership also includes every live process whose executable is inside the owned root, even when
+  a DNX or command-shim root exits or startup fails before protocol readiness. Retain those handles,
+  start each exit wait while alive, and await every exit before deleting the root. Preserve the
+  operation failure before cleanup failures. A failed acquisition whose cleanup also fails names
+  the root when one is retained, as do unresolved container ownership and a reused process
+  identifier. A plain disposal failure of the direct process owner surfaces unchanged with its root
+  retained. A failure to capture owned processes never prevents ending the root and the processes
+  already captured. Short SDK commands use the existing process-runner seam with environment
+  inheritance disabled. The lazy private SDK copy is shared read-only for the test session and
+  removed after its consumers finish.
 - **The event decides a verdict, never the clock.** The verdict rests on an event: the call result,
   the exit after end of input, the refused connection after stop, the healthy resource. A test
   whose verdict rests on a product bound passing, or not passing, runs that bound on a test-owned
