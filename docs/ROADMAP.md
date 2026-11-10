@@ -51,6 +51,7 @@ including the Linux clean-container proof. Verification evidence belongs in pull
 
 ## Known Gaps
 
-- **No installer support or final package candidate is verified.** Native and package-acquisition
-  receipts remain development evidence until a package candidate is verified from one approved commit.
+- **No installer support or final package candidate is verified.** Native receipts and
+  package-acquisition results remain development evidence until a package candidate is verified from
+  one approved commit.
 - **AppHost cancellation coverage is incomplete.** Cancellation during running startup is not covered.
