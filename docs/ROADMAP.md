@@ -34,7 +34,8 @@ including the Linux clean-container proof. Verification evidence belongs in pull
    glibc floor (`architecture/hosting-and-packaging.md`); implemented and green on the six hosted
    runners.
 8. **Packages** - the NuGet MCP tool package set built from those payloads, a complete local feed,
-   and the first `CHANGELOG.md` entry.
+   and the first `CHANGELOG.md` entry; implemented, built and inspected in the hosted native
+   workflow.
 9. **Acquisition** - isolated acquisition and packaged startup on each RID, then a package
    candidate verified from one approved commit.
 
