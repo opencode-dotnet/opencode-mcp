@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release
@@ -31,7 +31,7 @@ unregistered listing candidate, not a registered identity.
 | `src/OpenCode.Mcp.AppHost` | The Aspire development orchestrator, non-packable |
 | `tests/OpenCode.Mcp.Tests` | Product tests, starting from the production composition |
 | `tests/OpenCode.Mcp.AppHost.Tests` | Closed-box AppHost integration tests |
-| `tools/OpenCode.Mcp.Tools` | Non-packable native verification and staging collaborators |
+| `tools/OpenCode.Mcp.Tools` | Non-packable native verification, staging and packaging collaborators |
 | `tests/OpenCode.Mcp.Tools.Tests` | In-process tool contract tests; no native compilation |
 
 Every project targets `net10.0` with C# `14.0` and analysis level `10.0`; `Directory.Build.props`
@@ -39,7 +39,8 @@ owns those values. The AppHost and test projects are not package artifacts. The 
 outside the test-exemption globs, and its reference to the product is orchestration metadata.
 ServiceDefaults is not a business-model or shared-helper bucket.
 
-The product uses `Microsoft.NET.Sdk.Web` with explicit `OutputType=Exe` and `IsPackable=false`.
+The product uses `Microsoft.NET.Sdk.Web` with explicit `OutputType=Exe` and is the solution's only
+packable project.
 The Web SDK supplies `Microsoft.AspNetCore.App` implicitly. Its top-level entry point delegates to
 the launcher; HTTP uses a slim web builder and stdio a generic builder
 (`server-and-transports.md`). The [README's source-launch commands](../../README.md#run-from-source)
@@ -237,6 +238,37 @@ not a second distributed product. The entry is compiled separately from the solu
   `opencode-mcp[.exe]`, preserves runtime assets, adds license, notices and version/RID metadata,
   inventories every payload file, tests the normalized command, archives it, extracts to an owned
   temporary directory, compares the complete inventory, and tests the extracted command.
+- `pack-child --rid <RID> --evidence <directory>` requires that RID's staging evidence, matching
+  executed SDK, source commit and common-input digest, and the manifest-ordered evaluated tool RIDs.
+  Before deleting anything, it requires the evidence directory's `.opencode-mcp-native` ownership
+  marker; an unmarked directory and its `packages/` are left untouched. It then deletes its derived
+  `packages/` directory before checking the remaining preconditions and packs from `payload/`
+  without building, restoring or publishing. Any pack warning or nonzero exit refuses the result.
+  It revalidates the native artifacts after packing, requires exactly the expected child package
+  and no other file-system entry, and checks its identity, sole child type, command settings,
+  whole-payload digests, channel metadata and repository commit. Outside the tool directory, the
+  entry set is closed: only `<package ID>.nuspec` at the package root, `.mcp/server.json`,
+  `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md`, `icon.png`, `[Content_Types].xml`, `_rels/.rels`
+  and one `.psmdcp` under `package/services/metadata/core-properties/` are allowed. A post-pack refusal deletes
+  `packages/` again; a cleanup failure follows the original refusal in the ordered failure list.
+  In an evidence directory carrying the ownership marker, after `pack-child` returns, `packages/`
+  exists only when it holds the package that this run accepted; when cleanup itself fails, the
+  refusal lists both failures and the directory can remain. An unmarked directory is left untouched.
+  This rule covers `pack-child`'s own run: a later `verify` does not remove `packages/`.
+  Success prints the package path and SHA-256. It requires neither the six-RID set nor the later
+  Linux runtime-independence proof.
+- `pack-root --receipts <directory> --feed <directory>` first requires the complete native validation
+  and six matching child packages, then packs the SDK-generated root package in Release, without a
+  RID or payload override. The executing SDK, source commit and common-input digest must match the
+  coherent receipt set, and the evaluated tool RIDs must match the manifest in order. Each evidence
+  directory's `packages/` must hold exactly its expected child and no other entry; every child
+  passes the child policy against its native receipt. The feed directory must be absent or empty;
+  a non-empty directory or a file at that path is refused without a write or deletion. The command
+  owns the absent or empty directory, packs the root, copies the children and their evidence, and
+  validates the feed.
+  Any pack warning, nonzero exit or later refusal deletes that owned feed; a cleanup failure follows
+  the original refusal. Success prints the feed path and all seven package names and SHA-256 values,
+  root first and then in manifest RID order.
 - `inspect --rid <RID> --path <executable-or-directory>` inspects only the supplied image when the
   path is a file. A directory also scans its companion files recursively. The framework-dependent
   negative control uses the file path.
@@ -269,7 +301,8 @@ not a second distributed product. The entry is compiled separately from the solu
 
 Default evidence lives under `artifacts/native/<RID>/`: publish and toolchain logs, effective
 properties in `receipt.json`, native inspection, `payload-manifest.json`, the normalized `payload/`,
-and a ZIP on Windows or tar.gz on Unix. Symbols and build evidence stay outside the runtime payload.
+a ZIP on Windows or tar.gz on Unix, and `pack-child`'s accepted child package in `packages/`.
+Symbols and build evidence stay outside the runtime payload.
 Receipts record actual source commit/status and common input hash, SDK and compiler package
 identities, requested runner versus actual host, executable and archive digests, resolved runtime
 packages, and published/normalized/extracted test totals. Dirty development receipts remain dirty
@@ -291,10 +324,14 @@ their glibc field is null. Receipt validation checks recorded evidence, not an i
 The `Native` workflow projects both build matrices from the manifest. Preparation resolves the SDK
 from `global.json`; every later job installs that exact SDK. Linux builds run in the pinned builder
 job containers; Windows/macOS build on matching hosts. Separate Linux host jobs prove the downloaded
-archives. The final validation job runs only after every needed job succeeds, downloads completed
+archives. The native validation job runs only after every needed job succeeds, downloads completed
 per-RID evidence into separate directories, and validates the receipt set. Its success and log are
 the fan-in evidence; no preparation file or receipt index is produced. This workflow has read-only
-contents permission, runs on pull requests and manual dispatch, and adds no required check.
+contents permission, runs on pull requests and manual dispatch, and adds no required check. A
+subsequent `packages` job downloads the completed artifacts of its own workflow run, packs the root,
+validates the complete feed and runs its separate Package pass. The workflow's artifact download
+establishes the one-run boundary; receipts prove source, common-input, SDK, version and dependency
+coherence, not workflow-run origin. Local `pack-root` makes no workflow-run-origin claim.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
@@ -381,10 +418,32 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
 - The product packs as a .NET tool with the MCP server package type: `PackAsTool=true`,
   `PackageType=McpServer`, the SDK-added `DotnetTool` type, the command `opencode-mcp`, and
   `.mcp/server.json` at the package root.
+- The packages carry authors, copyright, this product's project URL and tags, and the OpenCode
+  .NET SDK repository's icon as `icon.png` at the package root.
+  `Directory.Build.props` owns the values, and the product project owns its tags. `Company` and
+  `Copyright` also stamp the assemblies; a package has no company field. Package inspection pins
+  the authors to `Deniz İrgin` and the project URL to
+  `https://github.com/opencode-dotnet/opencode-mcp`, for the root and every child; tags, copyright
+  and the nuspec icon element are not pinned. The icon stays outside the native payload and
+  publish output.
 - `ToolPackageRuntimeIdentifiers` lists exactly the six native RIDs. The SDK generates one
   implementation package per RID, `OpenCodeDotNet.Mcp.<RID>` of type `DotnetToolRidPackage`, at the
   same version. The root package never maps an absent child, and no `any` mapping exists.
-- Each child packs the verified native payload of its RID without recompiling it.
+- The ordered tool RID list is a checked projection of `packaging/native-manifest.json`, not
+  another owner. Each child packs its staged native payload through the SDK's supported
+  `IsPublishable=false`, `PublishDir` and `ToolEntryPoint` composition, with `--no-build --no-restore`;
+  it never recompiles, relinks or republishes the payload. The SDK owns the child ID, package type,
+  runner and implementation layout. MCP package metadata is channel metadata outside that payload.
+- The manifest's two versions and root package identifier are checked against the evaluated product
+  identity at pack time. Its product policy checks listing identity, description bounds, the single
+  NuGet package, exact ordered arguments, stdio transport and a UTF-8 size below 20,000 bytes.
+  The manifest is checked by a typed product policy; the repository carries no JSON Schema engine
+  and no copy of the schema. The policy mirrors the published 2025-12-11 schema's
+  `ServerDetail.required` and `Package.required` fields, `Package.version` prohibition of `latest`,
+  transport type enumeration (`stdio`, `streamable-http`, `sse`), and array types for
+  `Package.packageArguments` and `Package.runtimeArguments`, naming each rule in its diagnostics.
+  The exactly pinned listing name is tested against the `ServerDetail.name` pattern and 3 to 200
+  character bounds. Packing never rewrites the tracked manifest.
 - `.mcp/server.json` declares stdio acquisition through `dnx` with explicit
   `--transport stdio` package arguments. `dnx` receives `-v minimal` before `--`, both there and in
   the README's manual launch command: on macOS a cold acquisition at default verbosity writes a
@@ -392,8 +451,37 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
   the protocol stream. That line is never filtered out to pass a test.
 - Native execution needs no installed .NET runtime; `dnx` acquisition still needs the .NET SDK.
   Direct native archives are the SDK-free route.
-- The packed README stays free of repository links unless it is pinned to the packed commit. No
-  `McpName` property and no unverified repository URL is set.
+- The packed README is `packaging/README.md`, packed as `README.md`, and contains no repository
+  links. No `McpName` property and no unverified repository URL is set.
+
+### Root package and complete local feed
+
+The root is packed only after the complete native set and all six children pass. Its ID and version
+equal the evaluated product identity, and its package types are exactly `DotnetTool` and
+`McpServer`. Its single SDK-generated `DotnetToolSettings.xml`, found by name, has the command
+`opencode-mcp` with no runner or entry point. It maps exactly the six manifest RIDs in manifest order,
+each to `<PackageId>.<RID>`: no missing, extra, reordered or `any` mapping is accepted. The SDK's
+`tools/any/any/` settings directory is legitimate; `any` is forbidden as a RID mapping, not as a
+directory name. No implementation file may sit beside the settings. The root has the same closed
+channel-metadata entry set as a child, including the exact root nuspec name, and its repository
+commit equals the native receipts' source commit.
+Both the root and every child require `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md` and `icon.png`
+at the package root. The closed channel-metadata entry set allows `icon.png` only there.
+
+`native-package-feed` contains exactly seven flat packages and
+`evidence/<RID>/receipt.json` plus `evidence/<RID>/payload-manifest.json` for every manifest RID.
+No other file is accepted. Only `evidence/` and `evidence/<RID>/` directories may exist; an extra
+directory, empty or not, is refused. Evidence is copied byte-for-byte from the completed native
+directories; payload directories and archives are not duplicated in the feed. The shared feed validator checks
+the complete receipt policy, every receipt's version against the expected product version, equality
+of each receipt's payload list and its retained manifest, the root and child package policies, and
+byte-identical MCP manifests in all seven packages. Children are linked to native evidence by
+complete payload content, not by a second package receipt or version labels alone.
+
+`packaging/local-feed.nuget.config` clears inherited sources and names only `../artifacts/feed`,
+resolved from that configuration's directory. It is not used for ordinary product, tooling or test
+dependency restore. A complete local feed authorizes no publication and makes no package-acquisition
+or packaged-startup claim.
 
 ### Payload, candidate, and acquisition
 

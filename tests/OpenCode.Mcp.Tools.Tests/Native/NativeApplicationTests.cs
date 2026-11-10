@@ -1,13 +1,98 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Xml;
+using NSubstitute;
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Tests.Native.Support;
+using OpenCode.Mcp.Tools.Tests.Support;
 
 namespace OpenCode.Mcp.Tools.Tests.Native;
 
 public sealed class NativeApplicationTests
 {
+    [Test]
+    public async Task RunAsync_Should_Remove_The_Owned_Feed_When_Reporting_Its_Result_Fails(CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateRootAsync(token);
+        var request = await builder.PrepareCompleteAsync(token);
+        using var output = Substitute.For<TextWriter>();
+        output.WriteLineAsync(Arg.Any<ReadOnlyMemory<char>>(), Arg.Any<CancellationToken>()).Returns(_ => Task.FromException(new IOException("fixture output failure")));
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(builder.Files, builder.Native.Runner, new FixtureHostReader(request.Host), builder.Native.Modes, output, errors);
+        await Assert.That(await application.RunAsync(["pack-root", "--receipts", request.Output, "--feed", builder.Feed], token)).IsEqualTo(2);
+        await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo("fixture output failure");
+        await Assert.That(builder.Files.Directory.Exists(builder.Feed)).IsFalse();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RunAsync_Should_Report_Root_Packing_In_Manifest_Order_Or_The_Full_Refusal(bool refused, CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateRootAsync(token);
+        var request = await builder.PrepareCompleteAsync(token);
+        if (refused)
+        {
+            builder.PackageCount = 0;
+        }
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(builder.Files, builder.Native.Runner, new FixtureHostReader(request.Host), builder.Native.Modes, output, errors);
+        var result = await application.RunAsync(["pack-root", "--receipts", builder.Files.Path.GetRelativePath(request.Root, request.Output), "--feed", builder.Files.Path.GetRelativePath(request.Root, builder.Feed)], token);
+        if (refused)
+        {
+            await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo(PackagingData.MissingFeedFile + builder.PackageFileName);
+            await Assert.That(output.ToString()).IsEmpty();
+            await Assert.That(result).IsEqualTo(2);
+        }
+        else
+        {
+            var expected = new List<string> { builder.Feed };
+            string[] names = [builder.PackageFileName, .. request.Manifest.Runtimes.Select(runtime => builder.Identity.Id + "." + runtime.Rid + "." + PackagingData.BuildVersion + ".nupkg")];
+            foreach (var name in names)
+            {
+                var bytes = await builder.Files.File.ReadAllBytesAsync(builder.Files.Path.Combine(builder.Feed, name), token);
+                expected.Add(name + " SHA-256: " + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes)));
+            }
+            await Assert.That(output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd('\n')).IsEqualTo(string.Join('\n', expected));
+            await Assert.That(errors.ToString()).IsEmpty();
+            await Assert.That(result).IsEqualTo(0);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RunAsync_Should_Report_Child_Packing_Or_Its_Complete_Refusal(bool refused, CancellationToken token)
+    {
+        var builder = await PackageArchiveBuilder.CreateAsync(token);
+        var request = await builder.PrepareStagedAsync(token);
+        await new NativeEvidenceStore(builder.Files).WriteAsync(builder.Files.Path.Combine(request.Root, "packaging", "native-manifest.json"), request.Manifest, token);
+        if (refused)
+        {
+            builder.PackageCount = 0;
+        }
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(builder.Files, builder.Native.Runner, new FixtureHostReader(request.Host with { WorkingDirectory = request.Root }), builder.Native.Modes, output, errors);
+        var exit = await application.RunAsync(["pack-child", "--rid", "win-x64", "--evidence", request.Output], token);
+        if (refused)
+        {
+            await Assert.That(errors.ToString().TrimEnd('\r', '\n')).IsEqualTo(PackagingData.PackageCountDiagnostic);
+            await Assert.That(output.ToString()).IsEmpty();
+            await Assert.That(exit).IsEqualTo(2);
+        }
+        else
+        {
+            var path = builder.Files.Path.Combine(request.Output, "packages", PackagingData.ChildFileName);
+            await Assert.That(builder.Files.File.Exists(path)).IsTrue();
+            var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await builder.Files.File.ReadAllBytesAsync(path, token)));
+            await Assert.That(output.ToString().TrimEnd('\r', '\n')).IsEqualTo(path + "\nPackage SHA-256: " + digest);
+            await Assert.That(errors.ToString()).IsEmpty();
+            await Assert.That(exit).IsEqualTo(0);
+        }
+    }
+
     [Test]
     [Timeout(30_000)]
     public async Task RunAsync_Should_Refuse_A_Forbidden_File_In_The_Final_Payload(CancellationToken token)

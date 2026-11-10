@@ -8,7 +8,17 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="NSubstitute.Analyzers.CSharp">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Testably.Abstractions.Testing" />
     <PackageReference Include="TUnit" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures/*" LogicalName="Fixtures.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../src/OpenCode.Mcp/.mcp/server.json" Link="Fixtures/server.json" LogicalName="Fixtures.server.json" />
+    <EmbeddedResource Include="../../packaging/local-feed.nuget.config" Link="Fixtures/local-feed.nuget.config" LogicalName="Fixtures.local-feed.nuget.config" />
   </ItemGroup>
 </Project>

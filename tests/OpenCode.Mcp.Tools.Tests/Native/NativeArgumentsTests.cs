@@ -5,6 +5,36 @@ namespace OpenCode.Mcp.Tools.Tests.Native;
 public sealed class NativeArgumentsTests
 {
     [Test]
+    public async Task Parse_Should_Select_Root_Packing_And_Require_Both_Directories()
+    {
+        await Assert.That(NativeArguments.Parse(["pack-root", "--receipts", "completed evidence", "--feed", "complete feed"]))
+            .IsEqualTo(new NativeCommand("pack-root", null, null, null, null, "completed evidence", Feed: "complete feed"));
+        await Assert.That(() => NativeArguments.Parse(["pack-root"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --receipts.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["pack-root", "--receipts", "completed"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --feed.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["pack-root", "--receipts", "completed", "--feed", "one", "--feed", "two"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: duplicate --feed.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["pack-root", "--receipts", "completed", "--feed"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing value for --feed.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["pack-root", "--rid", "win-x64"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: unknown option --rid for pack-root.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    public async Task Parse_Should_Select_Child_Packing_And_Require_Its_Evidence()
+    {
+        await Assert.That(NativeArguments.Parse(["pack-child", "--rid", "win-x64", "--evidence", "staged evidence"]))
+            .IsEqualTo(new NativeCommand("pack-child", "win-x64", null, null, null, null, Evidence: "staged evidence"));
+        await Assert.That(() => NativeArguments.Parse(["pack-child"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --rid.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["pack-child", "--rid", "win-x64"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --evidence.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse([])).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root or snapshot.", StringComparison.Ordinal);
+    }
+
+    [Test]
     [Arguments("control", "--rid", "win-x64")]
     [Arguments("snapshot", "--output", "owned")]
     [Arguments("matrix", "--manifest", "manifest.json", "--github-output", "github-output")]

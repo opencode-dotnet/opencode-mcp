@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -110,7 +110,7 @@ dotnet build OpenCode.Mcp.slnx --configuration Release
 dotnet format whitespace OpenCode.Mcp.slnx --verify-no-changes --no-restore
 dotnet format style OpenCode.Mcp.slnx --verify-no-changes --no-restore --severity warn
 dotnet build tools/native.cs
-dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1
+dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --treenode-filter "/*/*/*/*[Category!=Package]" --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1
 ```
 
 The file-based entry is not part of the solution compilation. Its separate build retains the
@@ -175,10 +175,11 @@ of their own, never beside the managed pass:
   executable tests directly against the published native executable, never a managed assembly,
   `dotnet run` or the AppHost. A native path that is missing or is not native fails the pass
   instead of falling back to the managed product.
-- **Packages.** Tests that inspect packages or acquire the packaged MCP server carry the `Package`
-  category. Once that category exists, the managed pass's test command adds
-  `--treenode-filter "/*/*/*/*[Category!=Package]"`, and the package pass runs the category on its own
-  against the packages the native pass produced.
+- **Packages.** Tests that need SDK-produced packages from the feed carry the `Package` category.
+  Unit tests of the package inspector and its policy over archives built in the test file system
+  stay in the managed pass. The managed pass excludes that category with
+  `--treenode-filter "/*/*/*/*[Category!=Package]"`; the package pass runs the category on its owning
+  product-test project against the complete feed produced after the native pass.
 
 `../architecture/hosting-and-packaging.md` owns the native and package contract;
 `../ROADMAP.md` records which of these passes exist today.
@@ -191,13 +192,15 @@ On an otherwise idle matching host, after the managed local check, run:
 dotnet run tools/native.cs -- verify --rid win-x64
 dotnet run tools/native.cs -- control --rid win-x64
 dotnet run tools/native.cs -- stage --rid win-x64 --publish-directory artifacts/native/win-x64/publish
+dotnet run tools/native.cs -- pack-child --rid win-x64 --evidence artifacts/native/win-x64
 dotnet run tools/native.cs -- validate --receipts artifacts/native
 ```
 
 Use the manifest RID matching the actual OS, OS architecture, process and SDK architecture. The
 Windows prerequisites are in the architecture canon. No prerequisite is installed by the tool.
-`verify`, `control` and `stage` must exit zero. The last command must exit 2 for a local one-RID set, naming
-the other five missing receipts in manifest order; only a complete hosted set may exit zero.
+`verify`, `control`, `stage` and `pack-child` must exit zero. The last command must exit 2 for a
+local one-RID set, naming the other five missing receipts in manifest order; only a complete hosted
+set may exit zero.
 `--output <dir>` selects verify's owned evidence directory; stage uses the publish directory's
 parent. `control` owns its temporary publication and cleanup. Its successful result requires
 publish exit zero and exactly the missing Native AOT export refusal for the executable file,
@@ -220,8 +223,9 @@ or dependency to that job. Local Windows evidence proves neither hosted executio
 support, package acquisition or installation.
 
 The `Native` workflow uses prepare → Linux builder/Windows/macOS build jobs → Linux host proof
-jobs → validation. Job guards are 30 minutes for preparation and validation, 150 minutes for builds,
-and 90 minutes for Linux proof. Every step invoking tests has a 35-minute guard; tool-owned test
+jobs → native validation → packages. Job guards are 30 minutes for preparation and validation,
+150 minutes for builds, and 90 minutes for Linux proof and packages. Every step invoking tests has
+a 35-minute guard; tool-owned test
 processes have a 30-minute outer guard around the 25-minute session bound. Listing steps have a
 five-minute guard and do not rerun tests. All test invocations disable TUnit's automatic artifact
 upload and use unique phase result directories. Every job owns `DOTNET_INSTALL_DIR` under
@@ -236,6 +240,33 @@ the file-based entry in a normal step before tests. Process snapshots run with `
 blocking. The validation success and its log establish the complete-set result; no index file or
 separate job-result input stands in for that dependency graph. The native workflow must be green
 at the pull request's head before queue entry, including hosted parsing and all six RIDs.
+
+### Package pass
+
+After the complete native pass, consolidate its completed evidence and run:
+
+```text
+dotnet run tools/native.cs -- pack-root --receipts artifacts/native-receipts --feed artifacts/feed
+dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --report-trx --results-directory artifacts/test-results/package/product --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+```
+
+Build the owning test project in Release before the no-build test pass. Set
+`OPENCODE_MCP_TEST_FEED` explicitly to the complete feed directory before testing; a relative value
+resolves against the repository root, not the runner's working directory. An absent, empty or
+whitespace-only input, or a nonexistent feed directory, fails with the instruction to build
+`native-package-feed` with `pack-root` after the native pass and set `OPENCODE_MCP_TEST_FEED` to its
+directory. An incomplete feed fails with the feed validator's diagnostics. There is no skip or
+default feed. The Package category lives in the product-test project only. Its input-refusal rows
+pass their values explicitly and never modify the process environment.
+
+Package acceptance requires seven real SDK-produced packages, their coherent native receipts and
+payload manifests, exact root RID mappings, byte-identical packed MCP manifests, and whole-payload
+path and SHA-256 equality. The `packages` job downloads its own run's six completed artifacts,
+packs and validates the feed, runs that pass, and uploads `native-package-feed` only on success.
+It always records a process snapshot and uploads package test results. A failed test gets a
+five-minute listing step, not a rerun. Native and package success at the pull request's head are
+extra acceptance conditions before queue entry; `CI result` remains the only required check.
+This pass makes no acquisition, installation or publication claim.
 
 ### Linux builder verification
 
@@ -375,11 +406,11 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
 The matrix's exact test command is:
 
 ```text
-dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --treenode-filter "/*/*/*/*[Category!=Package]" --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
 ```
 
 After a failed test step, if the build succeeded and the run was not cancelled, a bounded diagnostic
-step runs `dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --list-tests`.
+step runs `dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --treenode-filter "/*/*/*/*[Category!=Package]" --list-tests`.
 This lists tests without executing them again. Both steps disable TUnit artifact upload.
 
 `CI result` accepts exactly these dependency states; missing, failed, cancelled or invalid states

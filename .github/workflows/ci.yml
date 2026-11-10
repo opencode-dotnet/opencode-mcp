@@ -219,7 +219,7 @@ jobs:
           TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --treenode-filter "/*/*/*/*[Category!=Package]" --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
           exit $LASTEXITCODE
 
       - name: List tests after failure
@@ -229,7 +229,7 @@ jobs:
           TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --list-tests
+          dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --treenode-filter "/*/*/*/*[Category!=Package]" --list-tests
           exit $LASTEXITCODE
 
       - name: Upload test results

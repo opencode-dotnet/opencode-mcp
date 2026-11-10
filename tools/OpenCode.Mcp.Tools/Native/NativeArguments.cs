@@ -6,7 +6,7 @@ internal static class NativeArguments
     {
         if (arguments.Count == 0)
         {
-            throw new InvalidOperationException("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux or snapshot.");
+            throw new InvalidOperationException("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root or snapshot.");
         }
         var operation = arguments[0];
         string[] required = operation switch
@@ -18,6 +18,8 @@ internal static class NativeArguments
             "matrix" => ["--manifest", "--github-output"],
             "control" => ["--rid"],
             "prove-linux" => ["--rid", "--evidence"],
+            "pack-child" => ["--rid", "--evidence"],
+            "pack-root" => ["--receipts", "--feed"],
             "snapshot" => ["--output"],
             _ => throw new InvalidOperationException("Arguments: unknown command " + operation + "."),
         };
@@ -46,7 +48,7 @@ internal static class NativeArguments
         }
         var command = new NativeCommand(operation, values.GetValueOrDefault("--rid"), values.GetValueOrDefault("--output"),
             values.GetValueOrDefault("--publish-directory"), values.GetValueOrDefault("--path"), values.GetValueOrDefault("--receipts"),
-            GithubOutput: values.GetValueOrDefault("--github-output"), Evidence: values.GetValueOrDefault("--evidence"));
+            GithubOutput: values.GetValueOrDefault("--github-output"), Evidence: values.GetValueOrDefault("--evidence"), Feed: values.GetValueOrDefault("--feed"));
         return values.TryGetValue("--manifest", out var manifest) ? command with { Manifest = manifest } : command;
     }
 }
