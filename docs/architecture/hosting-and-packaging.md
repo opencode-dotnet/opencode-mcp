@@ -418,8 +418,8 @@ prerequisite fails with its name, without an install or alternate-runner fallbac
 - The product packs as a .NET tool with the MCP server package type: `PackAsTool=true`,
   `PackageType=McpServer`, the SDK-added `DotnetTool` type, the command `opencode-mcp`, and
   `.mcp/server.json` at the package root.
-- The packages carry the same package metadata as the OpenCode .NET SDK packages: authors,
-  copyright, the project URL, tags, and that repository's icon as `icon.png` at the package root.
+- The packages carry authors, copyright, this product's project URL and tags, and the OpenCode
+  .NET SDK repository's icon as `icon.png` at the package root.
   `Directory.Build.props` owns the values, and the product project owns its tags. `Company` and
   `Copyright` also stamp the assemblies; a package has no company field. Package inspection pins
   the authors to `Deniz İrgin` and the project URL to
