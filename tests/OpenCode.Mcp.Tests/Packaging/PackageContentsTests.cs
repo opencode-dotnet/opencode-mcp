@@ -111,10 +111,10 @@ public sealed class PackageContentsTests
         await Assert.That(await new McpPackageFeed(_files).ValidateAsync(copy, manifest, identity, token)).IsEquivalentTo(diagnostic.Split('\n'), CollectionOrdering.Matching);
     }
 
-    public async IAsyncEnumerable<object[]> MutatedRealFeedCases([EnumeratorCancellation] CancellationToken token = default)
+    public static async IAsyncEnumerable<object[]> MutatedRealFeedCases([EnumeratorCancellation] CancellationToken token = default)
     {
-        await using var fixture = new PackageFeedFixture(_files, null);
-        var manifest = await ManifestAsync(fixture, token);
+        var files = new RealFileSystem();
+        var manifest = await new NativeManifestStore(files).ReadAsync(files.Path.GetFullPath("../../../../../packaging/native-manifest.json", AppContext.BaseDirectory), token);
         var root = "OpenCodeDotNet.Mcp." + BuildVersion() + ".nupkg: ";
         var child = "OpenCodeDotNet.Mcp." + manifest.Runtimes[0].Rid + "." + BuildVersion() + ".nupkg";
         yield return ["type", root + "Root package types must be exactly DotnetTool, McpServer."];

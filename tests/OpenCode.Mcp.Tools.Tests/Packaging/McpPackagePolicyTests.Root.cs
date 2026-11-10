@@ -3,7 +3,7 @@ using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging.PackagePolicy;
+namespace OpenCode.Mcp.Tools.Tests.Packaging;
 
 public sealed partial class McpPackagePolicyTests
 {

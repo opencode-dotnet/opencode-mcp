@@ -15,7 +15,7 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
         var first = locations[request.Manifest.Runtimes[0].Rid].Receipt;
         var processes = new NativeProcesses(runner, request.Root);
         var identity = await RequireIdentityAsync(request, first, processes, "Root", token).ConfigureAwait(false);
-        await RequireChildrenAsync(request.Manifest, identity, locations, token).ConfigureAwait(false);
+        await RequireChildrenAsync(identity, locations, token).ConfigureAwait(false);
         if (files.File.Exists(feedDirectory) || (files.Directory.Exists(feedDirectory) && files.Directory.EnumerateFileSystemEntries(feedDirectory).Any()))
         {
             throw new InvalidOperationException("Feed directory must be absent or empty: " + feedDirectory);
@@ -100,24 +100,26 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
         return identity;
     }
 
-    private async Task<Dictionary<string, (NativeReceipt Receipt, string Directory)>> ReadLocationsAsync(string directory, CancellationToken token)
+    private sealed record ReceiptLocation(NativeReceipt Receipt, string Directory);
+
+    private async Task<Dictionary<string, ReceiptLocation>> ReadLocationsAsync(string directory, CancellationToken token)
     {
-        var locations = new Dictionary<string, (NativeReceipt Receipt, string Directory)>(StringComparer.Ordinal);
+        var locations = new Dictionary<string, ReceiptLocation>(StringComparer.Ordinal);
         foreach (var path in files.Directory.EnumerateFiles(directory, "receipt.json", SearchOption.AllDirectories))
         {
             var receipt = await new NativeEvidenceStore(files).ReadAsync<NativeReceipt>(path, token).ConfigureAwait(false);
-            locations.Add(receipt.Rid, (receipt, files.Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Receipt needs a parent directory.")));
+            locations.Add(receipt.Rid, new ReceiptLocation(receipt, files.Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Receipt needs a parent directory.")));
         }
         return locations;
     }
 
-    private async Task RequireChildrenAsync(NativeManifest manifest, PackageIdentity identity, Dictionary<string, (NativeReceipt Receipt, string Directory)> locations, CancellationToken token)
+    private async Task RequireChildrenAsync(PackageIdentity identity, Dictionary<string, ReceiptLocation> locations, CancellationToken token)
     {
         var diagnostics = new List<string>();
         var names = McpPackagePolicy.PackageNames(identity);
-        for (var index = 0; index < manifest.Runtimes.Count; index++)
+        for (var index = 0; index < identity.RuntimeIdentifiers.Count; index++)
         {
-            var rid = manifest.Runtimes[index].Rid;
+            var rid = identity.RuntimeIdentifiers[index];
             var location = locations[rid];
             var packages = files.Path.Combine(location.Directory, "packages");
             var name = names[index + 1];
@@ -136,7 +138,7 @@ internal sealed class McpPackageBuilder(IFileSystem files, INativeProcessRunner 
         NativeDiagnostics.Refuse(diagnostics);
     }
 
-    private void CopyEvidence(string feed, PackageIdentity identity, Dictionary<string, (NativeReceipt Receipt, string Directory)> locations)
+    private void CopyEvidence(string feed, PackageIdentity identity, Dictionary<string, ReceiptLocation> locations)
     {
         var names = McpPackagePolicy.PackageNames(identity);
         for (var index = 0; index < identity.RuntimeIdentifiers.Count; index++)

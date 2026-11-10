@@ -1,6 +1,8 @@
 using OpenCode.Mcp.Tools.Native;
 using OpenCode.Mcp.Tools.Packaging;
+using OpenCode.Mcp.Tools.Tests.Native.Support;
 using OpenCode.Mcp.Tools.Tests.Support;
+using Testably.Abstractions.Testing;
 using TUnit.Assertions.Enums;
 
 namespace OpenCode.Mcp.Tools.Tests.Packaging;
@@ -17,13 +19,8 @@ public sealed class McpPackageFeedTests
     }
 
     [Test]
-    [Arguments("root")]
-    [Arguments("child")]
-    [Arguments("receipt")]
-    [Arguments("payload manifest")]
-    [Arguments("extra")]
-    [Arguments("extra evidence")]
-    public async Task ValidateAsync_Should_Require_The_Exact_File_Set(string fault, CancellationToken token)
+    [MethodDataSource(nameof(FileSetCases))]
+    public async Task ValidateAsync_Should_Require_The_Exact_File_Set(string fault, string diagnostic, CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);
         var request = await builder.PrepareCompleteAsync(token);
@@ -47,32 +44,54 @@ public sealed class McpPackageFeedTests
             builder.Files.File.Delete(path);
         }
         await Assert.That(await new McpPackageFeed(builder.Files).ValidateAsync(builder.Feed, request.Manifest, builder.Identity, token))
-            .IsEquivalentTo([(fault is "extra" or "extra evidence" ? PackagingData.UnexpectedFeedFile : PackagingData.MissingFeedFile) + relative], CollectionOrdering.Matching);
+            .IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
     }
+
+    public static IEnumerable<object[]> FileSetCases() =>
+    [
+        ["root", PackagingData.MissingFeedFile + "OpenCodeDotNet.Mcp." + PackagingData.BuildVersion + ".nupkg"],
+        ["child", PackagingData.MissingFeedFile + PackagingData.ChildFileName],
+        ["receipt", PackagingData.MissingFeedFile + "evidence/win-x64/receipt.json"],
+        ["payload manifest", PackagingData.MissingFeedFile + "evidence/win-x64/payload-manifest.json"],
+        ["extra", PackagingData.UnexpectedFeedFile + "extra.txt"],
+        ["extra evidence", PackagingData.UnexpectedFeedFile + "evidence/win-x64/extra.txt"],
+    ];
 
     [Test]
     [Arguments("empty", "Unexpected feed directory: empty")]
     [Arguments("evidence/win-x64/empty", "Unexpected feed directory: evidence/win-x64/empty")]
-    public async Task ValidateAsync_Should_Refuse_An_Extra_Empty_Directory(string relative, string diagnostic, CancellationToken token)
+    [Arguments("nonempty", "Unexpected feed file: nonempty/extra.txt\nUnexpected feed directory: nonempty")]
+    public async Task ValidateAsync_Should_Refuse_An_Extra_Directory(string relative, string diagnostic, CancellationToken token)
     {
+        ArgumentNullException.ThrowIfNull(diagnostic);
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);
         var request = await builder.PrepareCompleteAsync(token);
         await builder.WriteFeedAsync(token);
         builder.Files.Directory.CreateDirectory(builder.Files.Path.Combine(builder.Feed, relative));
+        if (relative == "nonempty")
+        {
+            await builder.Files.File.WriteAllTextAsync(builder.Files.Path.Combine(builder.Feed, relative, "extra.txt"), "extra", token);
+        }
         await Assert.That(await new McpPackageFeed(builder.Files).ValidateAsync(builder.Feed, request.Manifest, builder.Identity, token))
-            .IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
+            .IsEquivalentTo(diagnostic.Split('\n'), CollectionOrdering.Matching);
     }
 
     [Test]
     public async Task ValidateAsync_Should_Normalize_Only_The_Platform_Directory_Separator(CancellationToken token)
     {
-        var builder = await PackageArchiveBuilder.CreateRootAsync(token);
-        var request = await builder.PrepareCompleteAsync(token);
-        await builder.WriteFeedAsync(token);
-        var relative = builder.Files.Path.DirectorySeparatorChar == '\\' ? "evidence/win-x64/extra.txt" : "evidence\\win-x64\\receipt.json";
-        await builder.Files.File.WriteAllTextAsync(builder.Files.Path.Combine(builder.Feed, relative), "extra", token);
-        await Assert.That(await new McpPackageFeed(builder.Files).ValidateAsync(builder.Feed, request.Manifest, builder.Identity, token))
-            .IsEquivalentTo([PackagingData.UnexpectedFeedFile + relative], CollectionOrdering.Matching);
+        var files = new MockFileSystem(options => options.SimulatingOperatingSystem(SimulationMode.Linux));
+        var manifest = await new NativeManifestStore(files).ReadAsync(await new NativeManifestFixture().WriteAsync(files, token), token);
+        var identity = new PackageIdentity("OpenCodeDotNet.Mcp", PackagingData.BuildVersion, "opencode-mcp", [.. manifest.Runtimes.Select(static runtime => runtime.Rid)]);
+        var feed = files.Path.Combine(files.Path.GetTempPath(), "feed");
+        files.Directory.CreateDirectory(feed);
+        await files.File.WriteAllTextAsync(files.Path.Combine(feed, "evidence\\win-x64\\receipt.json"), "extra", token);
+        string[] expected = [PackagingData.MissingFeedFile + identity.Id + "." + identity.Version + ".nupkg",
+            .. manifest.Runtimes.Select(runtime => PackagingData.MissingFeedFile + identity.Id + "." + runtime.Rid + "." + identity.Version + ".nupkg"),
+            .. manifest.Runtimes.SelectMany(static runtime => new[] { PackagingData.MissingFeedFile + "evidence/" + runtime.Rid + "/receipt.json",
+                PackagingData.MissingFeedFile + "evidence/" + runtime.Rid + "/payload-manifest.json" }),
+            PackagingData.UnexpectedFeedFile + "evidence\\win-x64\\receipt.json"];
+        await Assert.That(await new McpPackageFeed(files).ValidateAsync(feed, manifest, identity, token))
+            .IsEquivalentTo(expected, CollectionOrdering.Matching);
     }
 
     [Test]

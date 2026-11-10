@@ -6,7 +6,7 @@ using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging.PackageBuilder;
+namespace OpenCode.Mcp.Tools.Tests.Packaging;
 
 public sealed partial class McpPackageBuilderTests
 {
@@ -89,6 +89,10 @@ public sealed partial class McpPackageBuilderTests
         {
             builder.Files.File.Delete(builder.Files.Path.Combine(packages, child.PackageFileName));
         }
+        else if (fault == "child missing directory")
+        {
+            builder.Files.Directory.Delete(packages, recursive: true);
+        }
         else if (fault == "child extra file")
         {
             await builder.Files.File.WriteAllTextAsync(builder.Files.Path.Combine(packages, "extra.txt"), "extra", token);
@@ -110,6 +114,7 @@ public sealed partial class McpPackageBuilderTests
     public static IEnumerable<object[]> ChildCountCases() =>
     [
         ["child missing", "win-x64: " + PackagingData.PackageCountDiagnostic],
+        ["child missing directory", "win-x64: " + PackagingData.PackageCountDiagnostic],
         ["child extra file", "win-x64: " + PackagingData.PackageCountDiagnostic],
         ["child empty directory", "win-x64: " + PackagingData.PackageCountDiagnostic],
     ];
@@ -144,7 +149,7 @@ public sealed partial class McpPackageBuilderTests
         await builder.Files.File.WriteAllTextAsync(builder.Feed, "foreign", token);
         var start = builder.Native.Runner.Calls.Count;
         await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackRootAsync(request, builder.Feed, TextWriter.Null, token); })
-            .ThrowsExactly<InvalidOperationException>().WithMessage("Feed directory must be absent or empty: " + builder.Feed, StringComparison.Ordinal);
+            .ThrowsExactly<InvalidOperationException>().WithMessage(PackagingData.FeedDirectoryDiagnostic + builder.Feed, StringComparison.Ordinal);
         await Assert.That(await builder.Files.File.ReadAllTextAsync(builder.Feed, token)).IsEqualTo("foreign");
         await Assert.That(builder.Native.Runner.Calls.Skip(start).Where(static call => call.Arguments[0] == "pack")).IsEmpty();
     }
@@ -159,7 +164,7 @@ public sealed partial class McpPackageBuilderTests
         await builder.Files.File.WriteAllTextAsync(sentinel, "foreign", token);
         var start = builder.Native.Runner.Calls.Count;
         await Assert.That(async () => { await new McpPackageBuilder(builder.Files, builder.Native.Runner, builder.Native.Modes).PackRootAsync(request, builder.Feed, TextWriter.Null, token); })
-            .ThrowsExactly<InvalidOperationException>().WithMessage("Feed directory must be absent or empty: " + builder.Feed, StringComparison.Ordinal);
+            .ThrowsExactly<InvalidOperationException>().WithMessage(PackagingData.FeedDirectoryDiagnostic + builder.Feed, StringComparison.Ordinal);
         await Assert.That(await builder.Files.File.ReadAllTextAsync(sentinel, token)).IsEqualTo("foreign");
         await Assert.That(builder.Native.Runner.Calls.Skip(start).Where(static call => call.Arguments[0] == "pack")).IsEmpty();
     }

@@ -5,7 +5,7 @@ using OpenCode.Mcp.Tools.Packaging;
 using OpenCode.Mcp.Tools.Tests.Support;
 using TUnit.Assertions.Enums;
 
-namespace OpenCode.Mcp.Tools.Tests.Packaging.PackageBuilder;
+namespace OpenCode.Mcp.Tools.Tests.Packaging;
 
 public sealed partial class McpPackageBuilderTests
 {
@@ -150,6 +150,10 @@ public sealed partial class McpPackageBuilderTests
             {
                 builder.Files.Directory.CreateDirectory(builder.Files.Path.Combine(packages, "empty"));
             }
+            else if (fault == "missing directory")
+            {
+                builder.Files.Directory.Delete(packages, recursive: true);
+            }
         };
         await AssertChildRefusalAsync(builder, request, diagnostic, token);
     }
@@ -160,6 +164,7 @@ public sealed partial class McpPackageBuilderTests
         ["two", PackagingData.PackageCountDiagnostic],
         ["extra file", PackagingData.PackageCountDiagnostic],
         ["empty directory", PackagingData.PackageCountDiagnostic],
+        ["missing directory", PackagingData.PackageCountDiagnostic],
         ["stale", PackagingData.PackageCountDiagnostic],
         ["wrong name", PackagingData.PackageCountDiagnostic],
     ];
