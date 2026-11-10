@@ -34,6 +34,7 @@ internal static class PackagingData
     public const string RootPackFailureDiagnostic = "Root pack exited 7:\npack failed\n";
     public const string MissingFeedFile = "Missing feed file: ";
     public const string UnexpectedFeedFile = "Unexpected feed file: ";
+    public const string UnexpectedFeedDirectory = "Unexpected feed directory: ";
     public const string FeedDirectoryDiagnostic = "Feed directory must be absent or empty: ";
     public static string BuildVersion { get; } = (typeof(PackageIdentity).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
         ?? throw new InvalidOperationException("Missing tools informational version.")).InformationalVersion.Split('+')[0];

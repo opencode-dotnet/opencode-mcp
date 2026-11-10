@@ -445,14 +445,14 @@ jobs:
         timeout-minutes: 35
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --report-trx --results-directory artifacts/test-results/package/product --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/PackageContentsTests/*" --report-trx --results-directory artifacts/test-results/package/product --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
           exit $LASTEXITCODE
       - name: List package tests after failure
         if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && steps.test.outcome == 'failure' }}
         timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --list-tests
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/PackageContentsTests/*" --list-tests
           exit $LASTEXITCODE
       - name: Record processes after tests
         if: always()

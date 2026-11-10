@@ -18,6 +18,119 @@ public sealed class OwnedMcpProcessTests
     private readonly RealFileSystem _files = new();
 
     [Test]
+    public async Task StartAsync_Should_Retain_Complete_Redacted_Acquisition_Diagnostics(CancellationToken token)
+    {
+        var launch = DiagnosticLaunch(">&2 echo first& >&2 echo NuGet TOKEN=synthetic& >&2 echo last", "printf '%s\n' first 'NuGet TOKEN=synthetic' last >&2");
+        await using var owner = new OwnedMcpProcess(_files);
+        await owner.StartAsync(launch, token);
+        await owner.WaitForExitAsync(token);
+        await Assert.That(owner.CompleteStandardError).IsEquivalentTo(["first", "NuGet TOKEN=***", "last"], CollectionOrdering.Matching);
+        await Assert.That(owner.StandardError).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DisposeAsync_Should_Await_Every_Process_With_An_Executable_Inside_The_Root(bool rootExited, CancellationToken token)
+    {
+        var launch = DiagnosticLaunch(rootExited ? "exit /b 0" : "set /p hold=", rootExited ? "exit 0" : "read hold");
+        var childPath = _files.Path.Combine(launch.OwnedRoot, OperatingSystem.IsWindows() ? "owned-child.exe" : "owned-child");
+        _files.File.Copy(launch.FileName, childPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            _files.File.SetUnixFileMode(childPath, _files.File.GetUnixFileMode(launch.FileName));
+        }
+        using var child = new Process
+        {
+            StartInfo = new ProcessStartInfo(childPath)
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                Arguments = OperatingSystem.IsWindows() ? "/d /e:on /v:off /c set /p hold=" : "-c \"read hold\"",
+            },
+        };
+        var directory = Substitute.For<IDirectory>();
+        directory.CreateDirectory(Arg.Any<string>()).Returns(call => _files.Directory.CreateDirectory(call.Arg<string>()));
+        directory.Exists(Arg.Any<string>()).Returns(call => _files.Directory.Exists(call.Arg<string>()));
+        directory.ResolveLinkTarget(Arg.Any<string>(), returnFinalTarget: true)
+            .Returns(call => _files.Directory.ResolveLinkTarget(call.Arg<string>(), returnFinalTarget: true));
+        directory.EnumerateFiles(Arg.Any<string>(), Arg.Any<string>(), SearchOption.AllDirectories)
+            .Returns(call => _files.Directory.EnumerateFiles(call.ArgAt<string>(0), call.ArgAt<string>(1), SearchOption.AllDirectories));
+        directory.When(value => value.Delete(launch.OwnedRoot, recursive: true)).Do(_ =>
+        {
+            // Keep a live image available for the independent HasExited oracle, rather than a Windows delete error.
+            if (child.HasExited)
+            {
+                _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+            }
+        });
+        var observedFiles = Substitute.For<IFileSystem>();
+        observedFiles.Path.Returns(_files.Path);
+        observedFiles.File.Returns(_files.File);
+        observedFiles.Directory.Returns(directory);
+        observedFiles.FileInfo.Returns(_files.FileInfo);
+        observedFiles.DirectoryInfo.Returns(_files.DirectoryInfo);
+        await using var owner = new OwnedMcpProcess(observedFiles);
+        child.StartInfo.Environment.Clear();
+        foreach (var entry in owner.CreateEnvironment(launch))
+        {
+            child.StartInfo.Environment[entry.Key] = entry.Value;
+        }
+        child.Start();
+        var childExit = child.WaitForExitAsync(CancellationToken.None); // Independent evidence survives owner disposal.
+        var stdout = child.StandardOutput.ReadToEndAsync(token);
+        var stderr = child.StandardError.ReadToEndAsync(token);
+        try
+        {
+            await owner.StartAsync(launch, token);
+            using var root = Process.GetProcessById(owner.ProcessId);
+            if (rootExited)
+            {
+                await owner.WaitForExitAsync(token);
+            }
+            await Assert.That(child.HasExited).IsFalse();
+            await owner.DisposeAsync();
+            await Assert.That(root.HasExited).IsTrue();
+            await Assert.That(child.HasExited).IsTrue(); // Before the backstop wait: root-only cleanup cannot pass.
+            await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsFalse();
+        }
+        finally
+        {
+            if (!child.HasExited)
+            {
+                child.Kill();
+            }
+            await Task.WhenAll(childExit, stdout, stderr).WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None);
+            if (_files.Directory.Exists(launch.OwnedRoot))
+            {
+                _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+            }
+        }
+    }
+
+    [Test]
+    public async Task StartAsync_Should_Pass_The_Shim_Command_Tail_Verbatim(CancellationToken token)
+    {
+        var launch = DiagnosticLaunch("exit /b 0", "exit 0");
+        var directory = _files.Path.Combine(launch.OwnedRoot, "space & ampersand");
+        _files.Directory.CreateDirectory(directory);
+        var shim = _files.Path.Combine(directory, "probe.cmd");
+        await _files.File.WriteAllTextAsync(shim, "@echo %1 %2\r\n@exit /b 0\r\n", token);
+        launch = OperatingSystem.IsWindows()
+            ? launch with { Arguments = [], VerbatimCommandLine = "/d /e:on /v:off /s /c \"\"" + shim + "\" --transport stdio\"" }
+            : launch with { Arguments = ["-c", "printf '%s\\n' '--transport stdio'"] };
+        await using var owner = new OwnedMcpProcess(_files);
+        await owner.StartAsync(launch, token);
+        await owner.CloseInputAsync();
+        using var guard = CancellationTokenSource.CreateLinkedTokenSource(token);
+        guard.CancelAfter(TimeSpan.FromSeconds(45)); // Interpreter exit and pipe completion.
+        await Assert.That(await owner.WaitForExitAsync(guard.Token)).IsEqualTo(0);
+        await Assert.That(owner.Transcript.ServerLines).IsEquivalentTo(["--transport stdio"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task DisposeAsync_Should_Retain_And_Name_The_Root_When_Container_Absence_Is_Unproven()
     {
         var launch = ContainerDiagnosticLaunch();

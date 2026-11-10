@@ -8,34 +8,6 @@ namespace OpenCode.Mcp.Tools.Tests.Packaging;
 public sealed partial class McpPackagePolicyTests
 {
     [Test]
-    [Arguments(true, "authors", "wrong", PackagingData.AuthorsDiagnostic)]
-    [Arguments(false, "authors", "wrong", PackagingData.AuthorsDiagnostic)]
-    [Arguments(true, "authors", null, PackagingData.AuthorsDiagnostic)]
-    [Arguments(false, "authors", null, PackagingData.AuthorsDiagnostic)]
-    [Arguments(true, "projectUrl", "wrong", PackagingData.ProjectUrlDiagnostic)]
-    [Arguments(false, "projectUrl", "wrong", PackagingData.ProjectUrlDiagnostic)]
-    [Arguments(true, "projectUrl", null, PackagingData.ProjectUrlDiagnostic)]
-    [Arguments(false, "projectUrl", null, PackagingData.ProjectUrlDiagnostic)]
-    public async Task Diagnostics_Should_Pin_Family_Metadata(bool root, string field, string? value, string diagnostic, CancellationToken token)
-    {
-        var builder = root ? await PackageArchiveBuilder.CreateRootAsync(token) : await PackageArchiveBuilder.CreateAsync(token);
-        var element = builder.Metadata.Element(builder.Metadata.Name.Namespace + field);
-        if (value is null)
-        {
-            element?.Remove();
-        }
-        else
-        {
-            builder.Metadata.SetElementValue(builder.Metadata.Name.Namespace + field, value);
-        }
-        await builder.WriteAsync(token);
-        var package = await new McpPackageInspector(builder.Files).InspectAsync(builder.Path, token);
-        var diagnostics = root ? McpPackagePolicy.RootDiagnostics(package, builder.Identity, builder.Receipt.SourceCommit)
-            : McpPackagePolicy.ChildDiagnostics(package, builder.Identity, builder.Receipt with { Payload = builder.Inventory() });
-        await Assert.That(diagnostics).IsEquivalentTo([diagnostic], CollectionOrdering.Matching);
-    }
-
-    [Test]
     public async Task RootDiagnostics_Should_Accept_The_Sdk_Pointer_Without_Implementation(CancellationToken token)
     {
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);

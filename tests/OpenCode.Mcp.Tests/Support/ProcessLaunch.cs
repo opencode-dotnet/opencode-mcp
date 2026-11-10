@@ -8,6 +8,12 @@ internal sealed record ProcessLaunch
     /// <summary>Gets the container identity when Docker owns the product process.</summary>
     public ContainerLaunch? Container { get; init; }
 
+    /// <summary>Gets the packaged native entry whose running identity must be observed.</summary>
+    public string? ExpectedExecutable { get; init; }
+
+    /// <summary>Gets a command-interpreter command line that must bypass C-runtime argument escaping.</summary>
+    public string? VerbatimCommandLine { get; init; }
+
     /// <summary>Gets the executable started directly by the process owner.</summary>
     public required string FileName
     {

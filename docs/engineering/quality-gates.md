@@ -259,14 +259,25 @@ directory. An incomplete feed fails with the feed validator's diagnostics. There
 default feed. The Package category lives in the product-test project only. Its input-refusal rows
 pass their values explicitly and never modify the process environment.
 
+Acquisition tests additionally require explicit `OPENCODE_MCP_TEST_RID`, resolved only when an
+acquisition test starts. Absent, blank, unknown and host/private-dotnet-mismatched values fail
+instructively, never default or skip. Package-contents inspection needs only the feed. Acquisition
+runs on a host matching the claimed manifest RID and uses the private SDK without shared ASP.NET
+Core; unownable ambient NuGet configuration fails before an acquisition launch.
+
 Package acceptance requires seven real SDK-produced packages, their coherent native receipts and
 payload manifests, exact root RID mappings, byte-identical packed MCP manifests, and whole-payload
 path and SHA-256 equality. The `packages` job downloads its own run's six completed artifacts,
-packs and validates the feed, runs that pass, and uploads `native-package-feed` only on success.
+packs and validates the feed, runs `PackageContentsTests` with `/*/*/PackageContentsTests/*`, and
+uploads `native-package-feed` only on success. Its failure listing uses the same class filter.
 It always records a process snapshot and uploads package test results. A failed test gets a
 five-minute listing step, not a rerun. Native and package success at the pull request's head are
 extra acceptance conditions before queue entry; `CI result` remains the only required check.
-This pass makes no acquisition, installation or publication claim.
+Contents-only acceptance makes no acquisition or packaged-startup claim. The complete Package
+category additionally exercises cold exact-version DNX, owned tool-path/shim startup, the installed
+HTTP entry, missing-host-implementation refusal on both routes, complete payload equality, observed
+native process paths and owned cleanup. Local matching-host results establish only that host's
+development evidence; they are no hosted, six-RID, final-candidate or publication claim.
 
 ### Linux builder verification
 

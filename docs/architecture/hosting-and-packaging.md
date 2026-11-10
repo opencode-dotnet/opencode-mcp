@@ -329,7 +329,7 @@ per-RID evidence into separate directories, and validates the receipt set. Its s
 the fan-in evidence; no preparation file or receipt index is produced. This workflow has read-only
 contents permission, runs on pull requests and manual dispatch, and adds no required check. A
 subsequent `packages` job downloads the completed artifacts of its own workflow run, packs the root,
-validates the complete feed and runs its separate Package pass. The workflow's artifact download
+validates the complete feed and runs its separate package-contents pass. The workflow's artifact download
 establishes the one-run boundary; receipts prove source, common-input, SDK, version and dependency
 coherence, not workflow-run origin. Local `pack-root` makes no workflow-run-origin claim.
 
@@ -496,11 +496,26 @@ or packaged-startup claim.
   evidence, not candidate evidence. A source or build-input change makes a new candidate that is
   verified again; an earlier artifact or receipt is never relabeled as produced from a later
   commit.
-- Acquisition tests use a controlled, complete local feed and fresh test-owned home, configuration,
-  cache, and tool directories, with the .NET SDK already available. They prove package selection and
-  packaged startup without personal settings, earlier packages, or development output. They do not
-  require external network denial, do not promise offline installation, and never install globally
-  or publish.
+- Acquisition uses an exact product version and the complete controlled local feed through both
+  `dotnet dnx` and an owned tool-path installation; neither route installs globally or changes a
+  product tool manifest. The target framework for installation comes from `Directory.Build.props`.
+  Windows launches the SDK's `.cmd` through the absolute system command interpreter with a verbatim
+  command tail; Unix launches the installed symbolic link directly, never by changing `PATH`.
+- Acquisition children use the process owner's isolation policy, extended with owned NuGet package,
+  HTTP, plugin, scratch and tool stores, an empty plugin-discovery directory, and a private-SDK/OS-only
+  `PATH`. Windows Program Files paths and Linux common application data are owned. Ambient ancestor
+  NuGet configuration and macOS's fixed machine configuration are refused, never read or hidden.
+  `../engineering/testing-style.md` section 6 owns the exact environment and SDK-first-use boundary.
+  Cold means empty package, tool and temporary acquisition stores, not execution of SDK first use.
+- A lazy session-owned real copy of the selected SDK contains only its host, complete SDK directory,
+  required Core runtime and matching hostfxr. Acquisition and native startup run without a shared
+  ASP.NET Core runtime. Contents-only tests and the managed pass do not create that copy.
+- Packaged startup requires the observed running native entry to be the selected implementation
+  package's exact version and its complete payload to match the feed evidence by path and SHA-256.
+  Managed and development-output fallbacks are forbidden. Process ownership includes every live
+  executable inside the owned root, before protocol readiness too; root exit alone proves nothing.
+  Acquisition is distinct from native runtime independence and OpenCode integration. It requires no
+  external network denial, promises no offline installation, and authorizes no publication.
 
 ## Installation and release boundaries
 
