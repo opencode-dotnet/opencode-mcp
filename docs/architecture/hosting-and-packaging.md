@@ -498,7 +498,7 @@ or packaged-startup claim.
   commit.
 - Acquisition uses an exact product version and the complete controlled local feed through both
   `dotnet dnx` and an owned tool-path installation; neither route installs globally or changes a
-  product tool manifest. The target framework for installation comes from `Directory.Build.props`.
+  product tool manifest.
   Windows launches the SDK's `.cmd` through the absolute system command interpreter with a verbatim
   command tail; Unix launches the installed symbolic link directly, never by changing `PATH`.
 - Acquisition children use the process owner's isolation policy, extended with owned NuGet package,

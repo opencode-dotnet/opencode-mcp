@@ -18,6 +18,46 @@ public sealed class OwnedMcpProcessTests
     private readonly RealFileSystem _files = new();
 
     [Test]
+    public async Task DisposeAsync_Should_End_The_Root_When_Owned_Process_Capture_Fails(CancellationToken token)
+    {
+        var launch = DiagnosticLaunch("for /L %i in (0,0,1) do @rem hold", "while :; do :; done");
+        var failure = new IOException("owned root enumeration failed");
+        var directory = Substitute.For<IDirectory>();
+        directory.CreateDirectory(Arg.Any<string>()).Returns(call => _files.Directory.CreateDirectory(call.Arg<string>()));
+        directory.Exists(Arg.Any<string>()).Returns(call => _files.Directory.Exists(call.Arg<string>()));
+        directory.ResolveLinkTarget(Arg.Any<string>(), returnFinalTarget: true)
+            .Returns(call => _files.Directory.ResolveLinkTarget(call.Arg<string>(), returnFinalTarget: true));
+        directory.EnumerateFiles(launch.OwnedRoot, "*", SearchOption.AllDirectories).Returns(_ => throw failure);
+        var decorated = DecorateDirectory(directory);
+        var owner = new OwnedMcpProcess(decorated);
+        await owner.StartAsync(launch, token);
+        using var root = Process.GetProcessById(owner.ProcessId);
+        var exit = root.WaitForExitAsync(CancellationToken.None); // Backstop ownership is independent of disposal.
+        var input = owner.StandardInput;
+        try
+        {
+            await Assert.That(root.HasExited).IsFalse();
+            var disposal = owner.DisposeAsync().AsTask();
+            await Assert.That(() => disposal.WaitAsync(token)).ThrowsExactly<IOException>()
+                .WithMessage("owned root enumeration failed", StringComparison.Ordinal);
+            await Assert.That(owner.ExitCompleted).IsTrue(); // Before the backstop kill, including when stdin has closed.
+            await Assert.That(root.HasExited).IsTrue();
+            await Assert.That(owner.DiagnosticsCompleted).IsTrue();
+            await Assert.That(input.CanWrite).IsFalse();
+            await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsTrue();
+        }
+        finally
+        {
+            if (!root.HasExited)
+            {
+                root.Kill(entireProcessTree: true);
+            }
+            await exit.WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None);
+            _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+        }
+    }
+
+    [Test]
     public async Task StartAsync_Should_Retain_Complete_Redacted_Acquisition_Diagnostics(CancellationToken token)
     {
         var launch = DiagnosticLaunch(">&2 echo first& >&2 echo NuGet TOKEN=synthetic& >&2 echo last", "printf '%s\n' first 'NuGet TOKEN=synthetic' last >&2");
@@ -35,10 +75,11 @@ public sealed class OwnedMcpProcessTests
     {
         var launch = DiagnosticLaunch(rootExited ? "exit /b 0" : "set /p hold=", rootExited ? "exit 0" : "read hold");
         var childPath = _files.Path.Combine(launch.OwnedRoot, OperatingSystem.IsWindows() ? "owned-child.exe" : "owned-child");
-        _files.File.Copy(launch.FileName, childPath);
+        var childSource = OperatingSystem.IsWindows() ? launch.FileName : "/bin/cat";
+        _files.File.Copy(childSource, childPath);
         if (!OperatingSystem.IsWindows())
         {
-            _files.File.SetUnixFileMode(childPath, _files.File.GetUnixFileMode(launch.FileName));
+            _files.File.SetUnixFileMode(childPath, _files.File.GetUnixFileMode(childSource));
         }
         using var child = new Process
         {
@@ -48,7 +89,7 @@ public sealed class OwnedMcpProcessTests
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                Arguments = OperatingSystem.IsWindows() ? "/d /e:on /v:off /c set /p hold=" : "-c \"read hold\"",
+                Arguments = OperatingSystem.IsWindows() ? "/d /e:on /v:off /c set /p hold=" : "",
             },
         };
         var directory = Substitute.For<IDirectory>();
@@ -66,12 +107,7 @@ public sealed class OwnedMcpProcessTests
                 _files.Directory.Delete(launch.OwnedRoot, recursive: true);
             }
         });
-        var observedFiles = Substitute.For<IFileSystem>();
-        observedFiles.Path.Returns(_files.Path);
-        observedFiles.File.Returns(_files.File);
-        observedFiles.Directory.Returns(directory);
-        observedFiles.FileInfo.Returns(_files.FileInfo);
-        observedFiles.DirectoryInfo.Returns(_files.DirectoryInfo);
+        var observedFiles = DecorateDirectory(directory);
         await using var owner = new OwnedMcpProcess(observedFiles);
         child.StartInfo.Environment.Clear();
         foreach (var entry in owner.CreateEnvironment(launch))
@@ -85,14 +121,18 @@ public sealed class OwnedMcpProcessTests
         try
         {
             await owner.StartAsync(launch, token);
-            using var root = Process.GetProcessById(owner.ProcessId);
+            using var root = rootExited ? null : Process.GetProcessById(owner.ProcessId);
             if (rootExited)
             {
                 await owner.WaitForExitAsync(token);
             }
             await Assert.That(child.HasExited).IsFalse();
             await owner.DisposeAsync();
-            await Assert.That(root.HasExited).IsTrue();
+            await Assert.That(owner.ExitCompleted).IsTrue();
+            if (root is not null)
+            {
+                await Assert.That(root.HasExited).IsTrue();
+            }
             await Assert.That(child.HasExited).IsTrue(); // Before the backstop wait: root-only cleanup cannot pass.
             await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsFalse();
         }
@@ -116,11 +156,18 @@ public sealed class OwnedMcpProcessTests
         var launch = DiagnosticLaunch("exit /b 0", "exit 0");
         var directory = _files.Path.Combine(launch.OwnedRoot, "space & ampersand");
         _files.Directory.CreateDirectory(directory);
-        var shim = _files.Path.Combine(directory, "probe.cmd");
-        await _files.File.WriteAllTextAsync(shim, "@echo %1 %2\r\n@exit /b 0\r\n", token);
-        launch = OperatingSystem.IsWindows()
-            ? launch with { Arguments = [], VerbatimCommandLine = "/d /e:on /v:off /s /c \"\"" + shim + "\" --transport stdio\"" }
-            : launch with { Arguments = ["-c", "printf '%s\\n' '--transport stdio'"] };
+        var shim = _files.Path.Combine(directory, OperatingSystem.IsWindows() ? "probe.cmd" : "probe");
+        if (OperatingSystem.IsWindows())
+        {
+            await _files.File.WriteAllTextAsync(shim, "@echo %1 %2\r\n@exit /b 0\r\n", token);
+            launch = launch with { Arguments = [], VerbatimCommandLine = "/d /e:on /v:off /s /c \"\"" + shim + "\" --transport stdio\"" };
+        }
+        else
+        {
+            await _files.File.WriteAllTextAsync(shim, "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\"\n", token);
+            _files.File.SetUnixFileMode(shim, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            launch = launch with { FileName = shim, Arguments = ["--transport", "stdio"] };
+        }
         await using var owner = new OwnedMcpProcess(_files);
         await owner.StartAsync(launch, token);
         await owner.CloseInputAsync();
@@ -653,6 +700,15 @@ public sealed class OwnedMcpProcessTests
     }
 
     private ProcessLaunch Launch() => new ProductExecutable(_files).Resolve(new Dictionary<string, string?>(StringComparer.Ordinal));
+
+    private IFileSystem DecorateDirectory(IDirectory directory)
+    {
+        var decorated = Substitute.For<IFileSystem>();
+        decorated.Path.Returns(_files.Path);
+        decorated.File.Returns(_files.File);
+        decorated.Directory.Returns(directory);
+        return decorated;
+    }
 
     private ProcessLaunch ContainerDiagnosticLaunch() => DiagnosticLaunch("exit /b 0", "exit 0") with
     {

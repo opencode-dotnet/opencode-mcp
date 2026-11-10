@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO.Abstractions;
 using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
@@ -24,34 +23,32 @@ public sealed class PrivateSdkCopy : IAsyncDisposable
     }
 
     internal string Root { get; private set; } = "";
-    internal string SdkVersion { get; private set; } = "";
     internal string RuntimeVersion { get; private set; } = "";
-    internal long Size { get; private set; }
-    internal TimeSpan CopyDuration { get; private set; }
     internal string HostPath => _files.Path.Combine(Root, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
 
-    internal async Task PrepareAsync(string repositoryRoot, CancellationToken token)
+    internal Task PrepareAsync(string sdkVersion, CancellationToken token)
     {
-        var global = JsonNode.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(repositoryRoot, "global.json"), token));
-        var version = global?["sdk"]?["version"]?.GetValue<string>() ?? throw new InvalidOperationException("global.json has no SDK version.");
         var installation = _installation ?? _files.Path.GetFullPath(_files.Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
-        await PrepareAsync(installation, version, token);
+        return PrepareAsync(installation, sdkVersion, token);
     }
 
     internal Task PrepareAsync(string installation, string sdkVersion, CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(installation);
         ArgumentNullException.ThrowIfNull(sdkVersion);
+        if (!_files.Directory.Exists(_files.Path.Combine(installation, "sdk", sdkVersion)))
+        {
+            throw new InvalidOperationException("The selected SDK " + sdkVersion + " is not present in the installation: " + installation);
+        }
         lock (_gate)
         {
-            return _copy ??= CopyAsync(installation, sdkVersion, token);
+            // The session owns the copy; cancellation applies to each consumer's wait only.
+            return (_copy ??= CopyAsync(installation, sdkVersion, CancellationToken.None)).WaitAsync(token);
         }
     }
 
     private async Task CopyAsync(string installation, string sdkVersion, CancellationToken token)
     {
-        var clock = Stopwatch.StartNew();
-        SdkVersion = sdkVersion;
         var configuration = JsonNode.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(installation, "sdk", sdkVersion, "dotnet.runtimeconfig.json"), token));
         var framework = configuration?["runtimeOptions"]?["framework"] ?? throw new InvalidOperationException("The selected SDK has no required framework.");
         if (framework["name"]?.GetValue<string>() != "Microsoft.NETCore.App")
@@ -72,7 +69,6 @@ public sealed class PrivateSdkCopy : IAsyncDisposable
                 CopyFile(installation, _files.Path.GetRelativePath(installation, file));
             }
         }
-        CopyDuration = clock.Elapsed;
     }
 
     private void CopyFile(string installation, string relative)
@@ -85,16 +81,29 @@ public sealed class PrivateSdkCopy : IAsyncDisposable
         {
             _files.File.SetUnixFileMode(destination, _files.File.GetUnixFileMode(source));
         }
-        Size += _files.FileInfo.New(destination).Length;
     }
 
     /// <summary>Removes only this session's real SDK copy.</summary>
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        if (Root.Length != 0 && _files.Directory.Exists(Root))
+        Task? copy;
+        lock (_gate)
         {
-            _files.Directory.Delete(Root, recursive: true);
+            copy = _copy;
         }
-        return ValueTask.CompletedTask;
+        try
+        {
+            if (copy is not null)
+            {
+                await copy;
+            }
+        }
+        finally
+        {
+            if (Root.Length != 0 && _files.Directory.Exists(Root))
+            {
+                _files.Directory.Delete(Root, recursive: true);
+            }
+        }
     }
 }

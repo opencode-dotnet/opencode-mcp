@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Abstractions;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Client;
@@ -189,10 +190,13 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     public ValueTask DisposeAsync() => new(_dispose ??= CleanupAsync());
 
     internal IReadOnlyDictionary<string, string?> CreateEnvironment(ProcessLaunch launch)
+        => CreateEnvironment(launch, new Dictionary<string, string?>(new ProcessStartInfo().Environment, StringComparer.Ordinal));
+
+    internal IReadOnlyDictionary<string, string?> CreateEnvironment(ProcessLaunch launch, IReadOnlyDictionary<string, string?> inheritedEnvironment)
     {
         ArgumentNullException.ThrowIfNull(launch);
         var start = new ProcessStartInfo();
-        ConfigureEnvironment(start, launch.Environment, launch.OwnedRoot);
+        ConfigureEnvironment(start, launch.Environment, launch.OwnedRoot, inheritedEnvironment);
         return new System.Collections.ObjectModel.ReadOnlyDictionary<string, string?>(start.Environment);
     }
 
@@ -222,7 +226,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         }
         else
         {
-            ConfigureEnvironment(start, launch.Environment, launch.OwnedRoot);
+            ConfigureEnvironment(start, launch.Environment, launch.OwnedRoot, new Dictionary<string, string?>(start.Environment, StringComparer.Ordinal));
         }
         if (launch.VerbatimCommandLine is { } commandLine)
         {
@@ -329,16 +333,20 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Forced termination and owned reader completion.
         try
         {
-            CaptureOwnedProcesses();
-            if (_started)
+            Exception? captureFailure = null;
+            try
             {
-                if (!_process.HasExited)
-                {
-                    _process.Kill(entireProcessTree: true);
-                }
-                await _exit.WaitAsync(guard.Token);
+                CaptureOwnedProcesses();
             }
-            CaptureOwnedProcesses(); // The launcher can exit before its native entry does.
+            catch (Exception failure)
+            {
+                captureFailure = failure;
+            }
+            await EndRootAsync(guard.Token);
+            if (captureFailure is null)
+            {
+                CaptureOwnedProcesses(); // The launcher can exit before its native entry does.
+            }
             foreach (var (process, identity) in _ownedProcesses)
             {
                 if (!process.HasExited)
@@ -356,6 +364,10 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             if (_client is not null)
             {
                 await _client.DisposeAsync().AsTask().WaitAsync(guard.Token);
+            }
+            if (captureFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(captureFailure).Throw();
             }
         }
         finally
@@ -406,6 +418,18 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             ?? throw new InvalidOperationException("The packaged native entry is not running: " + expectedExecutable);
     }
 
+    private async Task EndRootAsync(CancellationToken token)
+    {
+        if (_started)
+        {
+            if (!_process.HasExited)
+            {
+                _process.Kill(entireProcessTree: true);
+            }
+            await _exit.WaitAsync(token);
+        }
+    }
+
     internal IReadOnlyDictionary<int, string> ObserveOwnedExecutables()
     {
         CaptureOwnedProcesses();
@@ -433,9 +457,9 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             var retained = false;
             try
             {
-                if (names.Contains(process.ProcessName) && !process.HasExited
-                    && process.MainModule?.FileName is { } path && path.StartsWith(physicalRoot, comparison)
-                    && _ownedProcesses.Keys.All(owned => owned.Id != process.Id))
+                if (_ownedProcesses.Keys.All(owned => owned.Id != process.Id)
+                    && names.Contains(process.ProcessName) && !process.HasExited
+                    && process.MainModule?.FileName is { } path && path.StartsWith(physicalRoot, comparison))
                 {
                     _ = process.SafeHandle;
                     _ownedProcesses.Add(process, process.StartTime);
@@ -457,9 +481,9 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         ? _stdoutDrain ??= _output.CopyToAsync(Stream.Null)
         : Task.CompletedTask;
 
-    private void ConfigureEnvironment(ProcessStartInfo start, IReadOnlyDictionary<string, string?> explicitInputs, string root)
+    private void ConfigureEnvironment(ProcessStartInfo start, IReadOnlyDictionary<string, string?> explicitInputs, string root, IReadOnlyDictionary<string, string?> inheritedEnvironment)
     {
-        var inherited = new Dictionary<string, string?>(start.Environment, OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        var inherited = new Dictionary<string, string?>(inheritedEnvironment, OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         start.Environment.Clear();
         foreach (var name in LaunchVariables)
         {
@@ -485,7 +509,14 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             {
                 throw new ArgumentException("Explicit environment input cannot replace an isolation path: " + name, nameof(explicitInputs));
             }
-            start.Environment[name] = value;
+            if (value is null)
+            {
+                start.Environment.Remove(name);
+            }
+            else
+            {
+                start.Environment[name] = value;
+            }
         }
         foreach (var (name, value) in isolation)
         {

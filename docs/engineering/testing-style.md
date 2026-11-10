@@ -197,10 +197,14 @@ cannot own its server fails.
   owned `NUGET_PACKAGES`, `NUGET_HTTP_CACHE_PATH`, `NUGET_PLUGINS_CACHE_PATH`, `NUGET_SCRATCH` and
   `NUGET_PLUGIN_PATHS`; the last names an empty directory to stop profile/PATH plugin discovery.
   Windows `ProgramFiles` and `ProgramFiles(x86)`, and Linux `NUGET_COMMON_APPLICATION_DATA`, name
-  owned directories. `ProgramData` and `ALLUSERSPROFILE` remain unset. Acquisition `PATH` contains
-  only the private SDK and the OS system directory. An owned configuration copies the cleared,
+  owned directories. `ProgramData` and `ALLUSERSPROFILE` remain unset. `DOTNET_ROOT`, `DOTNET_ROOT_X64`,
+  `DOTNET_ROOT_ARM64` and `DOTNET_HOST_PATH` are absent as keys from every acquisition child's
+  environment. Acquisition `PATH` contains only the private SDK and the Windows system directory,
+  or on Unix the private SDK, `/usr/bin` and `/bin`, in that order: the SDK runs `chmod` by name.
+  An owned configuration copies the cleared,
   single-source local-feed configuration with the absolute feed path. The working directory holds
-  only a byte copy of `global.json`. Before any acquisition launch, applicable ancestor NuGet
+  only a byte copy of `global.json`. The selected SDK version is the one the validated feed's receipt names.
+  Before any acquisition launch, applicable ancestor NuGet
   configuration and macOS fixed machine configuration are refused with ordered offending paths;
   the fixture never reads, edits or hides those files.
   `DOTNET_NOLOGO=1`, `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`,
@@ -211,9 +215,9 @@ cannot own its server fails.
   the pinned SDK implementation, not a documented isolation API: it suppresses NuGet migration,
   first-use messages and the first-use workload branch, not the independent certificate, PATH or
   telemetry branches. Cold package acquisition requires empty package, HTTP, plugin, scratch and
-  tool stores; it does not mean SDK-first-use operations ran. Prove environment, ambient refusal,
-  cold-store refusal, sentinel, private-SDK layout and cleanup using synthetic state before real
-  acquisition; unsafe isolation mutants run only against that state, never a developer profile.
+  tool stores; it does not mean SDK-first-use operations ran. Environment, ambient refusal,
+  cold-store refusal, sentinel, private-SDK layout and cleanup are proven using synthetic state;
+  a mutant of an isolation input runs only against that state, never a developer profile.
 - **Bounded diagnostic retention is not a drain limit.** The owner drains stderr through EOF even
   after it has retained 200 selected lines. Each selected line is limited to 2,000 characters;
   oversized lines carry a truncation marker. Lifetime-category lines, selector refusals, and the
@@ -247,7 +251,9 @@ cannot own its server fails.
   Ownership also includes every live process whose executable is inside the owned root, even when
   a DNX or command-shim root exits or startup fails before protocol readiness. Retain those handles,
   start each exit wait while alive, and await every exit before deleting the root. Preserve the
-  operation failure before cleanup failures; an unresolved root is retained and named. Short SDK
+  operation failure before cleanup failures. A failed acquisition whose cleanup also fails names
+  the retained root, as do unresolved container ownership and a reused process identifier. A plain
+  disposal failure surfaces unchanged with its root retained. Short SDK
   commands use the existing process-runner seam with environment inheritance disabled. The lazy
   private SDK copy is shared read-only for the test session and removed after its consumers finish.
 - **The event decides a verdict, never the clock.** The verdict rests on an event: the call result,

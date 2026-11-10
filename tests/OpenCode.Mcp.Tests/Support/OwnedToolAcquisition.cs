@@ -15,7 +15,6 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     private readonly INativeProcessRunner _runner;
     private string? _configurationPath;
     private string? _framework;
-    private bool _transferred;
     private Task? _dispose;
     public OwnedToolAcquisition(IFileSystem fileSystem, INativeProcessRunner? runner = null, PrivateSdkCopy? sdk = null)
     {
@@ -36,16 +35,17 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     public string ToolPath => _files.Path.Combine(OwnedRoot, "tool-path");
     public string? InstalledExecutable { get; private set; }
     public NativeProcessResult? InstallResult { get; private set; }
-    public async Task AssertMissingImplementationAsync(NativeProcessResult result, string rid, string version)
+    public IReadOnlyList<string> InstalledCommands { get; private set; } = [];
+    public static async Task AssertMissingImplementationAsync(NativeProcessResult result, string rid, string version, IReadOnlyList<string> commands)
     {
         await Assert.That(result.ExitCode).IsNotEqualTo(0);
         await Assert.That(result.Output.ToLowerInvariant()).Contains("opencodedotnet.mcp." + rid);
         await Assert.That(result.Output).Contains(version);
-        var commands = _files.Directory.Exists(OwnedRoot) ? _files.Directory.EnumerateFiles(OwnedRoot, "*", SearchOption.AllDirectories)
-            .Where(path => _files.Path.GetFileName(path) is "opencode-mcp" or "opencode-mcp.exe" or "opencode-mcp.cmd").ToArray() : [];
         await Assert.That(commands).IsEmpty();
-        await Assert.That(Process.ObserveOwnedExecutables()).IsEmpty();
     }
+
+    public IReadOnlyList<string> ObserveInstalledCommands() => [.. _files.Directory.EnumerateFiles(OwnedRoot, "*", SearchOption.AllDirectories)
+        .Where(path => _files.Path.GetFileName(path) is "opencode-mcp" or "opencode-mcp.exe" or "opencode-mcp.cmd").Order(StringComparer.Ordinal)];
     public async Task<string> ReadSdkRidAsync(CancellationToken token)
     {
         var result = await RunCommandAsync(BaseLaunch(["--info"]), token);
@@ -68,6 +68,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
             "-v", "minimal"]), token);
             if (InstallResult.ExitCode != 0)
             {
+                InstalledCommands = ObserveInstalledCommands();
                 throw new InvalidOperationException("Tool-path installation failed: " + InstallResult.Output.Trim());
             }
             var shim = _files.Path.Combine(ToolPath, OperatingSystem.IsWindows() ? "opencode-mcp.cmd" : "opencode-mcp");
@@ -76,7 +77,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
                 throw new InvalidOperationException("The SDK reported success without the installed command: " + shim);
             }
             InstalledExecutable = await FindNativeEntryAsync(ToolPath, token);
-            var launch = BaseLaunch(["--transport", "stdio"]) with { FileName = shim, ExpectedExecutable = InstalledExecutable };
+            var launch = BaseLaunch(["--transport", "stdio"]) with { FileName = shim };
             return OperatingSystem.IsWindows() ? launch with
             {
                 FileName = _files.Path.Combine(Environment.SystemDirectory, "cmd.exe"),
@@ -132,7 +133,6 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         try
         {
             RefuseAmbientConfiguration();
-            _transferred = true;
             await Process.StartAsync(launch, token);
         }
         catch (Exception original)
@@ -142,7 +142,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         }
     }
 
-    public async Task PrepareAsync(string repositoryRoot, string feed, CancellationToken cancellationToken)
+    public async Task PrepareAsync(string repositoryRoot, string feed, string sdkVersion, CancellationToken cancellationToken)
     {
         try
         {
@@ -154,7 +154,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
             var global = JsonNode.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(work, "global.json"), cancellationToken));
             var version = global?["sdk"]?["version"]?.GetValue<string>() ?? throw new InvalidOperationException("global.json has no SDK version.");
             var cli = OwnedDirectory("home", ".dotnet");
-            await _files.File.WriteAllTextAsync(_files.Path.Combine(cli, version + ".dotnetFirstUseSentinel"), "", cancellationToken);
+            await _files.File.WriteAllTextAsync(_files.Path.Combine(cli, sdkVersion + ".dotnetFirstUseSentinel"), "", cancellationToken);
             var configuration = XDocument.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(repositoryRoot, "packaging", "local-feed.nuget.config"), cancellationToken));
             configuration.Descendants("packageSources").Single().Elements("add").Single().SetAttributeValue("value", _files.Path.GetFullPath(feed));
             _configurationPath = _files.Path.Combine(OwnedDirectory("config"), "local-feed.nuget.config");
@@ -164,17 +164,17 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
             }
             var properties = XDocument.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(repositoryRoot, "Directory.Build.props"), cancellationToken));
             _framework = properties.Descendants("TargetFramework").Single().Value;
-            await _sdk.PrepareAsync(repositoryRoot, cancellationToken);
+            await _sdk.PrepareAsync(sdkVersion, cancellationToken);
             var probe = BaseLaunch([]);
             OwnedDirectory("tool-path");
             var sdk = await RunCommandAsync(probe with { Arguments = ["--version"] }, cancellationToken);
             SdkVersion = sdk.StandardOutput.Trim();
-            if (sdk.ExitCode != 0 || SdkVersion != version)
+            if (sdk.ExitCode != 0 || SdkVersion != sdkVersion)
             {
-                throw new InvalidOperationException("The private SDK version must be " + version + ": " + sdk.Output);
+                throw new InvalidOperationException("The private SDK selected for global.json " + version + " must be " + sdkVersion + ": " + sdk.Output);
             }
             var runtimes = await RunCommandAsync(probe with { Arguments = ["--list-runtimes"] }, cancellationToken);
-            var expected = "Microsoft.NETCore.App " + _sdk.RuntimeVersion + " [" + _files.Path.Combine(_sdk.Root, "shared", "Microsoft.NETCore.App") + "]";
+            var expected = "Microsoft.NETCore.App " + _sdk.RuntimeVersion + " [" + _files.Path.Combine(new PhysicalPathResolver(_files).Resolve(_sdk.Root), "shared", "Microsoft.NETCore.App") + "]";
             if (runtimes.ExitCode != 0 || runtimes.StandardOutput.Trim() != expected)
             {
                 throw new InvalidOperationException("The private SDK must list only its required Core runtime: " + runtimes.Output);
@@ -240,12 +240,16 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     {
         var inputs = new Dictionary<string, string?>(StringComparer.Ordinal)
         {
+            ["DOTNET_ROOT"] = null,
+            ["DOTNET_ROOT_X64"] = null,
+            ["DOTNET_ROOT_ARM64"] = null,
+            ["DOTNET_HOST_PATH"] = null,
             ["NUGET_PACKAGES"] = OwnedDirectory("cache", "packages"),
             ["NUGET_HTTP_CACHE_PATH"] = OwnedDirectory("cache", "http"),
             ["NUGET_PLUGINS_CACHE_PATH"] = OwnedDirectory("cache", "plugins"),
             ["NUGET_SCRATCH"] = OwnedDirectory("temp", "nuget-scratch"),
             ["NUGET_PLUGIN_PATHS"] = OwnedDirectory("empty-plugins"),
-            ["PATH"] = _sdk.Root + _files.Path.PathSeparator + (OperatingSystem.IsWindows() ? Environment.SystemDirectory : "/usr/bin"),
+            ["PATH"] = _sdk.Root + _files.Path.PathSeparator + (OperatingSystem.IsWindows() ? Environment.SystemDirectory : "/usr/bin:/bin"),
             ["DOTNET_NOLOGO"] = "1",
             ["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false",
             ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
@@ -281,7 +285,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         {
             await _sdk.DisposeAsync();
         }
-        if (!_transferred && _files.Directory.Exists(OwnedRoot))
+        if (_files.Directory.Exists(OwnedRoot))
         {
             _files.Directory.Delete(OwnedRoot, recursive: true);
         }

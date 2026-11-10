@@ -14,10 +14,222 @@ namespace OpenCode.Mcp.Tests.Support;
 public sealed class OwnedToolAcquisitionTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task PrepareAsync_Should_Refuse_An_Unexpected_Private_Host_Inventory(bool runtimeInventory, CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var runner = ProbeRunner(files);
+        await using var sdk = new PrivateSdkCopy(files);
+        await using var owner = new OwnedToolAcquisition(files, runner, sdk);
+        var output = "10.0.405";
+        var command = runtimeInventory ? "--list-runtimes" : "--version";
+        runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == command), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            if (runtimeInventory)
+            {
+                output = "Microsoft.NETCore.App 10.0.14 [" + files.Path.Combine(sdk.Root, "shared", "Microsoft.NETCore.App") + "]\n"
+                    + "Microsoft.AspNetCore.App 10.0.14 [" + files.Path.Combine(sdk.Root, "shared", "Microsoft.AspNetCore.App") + "]";
+            }
+            return Task.FromResult(new NativeProcessResult(0, output, ""));
+        });
+        var failure = await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.403", token)).ThrowsExactly<InvalidOperationException>();
+        var error = await Assert.That(failure).IsNotNull();
+        await Assert.That(error.Message).IsEqualTo((runtimeInventory ? "The private SDK must list only its required Core runtime: "
+            : "The private SDK selected for global.json 10.0.403 must be 10.0.403: ") + output + "\n");
+        string[] expected = runtimeInventory ? ["--version", "--list-runtimes"] : ["--version"];
+        await Assert.That(runner.ReceivedCalls().Select(call => call.GetArguments()[0]).OfType<NativeProcessRequest>().Select(request => request.Arguments[0]))
+            .IsEquivalentTo(expected, CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Arguments("version", "opencodedotnet.mcp.win-x64")]
+    [Arguments("opencodedotnet.mcp.win-x64", "version")]
+    public async Task AssertMissingImplementationAsync_Should_Require_Each_Product_Identifier(string output, string missing)
+    {
+        var result = new NativeProcessResult(1, "", output);
+        var failure = await Assert.That(() => OwnedToolAcquisition.AssertMissingImplementationAsync(result, "win-x64", "version", []))
+            .ThrowsExactly<AssertionException>();
+        var error = await Assert.That(failure).IsNotNull();
+        await Assert.That(error.Message).Contains("to contain \"" + missing + "\"");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Acquisition_Should_Refuse_Ambient_Configuration_Immediately_Before_Launch(bool start, CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var runner = ProbeRunner(files);
+        await using var owner = new OwnedToolAcquisition(files, runner);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
+        var launch = owner.CreateDnxLaunch("version") with { FileName = files.Path.Combine(owner.OwnedRoot, "missing.exe") };
+        string[] paths = [files.Path.Combine(files.Path.GetTempPath(), "NuGet.Config"), files.Path.Combine(launch.WorkingDirectory, "NuGet.Config")];
+        foreach (var path in paths.Reverse())
+        {
+            await files.File.WriteAllTextAsync(path, "foreign configuration, never read", token);
+        }
+        var failure = await Assert.That(async () =>
+        {
+            if (start)
+            {
+                await owner.StartAsync(launch, token);
+            }
+            else
+            {
+                await owner.InstallAsync("version", token);
+            }
+        }).ThrowsExactly<InvalidOperationException>();
+        var error = await Assert.That(failure).IsNotNull();
+        await Assert.That(error.Message).IsEqualTo("Ambient NuGet configuration cannot be owned:\n" + string.Join('\n', paths));
+        await Assert.That(runner.ReceivedCalls().Select(call => call.GetArguments()[0]).OfType<NativeProcessRequest>().Select(request => request.Arguments[0]))
+            .IsEquivalentTo(["--version", "--list-runtimes"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task PrepareAsync_Should_Refuse_Fixed_Machine_Configuration_Only_On_MacOS(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var runner = ProbeRunner(files);
+        await using var owner = new OwnedToolAcquisition(files, runner);
+        var machine = files.Path.GetFullPath("/Library/Application Support/NuGet/Config");
+        files.Directory.CreateDirectory(machine);
+        string[] paths = [files.Path.Combine(machine, "a.config"), files.Path.Combine(machine, "z.config")];
+        foreach (var path in paths.Reverse())
+        {
+            await files.File.WriteAllTextAsync(path, "foreign configuration, never read", token);
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.403", token)).ThrowsExactly<InvalidOperationException>()
+                .WithMessage("Ambient NuGet configuration cannot be owned:\n" + string.Join('\n', paths), StringComparison.Ordinal);
+            await Assert.That(runner.ReceivedCalls()).IsEmpty();
+        }
+        else
+        {
+            await owner.PrepareAsync(repository, "feed", "10.0.403", token);
+            await Assert.That(runner.ReceivedCalls().Select(call => call.GetArguments()[0]).OfType<NativeProcessRequest>().Select(request => request.Arguments[0]))
+                .IsEquivalentTo(["--version", "--list-runtimes"], CollectionOrdering.Matching);
+        }
+    }
+
+    [Test]
+    public async Task InstallAsync_Should_Retain_Installed_Command_Evidence_Before_Releasing_A_Failed_Installation(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var runner = ProbeRunner(files);
+        await using var owner = new OwnedToolAcquisition(files, runner);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
+        var command = files.Path.Combine(owner.ToolPath, "opencode-mcp.cmd");
+        runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == "tool"), Arg.Any<CancellationToken>()).Returns(async _ =>
+        {
+            await files.File.WriteAllTextAsync(command, "installed command", token);
+            return new NativeProcessResult(1, "", "opencodedotnet.mcp.win-x64 version");
+        });
+        await Assert.That(async () => { await owner.InstallAsync("version", token); }).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("Tool-path installation failed: opencodedotnet.mcp.win-x64 version", StringComparison.Ordinal);
+        await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsFalse();
+        var result = await Assert.That(owner.InstallResult).IsNotNull();
+        await Assert.That(owner.InstalledCommands).IsEquivalentTo([command], CollectionOrdering.Matching);
+        await Assert.That(() => OwnedToolAcquisition.AssertMissingImplementationAsync(result, "win-x64", "version", owner.InstalledCommands)).ThrowsExactly<AssertionException>();
+    }
+
+    [Test]
+    public async Task ObserveInstalledCommands_Should_Refuse_A_Missing_Root(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        await using var owner = new OwnedToolAcquisition(files, ProbeRunner(files));
+        await owner.DisposeAsync();
+        await Assert.That(owner.ObserveInstalledCommands)
+            .ThrowsExactly<DirectoryNotFoundException>();
+        token.ThrowIfCancellationRequested();
+    }
+
+    [Test]
+    public async Task StartAsync_Should_Release_The_Root_When_The_Process_Owner_Refuses_The_Launch(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        await using var owner = new OwnedToolAcquisition(files, ProbeRunner(files));
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
+        var sibling = owner.OwnedRoot + "-sibling";
+        files.Directory.CreateDirectory(sibling);
+        var sentinel = files.Path.Combine(sibling, "sentinel");
+        await files.File.WriteAllTextAsync(sentinel, "unrelated", token);
+        var launch = owner.CreateDnxLaunch("version") with { WorkingDirectory = sibling };
+        await Assert.That(() => owner.StartAsync(launch, token)).ThrowsExactly<ArgumentException>()
+            .WithMessage("The launch requires an opencode-mcp- temp child root containing its working directory. (Parameter 'launch')", StringComparison.Ordinal);
+        await owner.DisposeAsync();
+        await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsFalse();
+        await Assert.That(await files.File.ReadAllTextAsync(sentinel, token)).IsEqualTo("unrelated");
+    }
+
+    [Test]
+    public async Task PrepareAsync_Should_Copy_And_Seed_The_Selected_Sdk_Patch(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token, "10.0.404");
+        await using var owner = new OwnedToolAcquisition(files, ProbeRunner(files, "10.0.404"));
+        await owner.PrepareAsync(repository, "feed", "10.0.404", token);
+        await Assert.That(owner.SdkVersion).IsEqualTo("10.0.404");
+        await Assert.That(files.File.Exists(files.Path.Combine(owner.SdkDirectory, ".version"))).IsTrue();
+        await Assert.That(files.Path.GetFileName(owner.SdkDirectory)).IsEqualTo("10.0.404");
+        await Assert.That(files.Directory.EnumerateFiles(files.Path.Combine(owner.OwnedRoot, "home"), "*", SearchOption.AllDirectories))
+            .IsEquivalentTo([files.Path.Combine(owner.OwnedRoot, "home", ".dotnet", "10.0.404.dotnetFirstUseSentinel")], CollectionOrdering.Matching);
+        await Assert.That(await files.File.ReadAllBytesAsync(files.Path.Combine(owner.OwnedRoot, "work", "global.json"), token))
+            .IsEquivalentTo(await files.File.ReadAllBytesAsync(files.Path.Combine(repository, "global.json"), token), CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task PrepareAsync_Should_Name_The_Selected_Sdk_And_Installation_When_Missing(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token, "10.0.404");
+        var installation = files.Path.GetFullPath(files.Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
+        await using var owner = new OwnedToolAcquisition(files, ProbeRunner(files));
+        await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.403", token)).ThrowsExactly<InvalidOperationException>()
+            .WithMessage("The selected SDK 10.0.403 is not present in the installation: " + installation, StringComparison.Ordinal);
+    }
+
+    [Test]
+    public async Task CreateDnxLaunch_Should_Remove_Inherited_Host_Variables_From_The_Exact_Environment(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        var runner = ProbeRunner(files);
+        await using var owner = new OwnedToolAcquisition(files, runner);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
+        string[] names = ["PATH", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64",
+            "DOTNET_HOST_PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "UNRELATED"];
+        var inherited = names.ToDictionary(static name => name, static name => (string?)name, StringComparer.Ordinal);
+        var environment = owner.Process.CreateEnvironment(owner.CreateDnxLaunch("version"), inherited);
+        string[] expected = ["APPDATA", "ComSpec", "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH", "DOTNET_CLI_HOME", "DOTNET_CLI_TELEMETRY_OPTOUT",
+            "DOTNET_CLI_UI_LANGUAGE", "DOTNET_GENERATE_ASPNET_CERTIFICATE", "DOTNET_NOLOGO", "DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK",
+            "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LOCALAPPDATA", "NO_PROXY",
+            .. OperatingSystem.IsLinux() ? new[] { "NUGET_COMMON_APPLICATION_DATA" } : [],
+            "NUGET_HTTP_CACHE_PATH", "NUGET_PACKAGES", "NUGET_PLUGINS_CACHE_PATH", "NUGET_PLUGIN_PATHS", "NUGET_SCRATCH", "OPENCODE_CONFIG_DIR", "PATH", "PATHEXT",
+            .. OperatingSystem.IsWindows() ? new[] { "ProgramFiles", "ProgramFiles(x86)" } : [],
+            "SystemRoot", "TEMP", "TMP", "TMPDIR", "USERPROFILE", "WINDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME"];
+        await Assert.That(environment.Keys.Order(StringComparer.OrdinalIgnoreCase)).IsEquivalentTo(expected, CollectionOrdering.Matching);
+        foreach (var request in runner.ReceivedCalls().Select(call => call.GetArguments()[0]).OfType<NativeProcessRequest>())
+        {
+            await Assert.That(request.Environment.Keys).DoesNotContain("DOTNET_ROOT");
+            await Assert.That(request.Environment.Keys).DoesNotContain("DOTNET_ROOT_X64");
+            await Assert.That(request.Environment.Keys).DoesNotContain("DOTNET_ROOT_ARM64");
+            await Assert.That(request.Environment.Keys).DoesNotContain("DOTNET_HOST_PATH");
+        }
+        await Assert.That(inherited.Keys).IsEquivalentTo(names, CollectionOrdering.Matching);
+        await Assert.That(inherited.Values).IsEquivalentTo(names.Cast<string?>(), CollectionOrdering.Matching);
+    }
+
+    [Test]
     [Arguments("unused")]
     [Arguments("success")]
     [Arguments("failed-start")]
-    [Arguments("assertion-failure")]
     public async Task DisposeAsync_Should_Preserve_An_Outside_Sentinel(string path, CancellationToken token)
     {
         var files = new MockFileSystem();
@@ -31,7 +243,7 @@ public sealed class OwnedToolAcquisitionTests
         await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsTrue();
         if (path != "unused")
         {
-            await owner.PrepareAsync(repository, "feed", token);
+            await owner.PrepareAsync(repository, "feed", "10.0.403", token);
             if (path == "failed-start")
             {
                 var launch = owner.CreateDnxLaunch("version") with { FileName = files.Path.Combine(owner.OwnedRoot, "missing.exe") };
@@ -47,16 +259,6 @@ public sealed class OwnedToolAcquisitionTests
                 await owner.InstallAsync("version", token);
             }
         }
-        if (path == "assertion-failure")
-        {
-            await Assert.That(async () =>
-            {
-                await using (owner)
-                {
-                    await Assert.That("observed").IsEqualTo("intentional assertion failure");
-                }
-            }).ThrowsExactly<AssertionException>();
-        }
         await owner.DisposeAsync();
         await owner.DisposeAsync();
         await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsFalse();
@@ -68,7 +270,7 @@ public sealed class OwnedToolAcquisitionTests
     {
         var files = new MockFileSystem();
         await using var owner = new OwnedToolAcquisition(files, ProbeRunner(files));
-        await Assert.That(() => owner.AssertMissingImplementationAsync(new NativeProcessResult(0, "", "opencodedotnet.mcp.win-x64 version"), "win-x64", "version"))
+        await Assert.That(() => OwnedToolAcquisition.AssertMissingImplementationAsync(new NativeProcessResult(0, "", "opencodedotnet.mcp.win-x64 version"), "win-x64", "version", []))
             .ThrowsExactly<AssertionException>();
         token.ThrowIfCancellationRequested();
     }
@@ -80,7 +282,7 @@ public sealed class OwnedToolAcquisitionTests
         var repository = await PrepareRepositoryAsync(files, token);
         var runner = ProbeRunner(files);
         await using var owner = new OwnedToolAcquisition(files, runner);
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == "--info"), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new NativeProcessResult(0, "Runtime Environment:\n RID: linux-arm64\n Base Path: private-sdk", "")));
         await Assert.That(await owner.ReadSdkRidAsync(token)).IsEqualTo("linux-arm64");
@@ -93,7 +295,7 @@ public sealed class OwnedToolAcquisitionTests
         var repository = await PrepareRepositoryAsync(files, token);
         var decorated = DecorateDirectory(files, out var directory);
         await using var owner = new OwnedToolAcquisition(decorated, ProbeRunner(files));
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         directory.When(value => value.Delete(owner.OwnedRoot, recursive: true)).Do(_ => throw new IOException("root deletion refused"));
         var launch = owner.CreateDnxLaunch("version") with { FileName = files.Path.Combine(owner.OwnedRoot, "missing.exe") };
         var failure = await Assert.That(() => owner.StartAsync(launch, token)).ThrowsExactly<AggregateException>();
@@ -115,7 +317,7 @@ public sealed class OwnedToolAcquisitionTests
         var decorated = DecorateDirectory(files, out var directory);
         var runner = ProbeRunner(files);
         await using var owner = new OwnedToolAcquisition(decorated, runner);
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         directory.When(value => value.Delete(Arg.Any<string>(), recursive: true)).Do(call =>
         {
             var path = call.ArgAt<string>(0);
@@ -141,6 +343,8 @@ public sealed class OwnedToolAcquisitionTests
         directory = Substitute.For<IDirectory>();
         directory.CreateDirectory(Arg.Any<string>()).Returns(call => files.Directory.CreateDirectory(call.Arg<string>()));
         directory.Exists(Arg.Any<string>()).Returns(call => files.Directory.Exists(call.Arg<string>()));
+        directory.ResolveLinkTarget(Arg.Any<string>(), returnFinalTarget: true)
+            .Returns(call => files.Directory.ResolveLinkTarget(call.Arg<string>(), returnFinalTarget: true));
         directory.EnumerateFiles(Arg.Any<string>()).Returns(call => files.Directory.EnumerateFiles(call.Arg<string>()));
         directory.EnumerateFiles(Arg.Any<string>(), Arg.Any<string>(), SearchOption.AllDirectories)
             .Returns(call => files.Directory.EnumerateFiles(call.ArgAt<string>(0), call.ArgAt<string>(1), SearchOption.AllDirectories));
@@ -166,7 +370,7 @@ public sealed class OwnedToolAcquisitionTests
         files.Directory.CreateDirectory(sibling);
         var sentinel = files.Path.Combine(sibling, "sentinel");
         await files.File.WriteAllTextAsync(sentinel, "unrelated", token);
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == "tool"), Arg.Any<CancellationToken>()).Returns(_ => cancel
             ? Task.FromCanceled<NativeProcessResult>(new CancellationToken(canceled: true))
             : Task.FromResult(new NativeProcessResult(7, "ordered stdout\nsecond stdout", "first stderr\nsecond stderr")));
@@ -196,7 +400,7 @@ public sealed class OwnedToolAcquisitionTests
         var repository = await PrepareRepositoryAsync(files, token);
         var runner = ProbeRunner(files);
         await using var owner = new OwnedToolAcquisition(files, runner);
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == "tool"), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new NativeProcessResult(0, "Tool installed", "")));
         await Assert.That(async () => { await owner.InstallAsync("0.1.0-preview.1", token); }).ThrowsExactly<InvalidOperationException>()
@@ -210,7 +414,7 @@ public sealed class OwnedToolAcquisitionTests
         var repository = await PrepareRepositoryAsync(files, token);
         var runner = ProbeRunner(files);
         await using var owner = new OwnedToolAcquisition(files, runner);
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == "tool"), Arg.Any<CancellationToken>()).Returns(async _ =>
         {
             await SeedInstalledCommandAsync(files, owner.ToolPath, token);
@@ -222,7 +426,6 @@ public sealed class OwnedToolAcquisitionTests
             "--configfile", files.Path.Combine(owner.OwnedRoot, "config", "local-feed.nuget.config"), "--framework", "net10.0", "-v", "minimal"], CollectionOrdering.Matching);
         await Assert.That(request.InheritEnvironment).IsFalse();
         await Assert.That(request.Environment["NUGET_PACKAGES"]).IsEqualTo(files.Path.Combine(owner.OwnedRoot, "cache", "packages"));
-        await Assert.That(launch.ExpectedExecutable).IsEqualTo(files.Path.Combine(owner.ToolPath, ".store", "child", "opencode-mcp" + (OperatingSystem.IsWindows() ? ".exe" : "")));
         if (OperatingSystem.IsWindows())
         {
             await Assert.That(launch.FileName).IsEqualTo(files.Path.Combine(Environment.SystemDirectory, "cmd.exe"));
@@ -265,7 +468,7 @@ public sealed class OwnedToolAcquisitionTests
         {
             await files.File.WriteAllTextAsync(path, "foreign configuration, never read", token);
         }
-        await Assert.That(() => owner.PrepareAsync(repository, "feed", token)).ThrowsExactly<InvalidOperationException>()
+        await Assert.That(() => owner.PrepareAsync(repository, "feed", "10.0.403", token)).ThrowsExactly<InvalidOperationException>()
             .WithMessage("Ambient NuGet configuration cannot be owned:\n" + string.Join('\n', paths), StringComparison.Ordinal);
         await Assert.That(runner.ReceivedCalls()).IsEmpty();
         foreach (var path in paths)
@@ -286,7 +489,7 @@ public sealed class OwnedToolAcquisitionTests
         var repository = await PrepareRepositoryAsync(files, token);
         var runner = ProbeRunner(files);
         await using var owner = new OwnedToolAcquisition(files, runner);
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         var entry = files.Path.GetFullPath(files.Path.Combine(owner.OwnedRoot, relative, "previous-package"));
         files.Directory.CreateDirectory(entry);
         await Assert.That(() => owner.CreateDnxLaunch("version")).ThrowsExactly<InvalidOperationException>()
@@ -302,7 +505,7 @@ public sealed class OwnedToolAcquisitionTests
         var runner = ProbeRunner(files);
         await using var owner = new OwnedToolAcquisition(files, runner);
         var feed = files.Path.GetFullPath("feed");
-        await owner.PrepareAsync(repository, feed, token);
+        await owner.PrepareAsync(repository, feed, "10.0.403", token);
         var launch = owner.CreateDnxLaunch("0.1.0-preview.1");
         var config = files.Path.Combine(owner.OwnedRoot, "config", "local-feed.nuget.config");
         await Assert.That(files.Path.IsPathRooted(launch.FileName)).IsTrue();
@@ -322,7 +525,7 @@ public sealed class OwnedToolAcquisitionTests
         await Assert.That(switches.Select(name => environment.GetValueOrDefault(name)))
             .IsEquivalentTo((string?[])["1", "false", "1", "false", "true", "en"], CollectionOrdering.Matching);
         await Assert.That(environment["PATH"]).IsEqualTo(files.Path.GetDirectoryName(launch.FileName) + files.Path.PathSeparator
-            + (OperatingSystem.IsWindows() ? Environment.SystemDirectory : "/usr/bin"));
+            + (OperatingSystem.IsWindows() ? Environment.SystemDirectory : "/usr/bin:/bin"));
         await Assert.That(environment.Keys).DoesNotContain("ProgramData");
         await Assert.That(environment.Keys).DoesNotContain("ALLUSERSPROFILE");
         await Assert.That(environment.Keys).DoesNotContain("DOTNET_NUGET_SIGNATURE_VERIFICATION");
@@ -334,13 +537,13 @@ public sealed class OwnedToolAcquisitionTests
             .IsEquivalentTo(["--version", "--list-runtimes"], CollectionOrdering.Matching);
     }
 
-    private static INativeProcessRunner ProbeRunner(MockFileSystem files)
+    private static INativeProcessRunner ProbeRunner(MockFileSystem files, string sdkVersion = "10.0.403")
     {
         var runner = Substitute.For<INativeProcessRunner>();
         runner.RunAsync(Arg.Any<NativeProcessRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
         {
             var request = call.Arg<NativeProcessRequest>();
-            return Task.FromResult(new NativeProcessResult(0, request.Arguments[0] == "--version" ? "10.0.403\n" :
+            return Task.FromResult(new NativeProcessResult(0, request.Arguments[0] == "--version" ? sdkVersion + "\n" :
                 "Microsoft.NETCore.App 10.0.14 [" + files.Path.Combine(files.Path.GetDirectoryName(request.FileName) ?? throw new InvalidOperationException(), "shared", "Microsoft.NETCore.App") + "]\n", ""));
         });
         return runner;
@@ -352,14 +555,14 @@ public sealed class OwnedToolAcquisitionTests
         var files = new MockFileSystem();
         var repository = await PrepareRepositoryAsync(files, token);
         await using var owner = new OwnedToolAcquisition(files, ProbeRunner(files));
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         var sentinel = files.Path.Combine(owner.OwnedRoot, "home", ".dotnet", "10.0.403.dotnetFirstUseSentinel");
         await Assert.That(files.File.Exists(sentinel)).IsTrue();
         await Assert.That(files.Directory.EnumerateFiles(files.Path.Combine(owner.OwnedRoot, "home"), "*", SearchOption.AllDirectories))
             .IsEquivalentTo([sentinel], CollectionOrdering.Matching);
     }
 
-    private static async Task<string> PrepareRepositoryAsync(MockFileSystem files, CancellationToken token)
+    private static async Task<string> PrepareRepositoryAsync(MockFileSystem files, CancellationToken token, string installedVersion = "10.0.403")
     {
         var root = files.Path.GetFullPath("repository");
         files.Directory.CreateDirectory(files.Path.Combine(root, "packaging"));
@@ -373,7 +576,7 @@ public sealed class OwnedToolAcquisitionTests
         foreach (var relative in new[] { OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet", "sdk/10.0.403/.version", "sdk/10.0.403/dotnet.runtimeconfig.json",
             "shared/Microsoft.NETCore.App/10.0.14/coreclr.dll", "host/fxr/10.0.14/hostfxr.dll" })
         {
-            var path = files.Path.Combine(installation, relative);
+            var path = files.Path.Combine(installation, relative.Replace("10.0.403", installedVersion, StringComparison.Ordinal));
             files.Directory.CreateDirectory(files.Path.GetDirectoryName(path) ?? throw new InvalidOperationException());
             await files.File.WriteAllTextAsync(path, relative.EndsWith(".json", StringComparison.Ordinal) ? runtime.ToJsonString() : relative, token);
         }
@@ -396,7 +599,7 @@ public sealed class OwnedToolAcquisitionTests
         var files = new MockFileSystem();
         var repository = await PrepareRepositoryAsync(files, token);
         await using var owner = new OwnedToolAcquisition(files, ProbeRunner(files));
-        await owner.PrepareAsync(repository, "feed", token);
+        await owner.PrepareAsync(repository, "feed", "10.0.403", token);
         var launch = owner.CreateDnxLaunch("version");
         var environment = owner.Process.CreateEnvironment(launch);
         if ((name.StartsWith("ProgramFiles", StringComparison.Ordinal) && !OperatingSystem.IsWindows())

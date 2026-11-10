@@ -47,7 +47,6 @@ public sealed class PackageAcquisitionTests(PrivateSdkCopy sdk) : IAsyncDisposab
         var rid = await PrepareAsync(owner, Feed.Resolve(), token);
         var launch = await owner.InstallAsync(_bootstrap.ExpectedVersion, token);
         await RecordEnvironmentAsync(owner, launch);
-        await Assert.That(launch.ExpectedExecutable).IsEqualTo(owner.InstalledExecutable);
         var shim = _files.Path.Combine(owner.ToolPath, OperatingSystem.IsWindows() ? "opencode-mcp.cmd" : "opencode-mcp");
         if (OperatingSystem.IsWindows())
         {
@@ -124,19 +123,25 @@ public sealed class PackageAcquisitionTests(PrivateSdkCopy sdk) : IAsyncDisposab
         var rid = await PrepareAsync(owner, copy, token); // Validate the complete original before changing only the owned copy.
         _files.File.Delete(_files.Path.Combine(copy, "OpenCodeDotNet.Mcp." + rid + "." + _bootstrap.ExpectedVersion + ".nupkg"));
         NativeProcessResult result;
+        IReadOnlyList<string> commands;
         if (route == "dnx")
         {
-            await owner.StartAsync(owner.CreateDnxLaunch(_bootstrap.ExpectedVersion), token);
+            using var guard = CancellationTokenSource.CreateLinkedTokenSource(token);
+            guard.CancelAfter(TimeSpan.FromSeconds(45)); // Refusal exit and reader completion, not the refusal oracle.
+            await owner.StartAsync(owner.CreateDnxLaunch(_bootstrap.ExpectedVersion), guard.Token);
             await owner.Process.CloseInputAsync(); // A wrongly launched server reaches EOF instead of hanging the refusal test.
-            var exit = await owner.Process.WaitForExitAsync(token);
+            var exit = await owner.Process.WaitForExitAsync(guard.Token);
             result = new NativeProcessResult(exit, string.Join('\n', owner.Process.Transcript.ServerLines), string.Join('\n', owner.Process.CompleteStandardError));
+            commands = owner.ObserveInstalledCommands();
+            await Assert.That(owner.Process.ObserveOwnedExecutables()).IsEmpty();
         }
         else
         {
             await Assert.That(async () => { await owner.InstallAsync(_bootstrap.ExpectedVersion, token); }).ThrowsExactly<InvalidOperationException>();
             result = await Assert.That(owner.InstallResult).IsNotNull();
+            commands = owner.InstalledCommands;
         }
-        await owner.AssertMissingImplementationAsync(result, rid, _bootstrap.ExpectedVersion);
+        await OwnedToolAcquisition.AssertMissingImplementationAsync(result, rid, _bootstrap.ExpectedVersion, commands);
         await LogAsync(string.Create(CultureInfo.InvariantCulture, $"{route} missing-child exit={result.ExitCode}\n{result.Output}"));
         await owner.DisposeAsync();
         await Assert.That(_files.Directory.Exists(owner.OwnedRoot)).IsFalse();
@@ -150,11 +155,11 @@ public sealed class PackageAcquisitionTests(PrivateSdkCopy sdk) : IAsyncDisposab
         var host = new NativeHostReader().Read();
         var rid = PackageFeedFixture.ResolveRid(Environment.GetEnvironmentVariable("OPENCODE_MCP_TEST_RID"), manifest,
             host.Os + "-" + host.OsArchitecture, host.Os + "-" + host.ProcessArchitecture);
-        await owner.PrepareAsync(Feed.RepositoryRoot, feed, token);
-        PackageFeedFixture.ResolveRid(rid, manifest, host.Os + "-" + host.OsArchitecture, await owner.ReadSdkRidAsync(token));
         var receipt = await new NativeEvidenceStore(_files).ReadAsync<NativeReceipt>(_files.Path.Combine(Feed.Resolve(), "evidence", rid, "receipt.json"), token);
+        await owner.PrepareAsync(Feed.RepositoryRoot, feed, receipt.SdkVersion, token);
+        PackageFeedFixture.ResolveRid(rid, manifest, host.Os + "-" + host.OsArchitecture, await owner.ReadSdkRidAsync(token));
         await Assert.That(owner.SdkVersion).IsEqualTo(receipt.SdkVersion);
-        await LogAsync(string.Create(CultureInfo.InvariantCulture, $"Private SDK: {sdk.Root}; {sdk.Size} bytes; copy {sdk.CopyDuration}; SDK {owner.SdkVersion}; Core {sdk.RuntimeVersion}; no ASP.NET shared runtime."));
+        await LogAsync($"Private SDK: {sdk.Root}; SDK {owner.SdkVersion}; Core {sdk.RuntimeVersion}; no ASP.NET shared runtime.");
         await LogAsync("Selected SDK: " + owner.SdkDirectory + "\n.version:\n" + await _files.File.ReadAllTextAsync(_files.Path.Combine(owner.SdkDirectory, ".version"), token));
         return rid;
     }
@@ -207,7 +212,7 @@ public sealed class PackageAcquisitionTests(PrivateSdkCopy sdk) : IAsyncDisposab
         await LogAsync("Layout:\n" + string.Join('\n', _files.Directory.EnumerateFileSystemEntries(owner.OwnedRoot).Select(_files.Path.GetFileName).Order(StringComparer.Ordinal)));
         if (owner.InstallResult is { } install)
         {
-            await LogAsync(string.Create(CultureInfo.InvariantCulture, $"With --framework exit={install.ExitCode}\n{install.Output}\nInstalled files:\n")
+            await LogAsync(string.Create(CultureInfo.InvariantCulture, $"Install exit={install.ExitCode}\n{install.Output}\nInstalled files:\n")
                 + string.Join('\n', _files.Directory.EnumerateFiles(owner.ToolPath, "*", SearchOption.AllDirectories)));
         }
     }
