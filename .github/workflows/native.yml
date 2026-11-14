@@ -707,7 +707,8 @@ jobs:
                 $capture = "`$PSDefaultParameterValues['Out-File:Width'] = [int]::MaxValue`n& '$($entry.Replace("'", "''"))' @args 4> '$($verboseFile.Replace("'", "''"))'`nexit `$LASTEXITCODE"
                 [IO.File]::WriteAllText($invocation, $capture)
                 $entry = $invocation
-                $arguments += @('-NoProfile', '-File', $entry, '-Verbose')
+                # The 32-bit Windows PowerShell keeps its own execution policy; bypass it for this test process only.
+                $arguments += @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $entry, '-Verbose')
               }
               elseif ($null -ne $InputText) { $arguments += @('-s', '--') }
               else { $arguments += $installer }
