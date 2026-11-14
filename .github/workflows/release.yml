@@ -539,6 +539,9 @@ jobs:
           $ref = Invoke-WebRequest -Uri "$api/git/refs" -Headers $headers -Method Post -ContentType 'application/json' -Body $tagBody -SkipHttpErrorCheck
           if ($ref.StatusCode -eq 422) { throw 'Release tag creation refused: HTTP 422 (the ref may already exist).' }
           if ($ref.StatusCode -ne 201) { throw "Release tag creation failed: HTTP $($ref.StatusCode)." }
+          # The draft binds to whatever commit the tag names, so re-read the new ref just before creating it.
+          $created = Invoke-RestMethod -Uri "$api/git/ref/tags/$([Uri]::EscapeDataString($tag))" -Headers $headers
+          if ($created.object.type -cne 'commit' -or $created.object.sha -cne $env:COMMIT) { throw 'The new release tag does not point at the candidate commit.' }
           $draft = Invoke-RestMethod -Uri "$api/releases" -Headers $headers -Method Post -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($body))
           if ($draft.draft -ne $true -or $draft.tag_name -cne $tag -or $draft.target_commitish -cne $env:COMMIT -or
               $draft.body -cne $env:RELEASE_NOTES -or $draft.prerelease -ne $preview) { throw 'Created draft differs from the approved release identity.' }
