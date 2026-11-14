@@ -597,13 +597,13 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.consumer-matrix) }}
     env:
       INSTALLER_RID: ${{ matrix.rid }}
-      INSTALLER_ASSETS: ${{ runner.temp }}/installer-assets
     steps:
       - name: Initialize owned SDK environment
         run: |
           $ErrorActionPreference = 'Stop'
           "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
           "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
+          "INSTALLER_ASSETS=$(Join-Path $env:RUNNER_TEMP 'installer-assets')" >> $env:GITHUB_ENV
           if ($IsWindows) {
             "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
             "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
