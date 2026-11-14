@@ -24,10 +24,27 @@ public sealed class NativeInstallerAssetsTests
     }
 
     [Test]
+    public async Task ReadAsync_Should_Count_Only_Whole_Line_Assignments_Of_The_Projection(CancellationToken token)
+    {
+        var scenario = await NativeReleaseAssetsScenario.CreateAsync(token);
+        var lookalikes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["install.sh"] = "OPENCODE_MCP_RELEASE_VERSION_OTHER='different'\n# OPENCODE_MCP_RELEASE_VERSION='different'\n",
+            ["install.ps1"] = "$OpenCodeMcpReleaseVersionOther = 'different'\n# $OpenCodeMcpReleaseVersion = 'different'\n",
+        };
+        foreach (var pair in lookalikes)
+        {
+            await scenario.Files.File.AppendAllTextAsync(scenario.Files.Path.Combine(scenario.Installers, pair.Key), pair.Value, token);
+        }
+        var assets = await new NativeInstallerAssets(scenario.Files).ReadAsync(scenario.Installers, scenario.Version, token);
+        await Assert.That(assets.Select(static asset => asset.Name)).IsEquivalentTo(["install.sh", "install.ps1"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     [Arguments("missing")]
     [Arguments("version")]
     [Arguments("duplicate")]
-    [Arguments("prefix")]
+    [Arguments("second")]
     [Arguments("spacing")]
     [Arguments("indented")]
     [Arguments("trailing")]
@@ -50,7 +67,7 @@ public sealed class NativeInstallerAssetsTests
             var changed = fault switch
             {
                 "duplicate" => text + assignment + "\n",
-                "prefix" => text + (name == "install.sh" ? "OPENCODE_MCP_RELEASE_VERSION='different'" : "$OpenCodeMcpReleaseVersionOther = 'different'") + "\n",
+                "second" => text + (name == "install.sh" ? "OPENCODE_MCP_RELEASE_VERSION='different'" : "$OpenCodeMcpReleaseVersion = 'different'") + "\n",
                 "spacing" => text.Replace(assignment, assignment.Replace("=", "= ", StringComparison.Ordinal), StringComparison.Ordinal),
                 "indented" => text.Replace(assignment, " " + assignment, StringComparison.Ordinal),
                 "trailing" => text.Replace(assignment, assignment + " # trailing", StringComparison.Ordinal),

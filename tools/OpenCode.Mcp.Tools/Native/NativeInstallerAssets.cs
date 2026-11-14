@@ -21,10 +21,10 @@ internal sealed class NativeInstallerAssets(IFileSystem files)
                 continue;
             }
             var bytes = await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-            var prefix = name == "install.sh" ? "OPENCODE_MCP_RELEASE_VERSION=" : "$OpenCodeMcpReleaseVersion";
-            var expected = prefix + (name == "install.sh" ? "'" : " = '") + version + "'";
+            var variable = name == "install.sh" ? "OPENCODE_MCP_RELEASE_VERSION" : "$OpenCodeMcpReleaseVersion";
+            var expected = variable + (name == "install.sh" ? "='" : " = '") + version + "'";
             var lines = Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')
-                .Where(line => line.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+                .Where(line => IsAssignment(line, variable)).ToArray();
             if (lines.Length != 1 || !string.Equals(lines[0], expected, StringComparison.Ordinal))
             {
                 diagnostics.Add("Installer default version must be " + version + ": " + name + ".");
@@ -34,4 +34,7 @@ internal sealed class NativeInstallerAssets(IFileSystem files)
         NativeDiagnostics.Refuse(diagnostics);
         return assets.AsReadOnly();
     }
+
+    private static bool IsAssignment(string line, string variable) =>
+        line.StartsWith(variable, StringComparison.Ordinal) && line.AsSpan(variable.Length).TrimStart() is ['=', ..];
 }
