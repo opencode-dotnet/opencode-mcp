@@ -82,6 +82,9 @@ function Get-InstallerOwnership {
     if ($selection.Count -ne 2 -or -not (Test-InstallerVersion $selection[0]) -or $selection[1] -notin @('win-x64','win-arm64')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     $state.OldVersion = $selection[0]; $state.OldRid = $selection[1]
     $state.Created = $owner[2] -ceq '1'
+    foreach ($entry in Get-ChildItem -LiteralPath $state.Private -Force) {
+        if ($entry.Name -cnotin @('owner','current','inventory','path.record')) { $state.Refused = $true; throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($entry.Name)." }
+    }
     Test-InstallerPayload
     $state.Owned = $true
 }
@@ -125,10 +128,10 @@ function Get-InstallerPathOwnership {
     if (-not (Test-Path -LiteralPath (Join-Path $state.Private 'path.record'))) { return }
     $record = @(Get-InstallerRecord 'path.record')
     $token = Join-Path $state.Install 'current'
-    if ($record.Count -ne 2 -or $record[0] -cne $token -or $record[1] -notin @('absent','present')) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
+    if ($record.Count -ne 2 -or -not [string]::Equals($record[0], $token, [StringComparison]::OrdinalIgnoreCase) -or $record[1] -notin @('absent','present')) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
     $current = Get-InstallerUserPath
     $tokens = @(([string]$current.Value).Split(';'))
-    if (@($tokens | Where-Object { $_ -ieq $token }).Count -ne 1 -or $tokens -cnotcontains $token) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
+    if (@($tokens | Where-Object { [string]::Equals($_, $token, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
     $state.PathOwned = $true
     $state.PathOriginallyAbsent = $record[1] -ceq 'absent'
 }
@@ -138,7 +141,7 @@ function Invoke-InstallerPathRemoval {
     $current = Get-InstallerUserPath
     $token = Join-Path $state.Install 'current'
     $tokens = @(([string]$current.Value).Split(';'))
-    $remaining = @($tokens | Where-Object { $_ -cne $token })
+    $remaining = @($tokens | Where-Object { -not [string]::Equals($_, $token, [StringComparison]::OrdinalIgnoreCase) })
     $value = $remaining -join ';'
     if ($state.PathOriginallyAbsent -and $value -ceq '') { $value = $null }
     Invoke-InstallerPathWrite $value $current.Kind
@@ -161,9 +164,15 @@ function Invoke-InstallerRecordReplace($Source, $Destination) {
     if ([IO.File]::Exists($Destination)) { [IO.File]::Replace($Source, $Destination, $null) }
     else { [IO.File]::Move($Source, $Destination) }
 }
+function Test-InstallerCommandAccess {
+    $handle = [IO.File]::Open($state.Command, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $handle.Dispose()
+}
 function Invoke-InstallerCleanup {
     if (-not $state.Work) { return }
     $errors = @()
+    $retained = $state.Private
+    $restoreRecords = $true
     if (-not $state.Success) {
         if ($state.PathWritten) {
             try {
@@ -171,8 +180,8 @@ function Invoke-InstallerCleanup {
                 $current = Get-InstallerUserPath
                 $token = Join-Path $state.Install 'current'
                 $tokens = @(([string]$current.Value).Split(';'))
-                if (@($tokens | Where-Object { $_ -ieq $token }).Count -ne 1 -or $tokens -cnotcontains $token) { throw 'PATH rollback ownership is ambiguous.' }
-                $value = @($tokens | Where-Object { $_ -cne $token }) -join ';'
+                if (@($tokens | Where-Object { [string]::Equals($_, $token, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) { throw 'PATH rollback ownership is ambiguous.' }
+                $value = @($tokens | Where-Object { -not [string]::Equals($_, $token, [StringComparison]::OrdinalIgnoreCase) }) -join ';'
                 if ($state.PathOriginallyAbsent -and $value -ceq '') { $value = $null }
                 Invoke-InstallerPathWrite $value $current.Kind
             } catch { $errors += $_ }
@@ -181,12 +190,12 @@ function Invoke-InstallerCleanup {
             try {
                 $state.Staging = Join-Path $state.Private ('removing-' + [guid]::NewGuid().ToString('N'))
                 [IO.Directory]::Move((Join-Path $state.Install 'current'), $state.Staging)
-            } catch { $errors += $_ }
+            } catch { $errors += $_; $restoreRecords = $false }
         }
-        if ($state.Previous -and [IO.Directory]::Exists($state.Previous)) {
-            try { [IO.Directory]::Move($state.Previous, (Join-Path $state.Install 'current')) } catch { $errors += $_ }
+        if ($restoreRecords -and $state.Previous -and [IO.Directory]::Exists($state.Previous)) {
+            try { [IO.Directory]::Move($state.Previous, (Join-Path $state.Install 'current')) } catch { $errors += $_; $restoreRecords = $false }
         }
-        if ($state.RecordsStarted) {
+        if ($state.RecordsStarted -and $restoreRecords) {
             foreach ($name in @('owner','current','inventory','path.record')) {
                 try {
                     $backup = Join-Path $state.Work ('old-' + $name)
@@ -197,16 +206,19 @@ function Invoke-InstallerCleanup {
             }
         }
     }
+    if ($state.Staging -and [IO.Directory]::Exists($state.Staging)) {
+        try { [IO.Directory]::Delete($state.Staging, $true) } catch { $errors += $_ }
+    }
     if ($errors.Count -eq 0 -and $state.Work -and [IO.Directory]::Exists($state.Work)) {
         try { [IO.Directory]::Delete($state.Work, $true) } catch { $errors += $_ }
     }
     if (-not $state.Success -and -not $state.Owned) {
         foreach ($directory in @($state.Private, $state.Install)) {
             if (($directory -ceq $state.Install -and -not $state.Created) -or -not [IO.Directory]::Exists($directory)) { continue }
-            try { if ([IO.Directory]::GetFileSystemEntries($directory).Length -eq 0) { [IO.Directory]::Delete($directory) } } catch { $errors += $_ }
+            try { if ([IO.Directory]::GetFileSystemEntries($directory).Length -eq 0) { [IO.Directory]::Delete($directory) } } catch { $errors += $_; $retained = $directory }
         }
     }
-    if ($errors.Count -gt 0) { 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Private + '.' }
+    if ($errors.Count -gt 0) { 'opencode-mcp: Cleanup failed; retained owned directory: ' + $retained + '.' }
 }
 function Invoke-InstallerInstall {
     $state.Phase = 'staging'
@@ -244,6 +256,7 @@ function Invoke-InstallerInstall {
     if (-not $same) {
         $current = Join-Path $state.Install 'current'
         if ($state.Owned) {
+            Test-InstallerCommandAccess
             $previous = Join-Path $state.Private ('previous-' + [guid]::NewGuid().ToString('N'))
             [IO.Directory]::Move($current, $previous)
             $state.Previous = $previous
@@ -268,7 +281,7 @@ function Invoke-InstallerInstall {
     if ([IO.File]::Exists($pathRecord)) { Invoke-InstallerRecordReplace $pathRecord (Join-Path $state.Private 'path.record') }
     $state.Success = $true
     $state.Phase = 'cleanup'
-    if ($state.Previous) { $state.Retained = $state.Previous; [IO.Directory]::Delete($state.Previous, $true); $state.Previous = $null }
+    if ($state.Previous) { $state.Retained = $state.Private; [IO.Directory]::Delete($state.Previous, $true); $state.Previous = $null }
     if ($same) { $state.Message = "Already installed $($state.Version) ($($state.Rid)): $($state.Command)" }
     else { $state.Message = "Installed $($state.Version) ($($state.Rid)): $($state.Command)" }
     $state.PathMessage = if ($state.PathChanged) { 'PATH updated for future login sessions.' } else { 'PATH unchanged.' }
@@ -278,6 +291,7 @@ function Invoke-InstallerUninstall {
     $state.Phase = 'uninstall'
     $current = Join-Path $state.Install 'current'
     $removing = Join-Path $state.Private ('removing-' + [guid]::NewGuid().ToString('N'))
+    Test-InstallerCommandAccess
     [IO.Directory]::Move($current, $removing)
     $state.Phase = 'path'
     try { Invoke-InstallerPathRemoval }
@@ -292,7 +306,6 @@ function Invoke-InstallerUninstall {
     $state.Retained = $state.Private
     [IO.File]::Delete((Join-Path $state.Private 'path.record'))
     foreach ($name in @('owner','current','inventory')) { [IO.File]::Delete((Join-Path $state.Private $name)) }
-    $state.Retained = $removing
     [IO.Directory]::Delete($removing, $true)
     $state.Retained = $state.Private
     if ([IO.Directory]::GetFileSystemEntries($state.Private).Length -eq 0) { [IO.Directory]::Delete($state.Private) }
@@ -358,14 +371,10 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
         else { $code = 1; $failure = 'opencode-mcp: Installation failed during ' + $state.Phase + '.' }
     } finally {
         if ($state.Success -and -not $failure -and $state.Previous -and [IO.Directory]::Exists($state.Previous)) {
-            $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Previous + '.'
+            $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Private + '.'
         }
         if ($state.Private) { $cleanup += @(Invoke-InstallerCleanup) }
-        if ($state.Removing) { $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Removing + '.' }
-        if ($state.Staging -and [IO.Directory]::Exists($state.Staging)) {
-            try { [IO.Directory]::Delete($state.Staging, $true) }
-            catch { $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Staging + '.' }
-        }
+        if ($state.Removing) { $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Private + '.' }
     }
     if ($cleanup.Count -gt 0 -and $code -eq 0) { $code = 1 }
     if ($code -ne 0) {
