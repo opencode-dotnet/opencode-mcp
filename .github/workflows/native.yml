@@ -699,6 +699,12 @@ jobs:
               if ($windows) {
                 $entry = $installer
                 if ($null -ne $InputText) { $entry = Join-Path $root 'invocation.ps1'; [IO.File]::WriteAllText($entry, $InputText) }
+                $verboseFile = Join-Path $root 'verbose.txt'
+                $invocation = Join-Path $root 'capture.ps1'
+                # Redirect before the Windows PowerShell 5.1 console host can wrap verbose records.
+                $capture = "`$PSDefaultParameterValues['Out-File:Width'] = [int]::MaxValue`n& '$($entry.Replace("'", "''"))' @args 4> '$($verboseFile.Replace("'", "''"))'`nexit `$LASTEXITCODE"
+                [IO.File]::WriteAllText($invocation, $capture)
+                $entry = $invocation
                 $arguments += @('-NoProfile', '-File', $entry, '-Verbose')
               }
               elseif ($null -ne $InputText) { $arguments += @('-s', '--') }
@@ -724,9 +730,9 @@ jobs:
                 $process.WaitForExit()
                 $out = $stdout.GetAwaiter().GetResult(); $err = $stderr.GetAwaiter().GetResult()
                 $lines = @(([regex]::Replace(($out + $err), '\x1b\[[0-9;]*m', '')) -split '\r?\n' | Where-Object { $_ -ne '' })
-                $verboseLines = @($lines | Where-Object { $_.StartsWith('VERBOSE: ') })
+                $verboseLines = @(if ($windows) { [IO.File]::ReadAllLines($verboseFile) | ForEach-Object { 'VERBOSE: ' + $_ } })
                 $diagnostics.Verbose += $verboseLines
-                @{ Code = $process.ExitCode; Stdout = $out; Stderr = $err; Verbose = $verboseLines; Lines = @($lines | Where-Object { -not $_.StartsWith('VERBOSE: ') }) }
+                @{ Code = $process.ExitCode; Stdout = $out; Stderr = $err; Verbose = $verboseLines; Lines = $lines }
               } finally { $process.Dispose() }
             }
             function Assert-Result($Result, $Code, $Lines) {
@@ -978,15 +984,17 @@ jobs:
                   }
                   $faultLine = (Select-String -LiteralPath $installer -Pattern '^    Invoke-InstallerPathAddition$').LineNumber
                   $rollbackObservation = @"
-          `$script:locks = @()
+          # Breakpoint actions use the target script's scope, not the scope that initialized the array.
+          `$global:OpenCodeMcpRollbackLocks = @()
           `$breakpoint = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $faultLine -Action {
-            `$script:locks += [IO.File]::Open('$($command.Replace("'", "''"))', 'Open', 'Read', 'Read')
+            `$global:OpenCodeMcpRollbackLocks += [IO.File]::Open('$($command.Replace("'", "''"))', 'Open', 'Read', 'Read')
             `$record = Join-Path `$state.Work 'path.record'
             [IO.File]::WriteAllText(`$record, '')
-            `$script:locks += [IO.File]::Open(`$record, 'Open', 'Read', 'None')
+            `$global:OpenCodeMcpRollbackLocks += [IO.File]::Open(`$record, 'Open', 'Read', 'None')
           }
           try { & '$($installer.Replace("'", "''"))' @args; `$code = `$LASTEXITCODE }
-          finally { Remove-PSBreakpoint `$breakpoint; foreach (`$lock in `$script:locks) { `$lock.Dispose() } }
+          finally { Remove-PSBreakpoint `$breakpoint; foreach (`$lock in `$global:OpenCodeMcpRollbackLocks) { `$lock.Dispose() } }
+          if (`$global:OpenCodeMcpRollbackLocks.Count -ne 2) { throw 'Rollback fixture did not retain both file handles.' }
           exit `$code
           "@
                   try {
