@@ -550,6 +550,14 @@ or packaged-startup claim.
 
 ## Installation and release boundaries
 
+Publication consumes the candidate's seven original packages and release-assets artifact without
+rebuilding, repacking, re-archiving or renaming. A candidate's workflow tree must equal master's at
+publication.
+
+NuGet.org repository signing changes the package envelope. Real-channel identity is therefore
+established through the running native payload's complete paths and SHA-256 values, not downloaded
+package-envelope equality.
+
 The product target includes PowerShell and shell installers, WinGet, Homebrew, suitable deb and rpm
 packages, a Windows MSI, and a macOS pkg. Archive-only delivery does not close that target. Each
 surface is a separate delivery increment after native and package proof, never a placeholder.

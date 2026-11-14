@@ -324,6 +324,27 @@ order. The pull request's hosted `Native` run proves assembly and upload, not pu
 behaviour or a live-channel download. Dispatch retention is confirmed on an authorized manual
 candidate run.
 
+### Publication pass
+
+Publication is separate from managed, native and local-package acceptance. A publication candidate
+is one successful manual Native run on master, identified by its full commit SHA and run ID.
+Publication consumes that run's validated package feed and release-assets artifact unchanged.
+
+The manual release workflow checks candidate provenance, evaluated version, workflow-tree equality,
+target absence and artifact integrity before publication. A dry run performs those checks without
+publication privileges or an environment deployment. Publishing requires the `release` environment
+and the maintainer's separate authorization.
+
+Real-channel acceptance requires every manifest RID's verification leg to succeed against the selected
+published channel. Feed acceptance uses cold global-tool and DNX acquisition and complete
+running-payload path/SHA-256 equality with candidate evidence. NuGet.org's repository-signed package
+envelope is not compared with the original package digest. Release acceptance checks downloaded archive
+hashes against both the published checksum file and independent candidate receipts before execution.
+
+Secret-bearing channel jobs retain the existing test guards but upload only selected
+credential-redacted TRX and process snapshots. Credential files, acquisition stores and memory dumps
+are not uploaded. Existing credential-free CI artifact policy is unchanged.
+
 ### Linux builder verification
 
 The builder recipe and publication contract are owned by

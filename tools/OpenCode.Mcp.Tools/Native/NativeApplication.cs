@@ -30,10 +30,7 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             }
             if (command.Operation == "validate")
             {
-                var diagnostics = await new NativeReceiptValidator(files, modes).ValidateAsync(manifest,
-                    files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root), token).ConfigureAwait(false);
-                NativeDiagnostics.Refuse(diagnostics);
-                await output.WriteLineAsync("Native receipt set is complete.".AsMemory(), token).ConfigureAwait(false);
+                await ValidateReceiptsAsync(command, root, manifest, token).ConfigureAwait(false);
                 return 0;
             }
             if (command.Operation == "pack-root")
@@ -43,11 +40,12 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             }
             if (command.Operation == "assets")
             {
-                await new NativeReleaseAssets(files, modes).BuildAsync(new NativeReleaseAssetRequest(manifest,
-                    files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root),
-                    files.Path.GetFullPath(command.Evidence ?? throw new InvalidOperationException("Missing evidence directory."), root),
-                    files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing release assets output."), root),
-                    command.Version ?? throw new InvalidOperationException("Missing release version.")), output, token).ConfigureAwait(false);
+                await BuildAssetsAsync(command, root, manifest, token).ConfigureAwait(false);
+                return 0;
+            }
+            if (command.Operation == "publication")
+            {
+                await ValidatePublicationAsync(command, root, manifest, token).ConfigureAwait(false);
                 return 0;
             }
             var rid = command.Rid ?? throw new InvalidOperationException("Missing RID.");
@@ -121,5 +119,34 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
         var receipts = files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root);
         var feed = files.Path.GetFullPath(command.Feed ?? throw new InvalidOperationException("Missing feed directory."), root);
         await new McpPackageBuilder(files, runner, modes).PackRootAsync(new NativeBuildRequest(root, receipts, "", host, manifest), feed, output, token).ConfigureAwait(false);
+    }
+
+    private async Task ValidateReceiptsAsync(NativeCommand command, string root, NativeManifest manifest, CancellationToken token)
+    {
+        var diagnostics = await new NativeReceiptValidator(files, modes).ValidateAsync(manifest,
+            files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root), token).ConfigureAwait(false);
+        NativeDiagnostics.Refuse(diagnostics);
+        await output.WriteLineAsync("Native receipt set is complete.".AsMemory(), token).ConfigureAwait(false);
+    }
+
+    private async Task BuildAssetsAsync(NativeCommand command, string root, NativeManifest manifest, CancellationToken token)
+    {
+        await new NativeReleaseAssets(files, modes).BuildAsync(new NativeReleaseAssetRequest(manifest,
+            files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root),
+            files.Path.GetFullPath(command.Evidence ?? throw new InvalidOperationException("Missing evidence directory."), root),
+            files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing release assets output."), root),
+            command.Version ?? throw new InvalidOperationException("Missing release version.")), output, token).ConfigureAwait(false);
+    }
+
+    private async Task ValidatePublicationAsync(NativeCommand command, string root, NativeManifest manifest, CancellationToken token)
+    {
+        var request = new NativePublicationRequest(manifest,
+            files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root),
+            files.Path.GetFullPath(command.Feed ?? throw new InvalidOperationException("Missing feed directory."), root),
+            files.Path.GetFullPath(command.Assets ?? throw new InvalidOperationException("Missing release assets directory."), root),
+            command.Version ?? throw new InvalidOperationException("Missing publication version."),
+            command.Commit ?? throw new InvalidOperationException("Missing publication commit."));
+        NativeDiagnostics.Refuse(await new NativePublicationValidator(files, modes).ValidateAsync(request, token).ConfigureAwait(false));
+        await output.WriteLineAsync("Publication candidate is complete.".AsMemory(), token).ConfigureAwait(false);
     }
 }

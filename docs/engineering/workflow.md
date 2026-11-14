@@ -1,6 +1,6 @@
 # Repository Workflow
 
-Date: 2026-11-05
+Date: 2026-11-14
 
 Canonical working agreements for research, implementation, temporary work, verification, and Git
 history.
@@ -72,6 +72,29 @@ alone, and the pull request passes the full gate:
 
 A NuGetAudit advisory fails restore; its remedy is a prompt pin bump through this procedure, never a
 suppression or an audit override (`quality-gates.md`).
+
+## Publication procedure
+
+Settings and public identities require the maintainer's approval before the release lane is enabled.
+Every feed publication and GitHub Release requires his own word with the exact target, candidate
+commit, Native run ID, version, filenames and digests. Approval of a candidate or dry run authorizes
+no publication.
+
+Promote GitHub Packages first, make all seven packages public with the maintainer's explicit
+irreversible-visibility approval, and verify that channel. Ask separately for NuGet.org publication
+with the successful GitHub Packages verification run ID. Ask separately for the GitHub Release with
+its tag, asset digests, release-notes text and successful NuGet verification run ID.
+
+The lane dispatches the workflow after the word; the maintainer approves the waiting `release` job
+in GitHub. The lane never approves deployments, publishes releases or changes package visibility
+with its own credentials.
+
+Hold workflow-tree changes from candidate selection until release publication. Partial publication
+blocks promotion. Record push responses and the verified present/missing sets; ask for exactly the
+missing-file recovery or abandonment. Never retry a push automatically or reuse rebuilt bytes under
+a published version. Expired candidate artifacts require abandonment and a new version. The `files`
+input recovers feed pushes only; a partial draft release is left for the maintainer's decision, not
+automatically resumed or cleaned up.
 
 ## Documentation sessions
 
