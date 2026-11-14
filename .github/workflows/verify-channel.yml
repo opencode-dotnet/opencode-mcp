@@ -154,7 +154,7 @@ jobs:
             return ,$value
           }
           function Test-Package($id) {
-            Assert-PresenceDeadline
+            Assert-PresenceDeadline -Partial
             if ($env:CHANNEL -ceq 'nuget') {
               $response = Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/$($id.ToLowerInvariant())/index.json" -SkipHttpErrorCheck
               if ($response.StatusCode -eq 404) { return $false }
@@ -164,9 +164,8 @@ jobs:
               return $value.versions -ccontains $env:VERSION.ToLowerInvariant()
             }
             for ($page = 1; ; $page++) {
-              Assert-PresenceDeadline
+              Assert-PresenceDeadline -Partial
               $values = Read-GitHub "https://api.github.com/orgs/opencode-dotnet/packages/nuget/$([Uri]::EscapeDataString($id))/versions?per_page=100&page=$page" 'Package not found.'
-              Assert-PresenceDeadline
               if ($null -eq $values) { return $false }
               if ($values -isnot [array]) { throw 'Malformed GitHub package versions.' }
               foreach ($value in $values) {
@@ -182,9 +181,10 @@ jobs:
             $absent = @($entries | Where-Object { $present -cnotcontains $_ })
             Write-Host "$scope present: $($observed -join ', ')`n$scope missing: $($absent -join ', ')"
           }
-          function Assert-PresenceDeadline {
+          function Assert-PresenceDeadline([switch]$Partial) {
             if ([DateTimeOffset]::UtcNow -ge $deadline) {
               Write-PresenceReport
+              if ($Partial) { throw 'Presence bound reached during a scan; the present/missing sets above are partial, and candidate digests are above.' }
               throw 'Presence bound reached; complete present/missing sets and candidate digests are above.'
             }
           }
@@ -217,15 +217,14 @@ jobs:
                 if ($null -eq $tag) { throw 'Published release tag is missing.' }
                 $object = $tag.object
                 while ($object.type -ceq 'tag') {
-                  Assert-PresenceDeadline
+                  Assert-PresenceDeadline -Partial
                   $tag = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/git/tags/$($object.sha)" ''
                   $object = $tag.object
                 }
                 if ($object.type -cne 'commit' -or $object.sha -cne $env:COMMIT) { throw 'Peeled release tag differs from the candidate commit.' }
                 for ($page = 1; ; $page++) {
-                  Assert-PresenceDeadline
+                  Assert-PresenceDeadline -Partial
                   $batch = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/releases/$($release.id)/assets?per_page=100&page=$page" ''
-                  Assert-PresenceDeadline
                   if ($batch -isnot [array]) { throw 'Malformed release assets.' }
                   foreach ($asset in $batch) {
                     if (@($remote | Where-Object { $_.name -ceq $asset.name }).Count) { throw 'Duplicate published release asset.' }
@@ -240,8 +239,8 @@ jobs:
             }
             $missing = @($entries | Where-Object { $present -cnotcontains $_ })
             Write-PresenceReport
-            Assert-PresenceDeadline
             if ($missing.Count -eq 0) { break }
+            Assert-PresenceDeadline
             Start-Sleep -Seconds ([Math]::Min(30, [Math]::Max(0, ($deadline - [DateTimeOffset]::UtcNow).TotalSeconds)))
           } while ($true)
 
