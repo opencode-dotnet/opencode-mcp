@@ -583,6 +583,9 @@ jobs:
             Remove-Item -LiteralPath $owned -Recurse -Force
           }
           $publish = @{ draft = $false; make_latest = $latest } | ConvertTo-Json
+          # Publication binds the release to the tag's commit at this moment, so check the tag again first.
+          $beforePublish = Invoke-RestMethod -Uri "$api/git/ref/tags/$([Uri]::EscapeDataString($tag))" -Headers $headers
+          if ($beforePublish.object.type -cne 'commit' -or $beforePublish.object.sha -cne $env:COMMIT) { throw 'The release tag no longer points at the candidate commit; the draft is left unpublished.' }
           $release = Invoke-RestMethod -Uri "$api/releases/$($draft.id)" -Headers $headers -Method Patch -ContentType 'application/json' -Body $publish
           $confirmed = Invoke-RestMethod -Uri "$api/releases/$($draft.id)" -Headers $headers
           if ($release.draft -ne $false -or $confirmed.draft -ne $false -or $confirmed.tag_name -cne $tag -or
