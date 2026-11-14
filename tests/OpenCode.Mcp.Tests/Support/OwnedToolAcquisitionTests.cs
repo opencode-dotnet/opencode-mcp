@@ -11,7 +11,7 @@ using TUnit.Assertions.Exceptions;
 
 namespace OpenCode.Mcp.Tests.Support;
 
-public sealed class OwnedToolAcquisitionTests
+public sealed partial class OwnedToolAcquisitionTests
 {
     [Test]
     public async Task PrepareAsync_Should_Release_Both_Roots_And_Report_An_Owned_Copy_Failure_Once(CancellationToken token)

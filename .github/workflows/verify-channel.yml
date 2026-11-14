@@ -1,0 +1,555 @@
+name: Verify channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Published channel to verify (no publication)
+        required: true
+        type: choice
+        options: [github-packages, nuget, github-release]
+      version:
+        description: Exact candidate version
+        required: true
+        type: string
+      native-run-id:
+        description: Successful manual Native candidate run
+        required: true
+        type: string
+
+permissions: {}
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_NOLOGO: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      packages: read # Presence is observed through this repository's Actions access.
+    outputs:
+      commit: ${{ steps.provenance.outputs.commit }}
+      sdk-version: ${{ steps.identity.outputs.sdk-version }}
+      consumer-matrix: ${{ steps.matrix.outputs.consumer-matrix }}
+    steps:
+      - name: Require master dispatch and validate Native provenance
+        id: provenance
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          NATIVE_RUN_ID: ${{ inputs.native-run-id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:DISPATCH_REF -cne 'refs/heads/master') { throw 'Verification dispatch must use refs/heads/master.' }
+          if ($env:NATIVE_RUN_ID -notmatch '^[1-9][0-9]*\z') { throw 'native-run-id must be a run ID.' }
+          $workflow = gh api "repos/$env:REPOSITORY/actions/workflows/native.yml" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $run = gh api "repos/$env:REPOSITORY/actions/runs/$env:NATIVE_RUN_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($run.repository.full_name -cne $env:REPOSITORY -or $run.workflow_id -ne $workflow.id -or
+              $run.name -cne 'Native' -or $run.event -cne 'workflow_dispatch' -or $run.head_branch -cne 'master' -or
+              $run.status -cne 'completed' -or $run.conclusion -cne 'success' -or $run.head_sha -cnotmatch '^[0-9a-f]{40}\z') {
+            throw 'Expected a successful manual Native candidate from this repository on master.'
+          }
+          "commit=$($run.head_sha)" >> $env:GITHUB_OUTPUT
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.provenance.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - &initialize
+        name: Initialize owned SDK environment
+        run: |
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
+          if ($IsWindows) {
+            "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+            "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          }
+      - name: Setup candidate SDK floor
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - &feed
+        name: Download candidate reference feed
+        uses: actions/download-artifact@v8
+        with:
+          name: native-package-feed
+          path: artifacts/feed
+          run-id: ${{ inputs.native-run-id }}
+          github-token: ${{ github.token }}
+      - &assets
+        name: Download candidate release assets
+        uses: actions/download-artifact@v8
+        with:
+          name: native-release-assets
+          path: artifacts/release-assets
+          run-id: ${{ inputs.native-run-id }}
+          github-token: ${{ github.token }}
+      - name: Download completed candidate evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-complete-*
+          path: artifacts/native-receipts
+          merge-multiple: false
+          run-id: ${{ inputs.native-run-id }}
+          github-token: ${{ github.token }}
+      - name: Build managed tool entry
+        run: |
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+      - name: Validate candidate identity and bytes
+        id: identity
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($head -cne $env:COMMIT) { throw 'Checkout differs from the Native candidate.' }
+          git merge-base --is-ancestor $env:COMMIT origin/master
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate is not an ancestor of master.' }
+          $version = dotnet msbuild src/OpenCode.Mcp/OpenCode.Mcp.csproj -p:Configuration=Release -nodeReuse:false -p:UseSharedCompilation=false -getProperty:Version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($version -isnot [string] -or $version -cne $env:VERSION) { throw 'version differs from the evaluated candidate version.' }
+          dotnet run --no-build tools/native.cs -- publication --receipts artifacts/native-receipts --feed artifacts/feed --assets artifacts/release-assets --version $env:VERSION --commit $env:COMMIT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manifest = Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json
+          $receipt = Get-Content "artifacts/feed/evidence/$($manifest.runtimes[0].rid)/receipt.json" -Raw | ConvertFrom-Json
+          "sdk-version=$($receipt.sdkVersion)" >> $env:GITHUB_OUTPUT
+      - name: Project manifest consumer matrix
+        id: matrix
+        run: |
+          dotnet run --no-build tools/native.cs -- matrix --manifest packaging/native-manifest.json --github-output $env:GITHUB_OUTPUT
+          exit $LASTEXITCODE
+      - name: Poll exact channel presence for at most thirty minutes
+        timeout-minutes: 31
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+          API_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ steps.provenance.outputs.commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization = "Bearer $env:API_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          function Read-GitHub($url, $missingMessage) {
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -SkipHttpErrorCheck
+            $value = ConvertFrom-Json -InputObject $response.Content -NoEnumerate
+            if ($response.StatusCode -eq 404 -and $missingMessage -and $value.message -ceq $missingMessage) { return $null }
+            if ($response.StatusCode -ne 200 -or $null -eq $value) { throw "GitHub metadata request failed: HTTP $($response.StatusCode)." }
+            return ,$value
+          }
+          function Test-Package($id) {
+            Assert-PresenceDeadline -Partial
+            if ($env:CHANNEL -ceq 'nuget') {
+              $response = Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/$($id.ToLowerInvariant())/index.json" -SkipHttpErrorCheck
+              if ($response.StatusCode -eq 404) { return $false }
+              if ($response.StatusCode -ne 200) { throw "NuGet metadata failed: HTTP $($response.StatusCode)." }
+              $value = $response.Content | ConvertFrom-Json
+              if ($value.versions -isnot [array] -or @($value.versions | Where-Object { $_ -isnot [string] }).Count) { throw 'Malformed NuGet versions.' }
+              return $value.versions -ccontains $env:VERSION.ToLowerInvariant()
+            }
+            for ($page = 1; ; $page++) {
+              Assert-PresenceDeadline -Partial
+              $values = Read-GitHub "https://api.github.com/orgs/opencode-dotnet/packages/nuget/$([Uri]::EscapeDataString($id))/versions?per_page=100&page=$page" 'Package not found.'
+              if ($null -eq $values) { return $false }
+              if ($values -isnot [array]) { throw 'Malformed GitHub package versions.' }
+              foreach ($value in $values) {
+                if ($value.name -isnot [string] -or [string]::IsNullOrEmpty($value.name)) { throw 'Malformed GitHub package version.' }
+                if ($value.name -ceq $env:VERSION) { return $true }
+              }
+              if ($values.Count -lt 100) { return $false }
+            }
+          }
+          function Write-PresenceReport {
+            $scope = if ($env:CHANNEL -ceq 'github-packages') { "as seen by this repository's Actions access" } else { 'published channel' }
+            $observed = @($entries | Where-Object { $present -ccontains $_ })
+            $absent = @($entries | Where-Object { $present -cnotcontains $_ })
+            Write-Host "$scope present: $($observed -join ', ')`n$scope missing: $($absent -join ', ')"
+          }
+          function Assert-PresenceDeadline([switch]$Partial) {
+            if ([DateTimeOffset]::UtcNow -ge $deadline) {
+              Write-PresenceReport
+              if ($Partial) { throw 'Presence bound reached during a scan; the present/missing sets above are partial, and candidate digests are above.' }
+              throw 'Presence bound reached; complete present/missing sets and candidate digests are above.'
+            }
+          }
+          function Test-ReleaseAsset($asset) {
+            if ($expected -cnotcontains $asset.name) { throw 'Unexpected published release asset.' }
+            if ($asset.state -cne 'uploaded') { return $false }
+            if (-not $asset.digest) { throw "Uploaded release asset has no digest: $($asset.name)" }
+            $local = Get-Item -LiteralPath (Join-Path 'artifacts/release-assets' $asset.name)
+            $digest = (Get-FileHash $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($asset.size -ne $local.Length -or $asset.digest -cne "sha256:$digest") { throw "Release asset differs from candidate: $($asset.name)" }
+            return $true
+          }
+          $manifest = Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json
+          $ids = @($manifest.runtimes | ForEach-Object { "OpenCodeDotNet.Mcp.$($_.rid)" }) + @('OpenCodeDotNet.Mcp')
+          $expected = @($manifest.runtimes | ForEach-Object { "opencode-mcp-$env:VERSION-$($_.rid)" + $(if ($_.rid.StartsWith('win-')) { '.zip' } else { '.tar.gz' }) }) + @('SHA256SUMS')
+          $entries = if ($env:CHANNEL -ceq 'github-release') { $expected } else { $ids }
+          foreach ($file in Get-ChildItem artifacts/feed -File) { Write-Output "Candidate package digest (not a remote envelope comparison): $($file.Name) $((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())" }
+          foreach ($file in Get-ChildItem artifacts/release-assets -File) { Write-Output "Candidate release digest: $($file.Name) $((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())" }
+          $deadline = [DateTimeOffset]::UtcNow.AddMinutes(30)
+          do {
+            $present = @()
+            $missing = @()
+            Assert-PresenceDeadline
+            if ($env:CHANNEL -ceq 'github-release') {
+              $release = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/releases/tags/$([Uri]::EscapeDataString('v' + $env:VERSION))" 'Not Found'
+              $remote = @()
+              if ($null -ne $release) {
+                if ($release.draft -ne $false -or $release.tag_name -cne "v$env:VERSION") { throw 'Release is not the expected published identity.' }
+                $tag = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/git/ref/tags/$([Uri]::EscapeDataString('v' + $env:VERSION))" 'Not Found'
+                if ($null -eq $tag) { throw 'Published release tag is missing.' }
+                $object = $tag.object
+                while ($object.type -ceq 'tag') {
+                  Assert-PresenceDeadline -Partial
+                  $tag = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/git/tags/$($object.sha)" ''
+                  $object = $tag.object
+                }
+                if ($object.type -cne 'commit' -or $object.sha -cne $env:COMMIT) { throw 'Peeled release tag differs from the candidate commit.' }
+                for ($page = 1; ; $page++) {
+                  Assert-PresenceDeadline -Partial
+                  $batch = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/releases/$($release.id)/assets?per_page=100&page=$page" ''
+                  if ($batch -isnot [array]) { throw 'Malformed release assets.' }
+                  foreach ($asset in $batch) {
+                    if (@($remote | Where-Object { $_.name -ceq $asset.name }).Count) { throw 'Duplicate published release asset.' }
+                    $remote += $asset
+                    if (Test-ReleaseAsset $asset) { $present += $asset.name }
+                  }
+                  if ($batch.Count -lt 100) { break }
+                }
+              }
+            } else {
+              foreach ($id in $ids) { if (Test-Package $id) { $present += $id } else { $missing += $id } }
+            }
+            $missing = @($entries | Where-Object { $present -cnotcontains $_ })
+            Write-PresenceReport
+            if ($missing.Count -eq 0) { break }
+            Assert-PresenceDeadline
+            Start-Sleep -Seconds ([Math]::Min(30, [Math]::Max(0, ($deadline - [DateTimeOffset]::UtcNow).TotalSeconds)))
+          } while ($true)
+
+  verify:
+    name: Verify (${{ matrix.rid }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.consumer-matrix) }}
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      RID: ${{ matrix.rid }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - *initialize
+      - name: Setup exact receipt SDK with matching architecture
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+          architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - *feed
+      - *assets
+      - name: Build managed tool entry
+        run: |
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+      - name: Build product test runner
+        id: build
+        run: |
+          dotnet build tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release -nodeReuse:false -p:UseSharedCompilation=false
+          exit $LASTEXITCODE
+      - name: Configure owned remote acquisition and require seven public GitHub packages
+        if: env.CHANNEL != 'github-release'
+        env:
+          API_TOKEN: ${{ github.token }}
+          TOKEN_OWNER: ${{ github.actor }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $owned = Join-Path $env:RUNNER_TEMP ('channel-config-' + [Guid]::NewGuid().ToString('N'))
+          [void](New-Item -ItemType Directory -Path $owned)
+          "CHANNEL_CONFIG_ROOT=$owned" >> $env:GITHUB_ENV
+          $basename = if ($env:CHANNEL -ceq 'github-packages') { 'github-packages.nuget.config' } else { 'nuget-org.nuget.config' }
+          $config = Join-Path $owned $basename
+          Copy-Item -LiteralPath (Join-Path 'packaging' $basename) -Destination $config
+          if ($env:CHANNEL -ceq 'github-packages') {
+            $headers = @{ Authorization = "Bearer $env:API_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+            $manifest = Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json
+            $ids = @($manifest.runtimes | ForEach-Object { "OpenCodeDotNet.Mcp.$($_.rid)" }) + @('OpenCodeDotNet.Mcp')
+            $visibility = @(foreach ($id in $ids) {
+              $package = $null
+              $status = 'request failed'
+              try {
+                $response = Invoke-WebRequest -Uri "https://api.github.com/orgs/opencode-dotnet/packages/nuget/$([Uri]::EscapeDataString($id))" -Headers $headers -SkipHttpErrorCheck
+                $status = [string]$response.StatusCode
+                if ($response.StatusCode -eq 200) {
+                  $status = 'malformed metadata'
+                  $package = $response.Content | ConvertFrom-Json
+                  $status = '200'
+                }
+              } catch {
+                # Record the failed read without response bodies or credential-bearing exception text.
+                $package = $null
+              }
+              [pscustomobject]@{ requested = $id; identity = $package.name; visibility = $package.visibility; status = $status;
+                readable = ($status -ceq '200' -and $package.name -ieq $id -and $package.package_type -ceq 'nuget') }
+            })
+            Write-Output (ConvertTo-Json -InputObject $visibility -Depth 4)
+            if (@($visibility | Where-Object { -not $_.readable -or $_.visibility -cne 'public' }).Count) { throw 'All seven package identities must be readable and public; the complete visibility set is above.' }
+            [xml]$document = Get-Content -LiteralPath $config -Raw
+            $credentials = $document.CreateElement('packageSourceCredentials')
+            $source = $document.CreateElement('opencode-dotnet')
+            foreach ($entry in @(@('Username', $env:TOKEN_OWNER), @('ClearTextPassword', $env:API_TOKEN))) {
+              $add = $document.CreateElement('add')
+              $add.SetAttribute('key', $entry[0])
+              $add.SetAttribute('value', $entry[1])
+              [void]$source.AppendChild($add)
+            }
+            [void]$credentials.AppendChild($source)
+            [void]$document.DocumentElement.AppendChild($credentials)
+            $document.Save($config)
+          }
+          "OPENCODE_MCP_TEST_CHANNEL=$env:CHANNEL" >> $env:GITHUB_ENV
+          "OPENCODE_MCP_TEST_CHANNEL_CONFIG=$config" >> $env:GITHUB_ENV
+          "OPENCODE_MCP_TEST_FEED=$(Join-Path $env:GITHUB_WORKSPACE 'artifacts/feed')" >> $env:GITHUB_ENV
+          "OPENCODE_MCP_TEST_RID=$env:RID" >> $env:GITHUB_ENV
+      - name: Download verify and extract published platform archive
+        if: env.CHANNEL == 'github-release'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $owned = Join-Path $env:RUNNER_TEMP ('opencode-mcp-release-' + [Guid]::NewGuid().ToString('N'))
+          [void](New-Item -ItemType Directory -Path $owned)
+          "RELEASE_ROOT=$owned" >> $env:GITHUB_ENV
+          $extension = if ($IsWindows) { '.zip' } else { '.tar.gz' }
+          $name = "opencode-mcp-$env:VERSION-$env:RID$extension"
+          $base = "https://github.com/$env:REPOSITORY/releases/download/v$env:VERSION"
+          $checksums = Join-Path $owned 'SHA256SUMS'
+          $archive = Join-Path $owned $name
+          Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $checksums
+          Invoke-WebRequest -Uri "$base/$name" -OutFile $archive
+          $candidate = 'artifacts/release-assets/SHA256SUMS'
+          if ((Get-FileHash $checksums -Algorithm SHA256).Hash -cne (Get-FileHash $candidate -Algorithm SHA256).Hash -or
+              [Convert]::ToBase64String([IO.File]::ReadAllBytes($checksums)) -cne [Convert]::ToBase64String([IO.File]::ReadAllBytes($candidate))) { throw 'Published checksum bytes differ from candidate.' }
+          $receipt = Get-Content "artifacts/feed/evidence/$env:RID/receipt.json" -Raw | ConvertFrom-Json
+          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $lines = @(Get-Content $checksums | Where-Object { $_.EndsWith("  $name", [StringComparison]::Ordinal) })
+          if ($lines.Count -ne 1 -or $lines[0] -cne "$digest  $name" -or $digest -cne $receipt.archiveSha256) { throw 'Archive differs from checksum or independent candidate receipt.' }
+          $payload = Join-Path $owned 'payload'
+          [void](New-Item -ItemType Directory -Path $payload)
+          if ($IsWindows) { Expand-Archive -LiteralPath $archive -DestinationPath $payload } else {
+            tar -xzf $archive -C $payload
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $command = Join-Path $payload $(if ($IsWindows) { 'opencode-mcp.exe' } else { 'opencode-mcp' })
+          "OPENCODE_MCP_TEST_EXECUTABLE=$command" >> $env:GITHUB_ENV
+          'OPENCODE_MCP_TEST_EXPECT_NATIVE=true' >> $env:GITHUB_ENV
+          if ($IsLinux) {
+            $manifest = Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json
+            $image = $manifest.runtimeImage
+            docker pull $image
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            "RUNTIME_IMAGE=$image" >> $env:GITHUB_ENV
+          }
+      - name: Test selected published channel on host
+        id: test
+        timeout-minutes: 35
+        env:
+          TUNIT_DISABLE_GITHUB_REPORTER: 'true'
+        run: |
+          if (-not $IsWindows) { $env:TMPDIR = $env:RUNNER_TEMP }
+          $filter = if ($env:CHANNEL -ceq 'github-release') { '/*/*/ExecutableTests/*' } else { '/*/*/ChannelAcquisitionTests/*' }
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter $filter --report-trx --results-directory artifacts/test-results/channel/host --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          exit $LASTEXITCODE
+      - name: Test Linux archive in clean runtime container
+        id: container
+        if: env.CHANNEL == 'github-release' && runner.os == 'Linux'
+        timeout-minutes: 35
+        env:
+          OPENCODE_MCP_TEST_CONTAINER_IMAGE: ${{ env.RUNTIME_IMAGE }}
+          TUNIT_DISABLE_GITHUB_REPORTER: 'true'
+        run: |
+          if (-not $IsWindows) { $env:TMPDIR = $env:RUNNER_TEMP }
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter '/*/*/ExecutableTests/*' --report-trx --results-directory artifacts/test-results/channel/container --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+          exit $LASTEXITCODE
+      - name: List selected tests after failure without rerunning
+        if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && (steps.test.outcome == 'failure' || steps.container.outcome == 'failure') }}
+        timeout-minutes: 5
+        env:
+          TUNIT_DISABLE_GITHUB_REPORTER: 'true'
+        run: |
+          if (-not $IsWindows) { $env:TMPDIR = $env:RUNNER_TEMP }
+          $filter = if ($env:CHANNEL -ceq 'github-release') { '/*/*/ExecutableTests/*' } else { '/*/*/ChannelAcquisitionTests/*' }
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter $filter --list-tests
+          exit $LASTEXITCODE
+      - name: Always record prebuilt process snapshot
+        if: always()
+        run: |
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'channel-snapshot')
+          exit $LASTEXITCODE
+      - name: Select and redact retained TRX and process snapshot only
+        if: always()
+        env:
+          API_TOKEN: ${{ github.token }}
+          TOKEN_OWNER: ${{ github.actor }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destination = Join-Path $env:RUNNER_TEMP 'channel-results'
+          [void](New-Item -ItemType Directory -Path $destination -Force)
+          $files = @(Get-ChildItem artifacts/test-results/channel -Recurse -Filter '*.trx' -File -ErrorAction SilentlyContinue)
+          $snapshot = Get-Item (Join-Path $env:RUNNER_TEMP 'channel-snapshot/processes.txt')
+          $files += $snapshot
+          $index = 0
+          foreach ($file in $files) {
+            $text = [IO.File]::ReadAllText($file.FullName)
+            foreach ($secret in @([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$($env:TOKEN_OWNER):$env:API_TOKEN")),
+                [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:API_TOKEN)),
+                [Security.SecurityElement]::Escape($env:API_TOKEN), [Uri]::EscapeDataString($env:API_TOKEN), $env:API_TOKEN)) {
+              if ($secret) { $text = $text.Replace($secret, '[redacted]') }
+            }
+            $index++
+            [IO.File]::WriteAllText((Join-Path $destination ("$index-" + $file.Name)), $text, [Text.UTF8Encoding]::new($false))
+          }
+      - name: Upload only selected redacted channel evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: channel-results-${{ inputs.channel }}-${{ matrix.rid }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/channel-results/*
+          retention-days: 90
+          if-no-files-found: error
+      - name: Remove only owned configuration release and acquisition roots
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($root in @($env:CHANNEL_CONFIG_ROOT, $env:RELEASE_ROOT)) {
+            if ($root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          }
+          foreach ($root in Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Directory -Filter 'opencode-mcp-acquisition-*') {
+            Remove-Item -LiteralPath $root.FullName -Recurse -Force
+            Write-Output "Removed owned acquisition root: $($root.FullName)"
+          }
+
+  result:
+    if: always()
+    needs: [prepare, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Require preparation and every manifest leg success
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          CHANNEL: ${{ inputs.channel }}
+          MATRIX: ${{ needs.prepare.outputs.consumer-matrix }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PREPARE_RESULT -cne 'success' -or $env:VERIFY_RESULT -cne 'success') { throw 'Preparation and all manifest verification legs must succeed.' }
+          $matrix = $env:MATRIX | ConvertFrom-Json
+          $pages = gh api --paginate --slurp "repos/$env:REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/artifacts?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($leg in $matrix.include) {
+            $name = "channel-results-$env:CHANNEL-$($leg.rid)-$env:GITHUB_RUN_ATTEMPT"
+            if (@($pages.artifacts | Where-Object { $_.name -ceq $name -and -not $_.expired }).Count -ne 1) {
+              throw "Every leg must retain results from current GITHUB_RUN_ATTEMPT $env:GITHUB_RUN_ATTEMPT; re-run failed jobs can mix attempts. Use a complete run or re-run all jobs. Missing or ambiguous: $name"
+            }
+          }
+      - name: Download retained leg results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: channel-results-${{ inputs.channel }}-*-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-results
+          merge-multiple: false
+      - name: Validate nonzero per-leg totals and write promotion contract
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          NATIVE_RUN_ID: ${{ inputs.native-run-id }}
+          MATRIX: ${{ needs.prepare.outputs.consumer-matrix }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $matrix = $env:MATRIX | ConvertFrom-Json
+          $pages = gh api --paginate --slurp "repos/$env:REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/artifacts?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $runtimes = @()
+          $selectedClass = if ($env:CHANNEL -ceq 'github-release') { 'OpenCode.Mcp.Tests.Hosting.ExecutableTests' } else { 'OpenCode.Mcp.Tests.Packaging.ChannelAcquisitionTests' }
+          foreach ($leg in $matrix.include) {
+            $name = "channel-results-$env:CHANNEL-$($leg.rid)-$env:GITHUB_RUN_ATTEMPT"
+            $artifacts = @($pages.artifacts | Where-Object { $_.name -ceq $name -and -not $_.expired })
+            if ($artifacts.Count -ne 1) { throw "Expected one retained artifact: $name" }
+            $root = Join-Path $env:RUNNER_TEMP "leg-results/$name"
+            $files = @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.trx' -File)
+            $expectedReports = if ($env:CHANNEL -ceq 'github-release' -and $leg.rid.StartsWith('linux-')) { 2 } else { 1 }
+            if ($files.Count -ne $expectedReports) { throw "Missing or unexpected test reports: $name" }
+            $totals = [ordered]@{ total = 0; passed = 0; failed = 0; skipped = 0 }
+            foreach ($file in $files) {
+              [xml]$trx = Get-Content -LiteralPath $file.FullName -Raw
+              $c = $trx.TestRun.ResultSummary.Counters
+              foreach ($field in @('total', 'passed', 'failed', 'notExecuted')) {
+                if ([string]$c.$field -notmatch '^[0-9]+\z') { throw 'Malformed TRX counters.' }
+              }
+              $skipped = if ($c.HasAttribute('skipped')) { [string]$c.skipped } else { '0' }
+              if ($skipped -notmatch '^[0-9]+\z' -or [long]$skipped -ne 0 -or [long]$c.notExecuted -ne 0 -or
+                  [long]$c.passed -le 0 -or [long]$c.failed -ne 0 -or [long]$c.total -ne [long]$c.passed) { throw 'Each report must contain successful nonzero tests, with notExecuted == 0 and skipped == 0.' }
+              $results = @($trx.TestRun.Results.UnitTestResult)
+              if ($results.Count -ne [long]$c.passed) { throw 'TRX results differ from successful counters.' }
+              foreach ($test in $results) {
+                $definitions = @($trx.TestRun.TestDefinitions.UnitTest | Where-Object { $_.id -ceq $test.testId })
+                if ($test.outcome -cne 'Passed' -or $definitions.Count -ne 1 -or $definitions[0].TestMethod.className -cne $selectedClass) {
+                  throw "Every executed test must pass and belong to selected class: $selectedClass"
+                }
+              }
+              $totals.total += [long]$c.total
+              $totals.passed += [long]$c.passed
+              $totals.failed += [long]$c.failed
+              $totals.skipped += [long]$c.notExecuted
+            }
+            $runtimes += [ordered]@{ rid = [string]$leg.rid; runner = [string]$leg.runner; tests = $totals;
+              results = @("https://github.com/$env:REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/artifacts/$($artifacts[0].id)") }
+          }
+          if ($runtimes.Count -ne $matrix.include.Count -or $runtimes.Count -eq 0) { throw 'Expected every manifest verification leg.' }
+          # Matches release.yml: string identities, integer runAttempt/totals, manifest order, retained artifact URLs.
+          $proof = [ordered]@{ channel = [string]$env:CHANNEL; version = [string]$env:VERSION; commit = [string]$env:COMMIT;
+            nativeRunId = [string]$env:NATIVE_RUN_ID; verificationRunId = [string]$env:GITHUB_RUN_ID;
+            runAttempt = [long]$env:GITHUB_RUN_ATTEMPT; runtimes = $runtimes }
+          $output = Join-Path $env:RUNNER_TEMP 'channel-verification'
+          [void](New-Item -ItemType Directory -Path $output)
+          [IO.File]::WriteAllText((Join-Path $output 'verification.json'), (ConvertTo-Json -InputObject $proof -Depth 8), [Text.UTF8Encoding]::new($false))
+      - name: Upload channel-verification only on full success
+        uses: actions/upload-artifact@v7
+        with:
+          name: channel-verification
+          path: ${{ runner.temp }}/channel-verification/verification.json
+          retention-days: 90
+          if-no-files-found: error
