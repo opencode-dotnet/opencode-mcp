@@ -903,24 +903,24 @@ jobs:
                 $lockLine = (Select-String -LiteralPath $installer -Pattern '^    \$state.Phase = ''activation''$').LineNumber
                 $retryLine = (Select-String -LiteralPath $installer -Pattern '^            \$cause = \$_.Exception.GetBaseException\(\)$').LineNumber
                 $scannerObservation = @"
-          `$script:release = `$null; `$script:pending = `$null; `$script:held = `$null
+          `$global:OpenCodeMcpScannerRelease = `$null; `$global:OpenCodeMcpScannerPending = `$null; `$global:OpenCodeMcpScannerHeld = `$null
           `$breakpoint = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $lockLine -Action {
-            `$script:held = [IO.File]::Open($LockedPath, 'Open', 'Read', 'Read')
+            `$global:OpenCodeMcpScannerHeld = [IO.File]::Open($LockedPath, 'Open', 'Read', 'Read')
           }
           `$retryBreakpoint = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $retryLine -Action {
-            if (`$script:held -and -not `$script:release) {
-              `$script:release = [powershell]::Create()
-              [void]`$script:release.AddScript('param(`$handle) Start-Sleep -Seconds $HoldSeconds; `$handle.Dispose()').AddArgument(`$script:held)
-              `$script:pending = `$script:release.BeginInvoke()
+            if (`$global:OpenCodeMcpScannerHeld -and -not `$global:OpenCodeMcpScannerRelease) {
+              `$global:OpenCodeMcpScannerRelease = [powershell]::Create()
+              [void]`$global:OpenCodeMcpScannerRelease.AddScript('param(`$handle) Start-Sleep -Seconds $HoldSeconds; `$handle.Dispose()').AddArgument(`$global:OpenCodeMcpScannerHeld)
+              `$global:OpenCodeMcpScannerPending = `$global:OpenCodeMcpScannerRelease.BeginInvoke()
             }
           }
           try { & '$($installer.Replace("'", "''"))' @args; `$code = `$LASTEXITCODE }
           finally {
             Remove-PSBreakpoint `$breakpoint, `$retryBreakpoint
-            if (`$script:release) { try { [void]`$script:release.EndInvoke(`$script:pending) } finally { `$script:release.Dispose() } }
-            if (`$script:held) { `$script:held.Dispose() }
+            if (`$global:OpenCodeMcpScannerRelease) { try { [void]`$global:OpenCodeMcpScannerRelease.EndInvoke(`$global:OpenCodeMcpScannerPending) } finally { `$global:OpenCodeMcpScannerRelease.Dispose() } }
+            if (`$global:OpenCodeMcpScannerHeld) { `$global:OpenCodeMcpScannerHeld.Dispose() }
           }
-          if (-not `$script:held -or `$script:held.CanRead) { throw 'Scanner fixture did not hold and release its file.' }
+          if (-not `$global:OpenCodeMcpScannerHeld -or `$global:OpenCodeMcpScannerHeld.CanRead) { throw 'Scanner fixture did not hold and release its file.' }
           exit `$code
           "@
                 Invoke-Installer $Options $Source $bin $data $scannerObservation
