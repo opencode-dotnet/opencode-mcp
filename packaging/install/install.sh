@@ -115,7 +115,8 @@ path_preflight() {
         count=$(grep -Fxc -e "$header" "$path_file")
         [ "$count" = 1 ] || refuse "PATH ownership is ambiguous: $path_file."
         number=$(grep -Fnx -e "$header" "$path_file" | cut -d : -f 1)
-        path_start=$(head -n "$((number - 1))" "$path_file" | wc -c | tr -d ' ')
+        path_start=0
+        if [ "$number" -gt 1 ]; then path_start=$(head -n "$((number - 1))" "$path_file" | wc -c | tr -d ' '); fi
         path_size=$(tail -n +3 "$data/path.record" | wc -c | tr -d ' ')
         observed=$(dd if="$path_file" bs=1 skip="$path_start" count="$path_size" 2>/dev/null | digest_stdin)
         expected=$(tail -n +3 "$data/path.record" | digest_stdin)
