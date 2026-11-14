@@ -20,6 +20,7 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
   DOTNET_NOLOGO: "true"
   TUNIT_DISABLE_ARTIFACT_UPLOAD: "true"
+  NATIVE_ARTIFACT_RETENTION_DAYS: ${{ github.event_name == 'workflow_dispatch' && 90 || 7 }}
 
 jobs:
   prepare:
@@ -130,7 +131,7 @@ jobs:
         with:
           name: native-process-snapshot-build-linux-${{ matrix.rid }}
           path: ${{ runner.temp }}/process-snapshot/processes.txt
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload test results
         if: always()
@@ -138,7 +139,7 @@ jobs:
         with:
           name: native-test-results-build-linux-${{ matrix.rid }}
           path: artifacts/test-results/native/${{ matrix.rid }}/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
       - name: Upload Linux build evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -147,7 +148,7 @@ jobs:
           path: |
             artifacts/native/${{ matrix.rid }}/**
             !artifacts/native/${{ matrix.rid }}/publish/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload native symbols
         if: always()
@@ -155,7 +156,7 @@ jobs:
         with:
           name: native-symbols-${{ matrix.rid }}
           path: artifacts/native/${{ matrix.rid }}/publish/**/*.dbg
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
 
   build-native:
     name: Build (${{ matrix.rid }})
@@ -233,7 +234,7 @@ jobs:
         with:
           name: native-process-snapshot-build-native-${{ matrix.rid }}
           path: ${{ runner.temp }}/process-snapshot/processes.txt
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload test results
         if: always()
@@ -241,7 +242,7 @@ jobs:
         with:
           name: native-test-results-build-native-${{ matrix.rid }}
           path: artifacts/test-results/native/${{ matrix.rid }}/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
       - name: Upload completed native evidence
         if: success()
         uses: actions/upload-artifact@v7
@@ -250,7 +251,7 @@ jobs:
           path: |
             artifacts/native/${{ matrix.rid }}/**
             !artifacts/native/${{ matrix.rid }}/publish/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload native failure diagnostics
         if: failure()
@@ -260,7 +261,7 @@ jobs:
           path: |
             artifacts/native/${{ matrix.rid }}/**
             !artifacts/native/${{ matrix.rid }}/publish/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
       - name: Upload native symbols
         if: always()
         uses: actions/upload-artifact@v7
@@ -269,7 +270,7 @@ jobs:
           path: |
             artifacts/native/${{ matrix.rid }}/publish/**/*.pdb
             artifacts/native/${{ matrix.rid }}/publish/**/*.dSYM/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
 
   prove-linux:
     name: Prove (${{ matrix.rid }})
@@ -340,7 +341,7 @@ jobs:
         with:
           name: native-process-snapshot-prove-linux-${{ matrix.rid }}
           path: ${{ runner.temp }}/process-snapshot/processes.txt
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload test results
         if: always()
@@ -348,14 +349,14 @@ jobs:
         with:
           name: native-test-results-prove-linux-${{ matrix.rid }}
           path: artifacts/test-results/native/${{ matrix.rid }}/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
       - name: Upload completed Linux evidence
         if: success()
         uses: actions/upload-artifact@v7
         with:
           name: native-complete-${{ matrix.rid }}
           path: artifacts/native/${{ matrix.rid }}/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload Linux failure diagnostics
         if: failure()
@@ -363,7 +364,7 @@ jobs:
         with:
           name: native-failure-prove-linux-${{ matrix.rid }}
           path: artifacts/native/${{ matrix.rid }}/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
 
   validate:
     name: Validate native receipts
@@ -467,7 +468,7 @@ jobs:
         with:
           name: native-process-snapshot-packages
           path: ${{ runner.temp }}/process-snapshot/processes.txt
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload package test results
         if: always()
@@ -475,14 +476,76 @@ jobs:
         with:
           name: native-package-test-results
           path: artifacts/test-results/package/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
       - name: Upload complete package feed
         if: success()
         uses: actions/upload-artifact@v7
         with:
           name: native-package-feed
           path: artifacts/feed/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
+
+  release-assets:
+    name: Assemble release assets
+    needs: [prepare, validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+      - name: Download completed native evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-complete-*
+          path: artifacts/native-receipts
+          merge-multiple: false
+      - name: Build native tool entry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+      - name: Assemble release assets
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = dotnet msbuild src/OpenCode.Mcp/OpenCode.Mcp.csproj -p:Configuration=Release -nodeReuse:false -p:UseSharedCompilation=false -getProperty:Version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --no-build tools/native.cs -- assets --receipts artifacts/native-receipts --evidence artifacts/native-receipts --output artifacts/release-assets --version "$version"
+          exit $LASTEXITCODE
+      - name: Record processes after assembly
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-process-snapshot-release-assets
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: error
+      - name: Upload release assets
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-release-assets
+          path: artifacts/release-assets/**
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
 
   consumer:
@@ -557,7 +620,7 @@ jobs:
         with:
           name: native-process-snapshot-consumer-${{ matrix.rid }}
           path: ${{ runner.temp }}/process-snapshot/processes.txt
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
       - name: Upload package test results
         if: always()
@@ -565,5 +628,5 @@ jobs:
         with:
           name: native-package-test-results-consumer-${{ matrix.rid }}
           path: artifacts/test-results/package/**
-          retention-days: 7
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error

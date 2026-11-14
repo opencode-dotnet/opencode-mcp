@@ -41,6 +41,15 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
                 await PackRootAsync(command, host, manifest, token).ConfigureAwait(false);
                 return 0;
             }
+            if (command.Operation == "assets")
+            {
+                await new NativeReleaseAssets(files, modes).BuildAsync(new NativeReleaseAssetRequest(manifest,
+                    files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root),
+                    files.Path.GetFullPath(command.Evidence ?? throw new InvalidOperationException("Missing evidence directory."), root),
+                    files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing release assets output."), root),
+                    command.Version ?? throw new InvalidOperationException("Missing release version.")), output, token).ConfigureAwait(false);
+                return 0;
+            }
             var rid = command.Rid ?? throw new InvalidOperationException("Missing RID.");
             if (!manifest.Runtimes.Any(runtime => string.Equals(runtime.Rid, rid, StringComparison.Ordinal)))
             {

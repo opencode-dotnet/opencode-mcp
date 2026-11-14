@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-10
+Date: 2026-11-14
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release
@@ -269,6 +269,23 @@ not a second distributed product. The entry is compiled separately from the solu
   Any pack warning, nonzero exit or later refusal deletes that owned feed; a cleanup failure follows
   the original refusal. Success prints the feed path and all seven package names and SHA-256 values,
   root first and then in manifest RID order.
+- `assets --receipts <directory> --evidence <directory> --output <directory> --version <version>`
+  requires the complete coherent native receipt set, an exact version match for every receipt, and
+  matching completed staging evidence. The evidence root contains `native-complete-<RID>`
+  directories; the receipt search root may be the same directory or a separate consolidated receipt
+  tree. Each staged archive has its canonical RID basename and passes the existing artifact
+  validator. Input refusals precede output ownership.
+
+  The output directory must be absent or empty; a file or non-empty directory is refused without
+  modification. The command owns an accepted directory and copies the six staged archives to
+  `opencode-mcp-<version>-<RID>.zip` or `.tar.gz`, without rebuilding or re-archiving. Each copied
+  archive's SHA-256 must equal its receipt.
+
+  `SHA256SUMS` contains exactly six lines in manifest order: lowercase SHA-256, two ASCII spaces,
+  release basename and LF, encoded as UTF-8 without BOM. It has no self-entry. Any refusal after
+  ownership deletes the output; a cleanup failure follows the original refusal. Success prints the
+  output directory, the six archive names and SHA-256 values in manifest order, then the checksum
+  file's name and SHA-256.
 - `inspect --rid <RID> --path <executable-or-directory>` inspects only the supplied image when the
   path is a file. A directory also scans its companion files recursively. The framework-dependent
   negative control uses the file path.
@@ -337,6 +354,10 @@ prove source, common-input, SDK, version and dependency coherence, not workflow-
 row runs on its matching RID host against that same workflow run's complete `native-package-feed`,
 and the [package gate](../engineering/quality-gates.md#package-pass) owns its inputs, artifacts and
 acceptance rule.
+
+A separate `release-assets` job needs native validation and downloads the same run's completed
+evidence. It assembles and uploads `native-release-assets`; it neither publishes a release nor
+depends on package assembly.
 
 Both Linux payloads build inside a product-owned builder image based on Ubuntu 22.04, built natively
 for each architecture and pinned by digest. It carries the Native AOT prerequisites (clang and the
@@ -495,6 +516,10 @@ or packaged-startup claim.
   wrappers. Payload equality covers the complete declared file set by normalized path and digest:
   the executable, required assets, notices, and payload metadata. An executable hash alone is not
   equality. Native debug symbols, build receipts, and channel wrappers stay outside the payload.
+- A release archive is the staged archive under its versioned release basename, with the same
+  archive SHA-256 recorded in that RID's receipt. Renaming occurs while assembling the candidate's
+  `native-release-assets`, not during publication. A release publisher consumes that artifact
+  unchanged.
 - A package candidate is one real source commit with no uncommitted source or build-input change,
   consistent recorded common build inputs, and each RID's own toolchain, environment, and payload
   evidence. Equal version labels do not prove equal sources. The candidate commit needs separate
