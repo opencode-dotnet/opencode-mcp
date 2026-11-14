@@ -135,7 +135,7 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             files.Path.GetFullPath(command.Receipts ?? throw new InvalidOperationException("Missing receipts directory."), root),
             files.Path.GetFullPath(command.Evidence ?? throw new InvalidOperationException("Missing evidence directory."), root),
             files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing release assets output."), root),
-            command.Version ?? throw new InvalidOperationException("Missing release version.")), output, token).ConfigureAwait(false);
+            command.Version ?? throw new InvalidOperationException("Missing release version."), files.Path.Combine(root, "packaging", "install")), output, token).ConfigureAwait(false);
     }
 
     private async Task ValidatePublicationAsync(NativeCommand command, string root, NativeManifest manifest, CancellationToken token)
@@ -145,7 +145,7 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             files.Path.GetFullPath(command.Feed ?? throw new InvalidOperationException("Missing feed directory."), root),
             files.Path.GetFullPath(command.Assets ?? throw new InvalidOperationException("Missing release assets directory."), root),
             command.Version ?? throw new InvalidOperationException("Missing publication version."),
-            command.Commit ?? throw new InvalidOperationException("Missing publication commit."));
+            command.Commit ?? throw new InvalidOperationException("Missing publication commit."), files.Path.Combine(root, "packaging", "install"));
         NativeDiagnostics.Refuse(await new NativePublicationValidator(files, modes).ValidateAsync(request, token).ConfigureAwait(false));
         await output.WriteLineAsync("Publication candidate is complete.".AsMemory(), token).ConfigureAwait(false);
     }

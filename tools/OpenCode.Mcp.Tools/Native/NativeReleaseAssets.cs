@@ -18,6 +18,7 @@ internal sealed class NativeReleaseAssets(IFileSystem files, IUnixFileModes mode
             .Where(receipt => !string.Equals(receipt.Version, request.Version, StringComparison.Ordinal))
             .Select(receipt => receipt.Rid + ": Receipt version must be " + request.Version + ".")]);
         NativeDiagnostics.Refuse(await ValidateEvidenceAsync(request, receipts, token).ConfigureAwait(false));
+        var installers = await new NativeInstallerAssets(files).ReadAsync(request.Installers, request.Version, token).ConfigureAwait(false);
         if (!store.IsAbsentOrEmptyDirectory(request.Output))
         {
             throw new InvalidOperationException("Release assets directory must be absent or empty: " + request.Output);
@@ -40,6 +41,18 @@ internal sealed class NativeReleaseAssets(IFileSystem files, IUnixFileModes mode
                 }
                 lines.Add(digest + "  " + name + "\n");
                 report.Add(name + " SHA-256: " + digest);
+            }
+            foreach (var installer in installers)
+            {
+                var destination = files.Path.Combine(request.Output, installer.Name);
+                await files.File.WriteAllBytesAsync(destination, [.. installer.Bytes], token).ConfigureAwait(false);
+                var digest = await store.DigestAsync(destination, token).ConfigureAwait(false);
+                if (!string.Equals(digest, installer.Sha256, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(installer.Name + ": Release script differs from committed installer.");
+                }
+                lines.Add(digest + "  " + installer.Name + "\n");
+                report.Add(installer.Name + " SHA-256: " + digest);
             }
             var checksums = files.Path.Combine(request.Output, "SHA256SUMS");
             await files.File.WriteAllTextAsync(checksums, string.Concat(lines), new UTF8Encoding(false), token).ConfigureAwait(false);

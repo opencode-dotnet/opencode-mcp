@@ -15,7 +15,7 @@ public sealed class NativeReleaseAssetsTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task BuildAsync_Should_Copy_The_Exact_Seven_Asset_Set_In_Manifest_Order(bool emptyOutput, CancellationToken token)
+    public async Task BuildAsync_Should_Copy_The_Exact_Nine_Asset_Set_In_Manifest_Order(bool emptyOutput, CancellationToken token)
     {
         var scenario = await NativeReleaseAssetsScenario.CreateAsync(token);
         if (emptyOutput)
@@ -31,7 +31,7 @@ public sealed class NativeReleaseAssetsTests
         await new NativeReleaseAssets(scenario.Files, scenario.Builder.Native.Modes).BuildAsync(scenario.Request, output, token);
         var names = Suffixes.Select(suffix => "opencode-mcp-" + scenario.Version + "-" + suffix).ToArray();
         await Assert.That(scenario.Files.Directory.GetFileSystemEntries(scenario.Output).Select(path => scenario.Files.Path.GetFileName(path) ?? throw new InvalidOperationException()).Order(StringComparer.Ordinal))
-            .IsEquivalentTo(names.Append("SHA256SUMS").Order(StringComparer.Ordinal), CollectionOrdering.Matching);
+            .IsEquivalentTo(names.Concat(["install.sh", "install.ps1", "SHA256SUMS"]).Order(StringComparer.Ordinal), CollectionOrdering.Matching);
         for (var index = 0; index < Rids.Length; index++)
         {
             await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Output, names[index]), token))
@@ -41,10 +41,19 @@ public sealed class NativeReleaseAssetsTests
             await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Directory(Rids[index]), "receipt.json"), token))
                 .IsEquivalentTo(receiptBytes[Rids[index]], CollectionOrdering.Matching);
         }
-        var checksums = string.Concat(Rids.Select((rid, index) => scenario.Digest(rid) + "  " + names[index] + "\n"));
+        foreach (var name in new[] { "install.sh", "install.ps1" })
+        {
+            await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Output, name), token))
+                .IsEquivalentTo(scenario.Scripts[name], CollectionOrdering.Matching);
+            await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Installers, name), token))
+                .IsEquivalentTo(scenario.Scripts[name], CollectionOrdering.Matching);
+        }
+        var checksums = string.Concat(Rids.Select((rid, index) => scenario.Digest(rid) + "  " + names[index] + "\n"))
+            + scenario.ScriptDigest("install.sh") + "  install.sh\n" + scenario.ScriptDigest("install.ps1") + "  install.ps1\n";
         await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Output, "SHA256SUMS"), token))
             .IsEquivalentTo(Encoding.UTF8.GetBytes(checksums), CollectionOrdering.Matching);
         var expected = new[] { scenario.Output }.Concat(Rids.Select((rid, index) => names[index] + " SHA-256: " + scenario.Digest(rid)))
+            .Concat(["install.sh SHA-256: " + scenario.ScriptDigest("install.sh"), "install.ps1 SHA-256: " + scenario.ScriptDigest("install.ps1")])
             .Append("SHA256SUMS SHA-256: " + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(checksums))));
         await Assert.That(output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal)).IsEqualTo(string.Join('\n', expected) + "\n");
     }
@@ -67,7 +76,8 @@ public sealed class NativeReleaseAssetsTests
             + scenario.Digest("osx-arm64") + "  " + prefix + "osx-arm64.tar.gz\n"
             + scenario.Digest("win-arm64") + "  " + prefix + "win-arm64.zip\n"
             + scenario.Digest("osx-x64") + "  " + prefix + "osx-x64.tar.gz\n"
-            + scenario.Digest("linux-arm64") + "  " + prefix + "linux-arm64.tar.gz\n";
+            + scenario.Digest("linux-arm64") + "  " + prefix + "linux-arm64.tar.gz\n"
+            + scenario.ScriptDigest("install.sh") + "  install.sh\n" + scenario.ScriptDigest("install.ps1") + "  install.ps1\n";
         await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Files.Path.Combine(scenario.Output, "SHA256SUMS"), token)).IsEqualTo(checksums);
         var expected = scenario.Output + "\n" + prefix + "linux-x64.tar.gz SHA-256: " + scenario.Digest("linux-x64") + "\n"
             + prefix + "win-x64.zip SHA-256: " + scenario.Digest("win-x64") + "\n"
@@ -75,6 +85,7 @@ public sealed class NativeReleaseAssetsTests
             + prefix + "win-arm64.zip SHA-256: " + scenario.Digest("win-arm64") + "\n"
             + prefix + "osx-x64.tar.gz SHA-256: " + scenario.Digest("osx-x64") + "\n"
             + prefix + "linux-arm64.tar.gz SHA-256: " + scenario.Digest("linux-arm64") + "\n"
+            + "install.sh SHA-256: " + scenario.ScriptDigest("install.sh") + "\ninstall.ps1 SHA-256: " + scenario.ScriptDigest("install.ps1") + "\n"
             + "SHA256SUMS SHA-256: " + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(checksums))) + "\n";
         await Assert.That(output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal)).IsEqualTo(expected);
     }
@@ -94,11 +105,13 @@ public sealed class NativeReleaseAssetsTests
             await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Output, names[index]), token))
                 .IsEquivalentTo(scenario.Archives[Rids[index]], CollectionOrdering.Matching);
         }
-        var checksums = string.Concat(Rids.Select((rid, index) => scenario.Digest(rid) + "  " + names[index] + "\n"));
+        var checksums = string.Concat(Rids.Select((rid, index) => scenario.Digest(rid) + "  " + names[index] + "\n"))
+            + scenario.ScriptDigest("install.sh") + "  install.sh\n" + scenario.ScriptDigest("install.ps1") + "  install.ps1\n";
         await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Files.Path.Combine(scenario.Output, "SHA256SUMS"), token)).IsEqualTo(checksums);
         await Assert.That(scenario.Files.Directory.GetFileSystemEntries(scenario.Output).Select(path => scenario.Files.Path.GetFileName(path) ?? throw new InvalidOperationException()).Order(StringComparer.Ordinal))
-            .IsEquivalentTo(names.Append("SHA256SUMS").Order(StringComparer.Ordinal), CollectionOrdering.Matching);
+            .IsEquivalentTo(names.Concat(["install.sh", "install.ps1", "SHA256SUMS"]).Order(StringComparer.Ordinal), CollectionOrdering.Matching);
         var expected = new[] { scenario.Output }.Concat(Rids.Select((rid, index) => names[index] + " SHA-256: " + scenario.Digest(rid)))
+            .Concat(["install.sh SHA-256: " + scenario.ScriptDigest("install.sh"), "install.ps1 SHA-256: " + scenario.ScriptDigest("install.ps1")])
             .Append("SHA256SUMS SHA-256: " + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(checksums))));
         await Assert.That(output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal)).IsEqualTo(string.Join('\n', expected) + "\n");
     }
@@ -281,6 +294,53 @@ public sealed class NativeReleaseAssetsTests
             .ThrowsExactly<InvalidOperationException>().WithMessage(diagnostic, StringComparison.Ordinal);
         await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Output, token)).IsEqualTo("foreign");
         await Assert.That(output.ToString()).IsEmpty();
+    }
+
+    [Test]
+    [Arguments("missing")]
+    [Arguments("version")]
+    public async Task BuildAsync_Should_Validate_Installers_Before_Output_Ownership(string fault, CancellationToken token)
+    {
+        var scenario = await NativeReleaseAssetsScenario.CreateAsync(token);
+        scenario.Files.File.Delete(scenario.Files.Path.Combine(scenario.Installers, "install.sh"));
+        if (fault == "version")
+        {
+            await scenario.Files.File.WriteAllTextAsync(scenario.Files.Path.Combine(scenario.Installers, "install.ps1"), "# missing projection", token);
+        }
+        await AssertInputRefusalAsync(scenario, "Missing installer script: install.sh."
+            + (fault == "version" ? "\nInstaller default version must be " + scenario.Version + ": install.ps1." : ""), token);
+    }
+
+    [Test]
+    public async Task BuildAsync_Should_Reject_A_Changed_Copied_Installer(CancellationToken token)
+    {
+        var scenario = await NativeReleaseAssetsScenario.CreateAsync(token);
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        await Assert.That(() => new NativeReleaseAssets(scenario.DecorateWrites("changed installer"), scenario.Builder.Native.Modes).BuildAsync(scenario.Request, output, token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("install.sh: Release script differs from committed installer.", StringComparison.Ordinal);
+        await Assert.That(scenario.Files.Directory.Exists(scenario.Output)).IsFalse();
+        await Assert.That(output.ToString()).IsEmpty();
+        foreach (var pair in scenario.Scripts)
+        {
+            await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Installers, pair.Key), token))
+                .IsEquivalentTo(pair.Value, CollectionOrdering.Matching);
+        }
+    }
+
+    [Test]
+    public async Task BuildAsync_Should_Delete_Owned_Output_After_An_Installer_Write_Failure(CancellationToken token)
+    {
+        var scenario = await NativeReleaseAssetsScenario.CreateAsync(token);
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        await Assert.That(() => new NativeReleaseAssets(scenario.DecorateWrites("installer"), scenario.Builder.Native.Modes).BuildAsync(scenario.Request, output, token))
+            .ThrowsExactly<IOException>().WithMessage("fixture installer write failure", StringComparison.Ordinal);
+        await Assert.That(scenario.Files.Directory.Exists(scenario.Output)).IsFalse();
+        await Assert.That(output.ToString()).IsEmpty();
+        foreach (var pair in scenario.Scripts)
+        {
+            await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Files.Path.Combine(scenario.Installers, pair.Key), token))
+                .IsEquivalentTo(pair.Value, CollectionOrdering.Matching);
+        }
     }
 
     [Test]
