@@ -876,7 +876,7 @@ jobs:
                     Assert-Equal (Get-RawPath) $pathBefore 'Post-activation rollback preserves PATH'
                   } finally {
                     if ($handle) { $handle.Dispose() }
-                    Get-ChildItem -LiteralPath $private -Filter 'temporary-*' -Directory | Remove-Item -Recurse
+                    Get-ChildItem -LiteralPath $private -Filter 'temporary-*' -Directory | Remove-Item -Recurse -Force
                   }
                   $faultLine = (Select-String -LiteralPath $installer -Pattern '^    Invoke-InstallerPathAddition$').LineNumber
                   $rollbackObservation = @"
@@ -897,7 +897,7 @@ jobs:
                     Assert-Equal (Get-RawPath) $pathBefore 'Failed payload rollback keeps PATH unchanged'
                     Assert-Equal @(Get-ChildItem -LiteralPath $private -Filter 'previous-*' -Directory | ForEach-Object { Get-Inventory $_.FullName }) (Get-Inventory $expected) 'Failed payload rollback retains the complete old payload'
                   } finally {
-                    Get-ChildItem -LiteralPath $private -Directory | Where-Object { $_.Name -like 'temporary-*' -or $_.Name -like 'previous-*' } | Remove-Item -Recurse
+                    Get-ChildItem -LiteralPath $private -Directory | Where-Object { $_.Name -like 'temporary-*' -or $_.Name -like 'previous-*' } | Remove-Item -Recurse -Force
                   }
                   Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                   Assert-Installed
@@ -987,7 +987,7 @@ jobs:
                 else { [IO.File]::WriteAllText($foreign, 'foreign') }
                 Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Install collision: $foreign.")
                 Assert-Equal ([IO.File]::ReadAllText($(if ($windows) { Join-Path $foreign 'sentinel' } else { $foreign }))) 'foreign' 'Foreign command preserved'
-                Remove-Item -LiteralPath $bin -Recurse
+                Remove-Item -LiteralPath $bin -Recurse -Force
                 $foreignDirectory = Join-Path $root 'foreign'; New-Item -ItemType Directory $foreignDirectory | Out-Null
                 $foreignCommand = Join-Path $foreignDirectory $(if ($windows) { 'opencode-mcp.exe' } else { 'opencode-mcp' })
                 [IO.File]::WriteAllText($foreignCommand, 'foreign PATH sentinel')
@@ -1010,7 +1010,7 @@ jobs:
                     Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Install collision: $command.", "opencode-mcp: Cleanup failed; retained owned directory: $bin.")
                     Assert-Equal ([IO.File]::ReadAllText((Join-Path $command 'sentinel'))) 'foreign' 'Racing directory is not replaced'
                     Assert-Equal @(Get-ChildItem -LiteralPath $command -Force | ForEach-Object Name) @('sentinel') 'Candidate link is never moved into racing directory'
-                  } finally { $env:PATH = $originalPath; Remove-Item -LiteralPath $bin -Recurse }
+                  } finally { $env:PATH = $originalPath; Remove-Item -LiteralPath $bin -Recurse -Force }
                   $realMove = (Get-Command mv -CommandType Application).Source
                   $collisionMove = Join-Path $commands 'mv'; $linkPrefix = ($bin + '/.opencode-mcp-').Replace("'", "'\''")
                   Remove-Item -LiteralPath $fixtureLink
@@ -1021,7 +1021,7 @@ jobs:
                     Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Install collision: $command.", "opencode-mcp: Cleanup failed; retained owned directory: $bin.")
                     Assert-Equal ([IO.File]::ReadAllText((Join-Path $command 'sentinel'))) 'foreign' 'Post-check directory bytes survive rename'
                     Assert-Equal @(Get-ChildItem -LiteralPath $command -Force | ForEach-Object Name) @('sentinel') 'Nested temporary link is removed'
-                  } finally { $env:PATH = $originalPath; Remove-Item -LiteralPath $bin -Recurse }
+                  } finally { $env:PATH = $originalPath; Remove-Item -LiteralPath $bin -Recurse -Force }
                 }
               }
               Invoke-Case Uninstall_Preserves_Preexisting_Directory {
@@ -1350,7 +1350,7 @@ jobs:
                   } finally {
                     $env:PATH = $originalPath
                     & chmod u+w $env:ZDOTDIR; if ($LASTEXITCODE -ne 0) { throw 'Rollback fixture cleanup failed.' }
-                    @($data, $bin) | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Remove-Item -LiteralPath $_ -Recurse }
+                    @($data, $bin) | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Remove-Item -LiteralPath $_ -Recurse -Force }
                     $env:SHELL = '/bin/sh'
                   }
                 }
@@ -1402,7 +1402,7 @@ jobs:
               if ($windows) { Restore-RawPath; $userKey.Dispose() }
               $env:SHELL = $originalShell; $env:ZDOTDIR = $originalZdot; $env:XDG_CONFIG_HOME = $originalConfig
               $env:OPENCODE_MCP_TEST_EXECUTABLE = $null; $env:OPENCODE_MCP_TEST_EXPECT_NATIVE = $null
-              if ($cleanupErrors.Count -eq 0 -and (Test-Path -LiteralPath $root)) { Remove-Item -LiteralPath $root -Recurse }
+              if ($cleanupErrors.Count -eq 0 -and (Test-Path -LiteralPath $root)) { Remove-Item -LiteralPath $root -Recurse -Force }
             }
             if ($failure -or $cleanupErrors.Count) { throw ((@($failure | Where-Object { $null -ne $_ }) + $cleanupErrors) -join "`n") }
           }
