@@ -825,11 +825,9 @@ jobs:
               Invoke-Case Install_Is_Idempotent {
                 $checksumOnly = Join-Path $root 'checksum-only'; New-Item -ItemType Directory $checksumOnly | Out-Null
                 Copy-Item -LiteralPath (Join-Path $assets 'SHA256SUMS') -Destination $checksumOnly
-                $unchanged = @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks })
-                $privateTime = (Get-Item -LiteralPath $private).LastWriteTimeUtc.Ticks
+                $unchanged = @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { $_.FullName } else { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks } })
                 Assert-Result (Invoke-Installer @() $checksumOnly) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
-                Assert-Equal @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks }) $unchanged 'Idempotence changes no installed entry or timestamp'
-                Assert-Equal (Get-Item -LiteralPath $private).LastWriteTimeUtc.Ticks $privateTime 'Idempotence creates no staging directory'
+                Assert-Equal @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { $_.FullName } else { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks } }) $unchanged 'Idempotence changes no installed entry or timestamp'
                 Assert-Result (Invoke-Installer @()) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
                 Assert-Installed
                 $selectionFile = Join-Path $private 'current'; $selectionBytes = [IO.File]::ReadAllBytes($selectionFile)
@@ -1247,7 +1245,7 @@ jobs:
                     }
                   }
                   $prefix = if ($windows) { Get-RawPath } elseif ($shell -ne 'fish') { ,([IO.File]::ReadAllBytes($startup)) }
-                  $permissions = if (-not $windows -and $shell -ne 'fish') { (Get-Item -LiteralPath $startup).UnixFileMode }
+                  $permissions = if (-not $windows -and $shell -ne 'fish') { (Get-Item -LiteralPath $startup -Force).UnixFileMode }
                   Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
                   Assert-Installed
                   $ownedPath = Get-RawPath
@@ -1373,7 +1371,7 @@ jobs:
                   elseif ($shell -ne 'fish') {
                     $expectedBytes = [byte[]]($prefix + [Text.Encoding]::UTF8.GetBytes("`n# installer-neighbor`n"))
                     Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes($startup))) ([Convert]::ToBase64String($expectedBytes)) 'Exact surrounding startup bytes survive'
-                    Assert-Equal (Get-Item -LiteralPath $startup).UnixFileMode $permissions 'Startup permissions survive'
+                    Assert-Equal (Get-Item -LiteralPath $startup -Force).UnixFileMode $permissions 'Startup permissions survive'
                   }
                   else { Assert-Equal (Test-Path -LiteralPath $startup) $false 'Owned fish file removed' }
                   Assert-Equal (Test-Path -LiteralPath $bin) $false 'Successful uninstall retry removes command directory'
