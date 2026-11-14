@@ -26,7 +26,7 @@
     <!-- microsoft packages -->
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.403" />
     <!-- test packages -->
-    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.4" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.5" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="NSubstitute.Analyzers.CSharp" Version="1.0.17" />
     <PackageVersion Include="Testably.Abstractions" Version="10.4.0" />
