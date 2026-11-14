@@ -53,10 +53,26 @@ internal sealed class PackageChannelFixture(IFileSystem files, IReadOnlyDictiona
         var selected = await XDocument.LoadAsync(selectedStream, LoadOptions.None, token);
         await using var expectedStream = files.File.OpenRead(files.Path.Combine(ReferenceFeed.RepositoryRoot, "packaging", basename + ".nuget.config"));
         var expected = await XDocument.LoadAsync(expectedStream, LoadOptions.None, token);
-        selected.Root?.Elements("packageSourceCredentials").Remove();
+        var credentials = selected.Root?.Elements("packageSourceCredentials").ToArray() ?? [];
+        if (basename == "github-packages" && credentials is [var credential] && HasExpectedCredentials(credential))
+        {
+            credential.Remove();
+        }
         if (!XNode.DeepEquals(selected, expected))
         {
             throw new InvalidOperationException("Channel configuration must match packaging/" + basename + ".nuget.config (sources and mapping).");
         }
+    }
+
+    private static bool HasExpectedCredentials(XElement credentials)
+    {
+        var shape = new XElement(credentials);
+        foreach (var value in shape.Descendants("add").Attributes("value"))
+        {
+            value.Value = "";
+        }
+        return XNode.DeepEquals(shape, new XElement("packageSourceCredentials", new XElement("opencode-dotnet",
+            new XElement("add", new XAttribute("key", "Username"), new XAttribute("value", "")),
+            new XElement("add", new XAttribute("key", "ClearTextPassword"), new XAttribute("value", "")))));
     }
 }

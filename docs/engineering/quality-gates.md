@@ -358,6 +358,8 @@ an acquisition source. GitHub Packages metadata and installs use the job's `GITH
 `packages: read`; every leg requires all seven packages to be public as seen by this repository's
 Actions access. Metadata failures fail closed. A successful aggregate retains manifest-ordered,
 nonzero test totals and result-artifact links in `channel-verification` for promotion.
+Only a complete run or a full re-run produces `channel-verification`; a re-run of failed jobs that
+mixes retained leg artifacts from different attempts is refused.
 
 Secret-bearing channel jobs retain the existing test guards but upload only selected
 credential-redacted TRX and process snapshots. Credential files, acquisition stores and memory dumps

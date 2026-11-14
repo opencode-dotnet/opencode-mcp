@@ -365,6 +365,26 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
 
     private async Task CleanupAsync()
     {
+        try
+        {
+            await CleanupCoreAsync();
+        }
+        catch (Exception cleanup)
+        {
+            try
+            {
+                await RemoveRetainedCredentialsAsync();
+            }
+            catch (Exception credentials)
+            {
+                throw new AggregateException(cleanup, credentials);
+            }
+            throw;
+        }
+    }
+
+    private async Task CleanupCoreAsync()
+    {
         await Process.DisposeAsync();
         try
         {
@@ -390,5 +410,23 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
                 _files.Directory.Delete(OwnedRoot, recursive: true);
             }
         }
+    }
+
+    private async Task RemoveRetainedCredentialsAsync()
+    {
+        if (_configurationPath is null || !_files.File.Exists(_configurationPath))
+        {
+            return;
+        }
+        // Credential cleanup must finish even after the acquisition token is cancelled.
+        var token = CancellationToken.None;
+        XDocument configuration;
+        await using (var input = _files.File.OpenRead(_configurationPath))
+        {
+            configuration = await XDocument.LoadAsync(input, LoadOptions.None, token);
+        }
+        configuration.Root?.Elements("packageSourceCredentials").Remove();
+        await using var output = _files.File.Create(_configurationPath);
+        await configuration.SaveAsync(output, SaveOptions.None, token);
     }
 }

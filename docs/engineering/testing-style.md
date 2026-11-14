@@ -222,12 +222,21 @@ cannot own its server fails.
   private SDK and ambient-configuration refusal. The explicitly selected channel configuration is
   copied into owned storage; the candidate feed supplies comparison evidence only and is never an
   acquisition source. Missing remote inputs fail, never default to local acquisition or skip.
+  The owned configuration gives each product package a single eligible source through exclusive
+  package source mapping, and with the owned cold caches that binds an acquisition to the channel
+  under test.
   Remote global installation uses the plain install command without `--framework`; local-feed
   tool-path acquisition retains `--framework net10.0`. Before global installation the fixture
   resolves and validates its logical and physical owned global-tools path. Afterwards it requires
   the shim/store there and unchanged real global-tool state. Both routes retain every running-entry,
-  version, whole-payload, protocol and cleanup assertion. GitHub credentials are written only to
-  owned configuration, never logged or included in uploaded artifacts.
+  version, whole-payload, protocol and cleanup assertion. On every OS, verification writes GitHub
+  credentials directly into the owned configuration copy with the XML API, taking `github.actor`
+  and `GITHUB_TOKEN` only from environment variables: `packageSourceCredentials` contains only
+  `opencode-dotnet`, with exactly `Username` and `ClearTextPassword` entries. No process receives the
+  token as an argument, and nothing prints it. The copy lives under `RUNNER_TEMP`, is never uploaded,
+  and is deleted by always-run cleanup. Only the `github-packages` channel accepts that exact
+  credential shape; the `nuget` channel refuses any credential element. If acquisition-root deletion
+  fails, remove credentials from the owned configuration copy before reporting the retained root.
 - **Bounded diagnostic retention is not a drain limit.** The owner drains stderr through EOF even
   after it has retained 200 selected lines. Each selected line is limited to 2,000 characters;
   oversized lines carry a truncation marker. Lifetime-category lines, selector refusals, and the

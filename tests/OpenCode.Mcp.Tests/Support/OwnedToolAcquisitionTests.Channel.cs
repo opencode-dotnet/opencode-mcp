@@ -204,6 +204,42 @@ public sealed partial class OwnedToolAcquisitionTests
     }
 
     [Test]
+    public async Task InstallGlobalAsync_Should_Remove_Retained_Credentials_Without_Contents_In_Diagnostics(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var repository = await PrepareRepositoryAsync(files, token);
+        const string sentinel = "credential-sentinel-not-for-diagnostics";
+        var configuration = new XDocument(new XElement("configuration", new XElement("packageSources", new XElement("clear")),
+            new XElement("packageSourceCredentials", new XElement("opencode-dotnet",
+                new XElement("add", new XAttribute("key", "Username"), new XAttribute("value", "actor")),
+                new XElement("add", new XAttribute("key", "ClearTextPassword"), new XAttribute("value", sentinel))))));
+        var source = files.Path.Combine(repository, "remote.config");
+        await files.File.WriteAllTextAsync(source, configuration.ToString(), token);
+        var decorated = DecorateDirectory(files, out var directory);
+        var runner = ProbeRunner(files);
+        await using var owner = new OwnedToolAcquisition(decorated, runner);
+        await owner.PrepareRemoteAsync(repository, source, "10.0.403", token);
+        var owned = owner.CreateDnxLaunch("version").Arguments[5];
+        directory.When(value => value.Delete(owner.OwnedRoot, recursive: true)).Do(_ => throw new IOException("root deletion refused"));
+        runner.RunAsync(Arg.Is<NativeProcessRequest>(request => request.Arguments[0] == "tool"), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new NativeProcessResult(7, "", "installation refused")));
+        var failure = await Assert.That(async () => { await owner.InstallGlobalAsync("version", token); }).ThrowsExactly<AggregateException>();
+        var combined = await Assert.That(failure).IsNotNull();
+        await Assert.That(combined.InnerExceptions.Select(static error => error.Message))
+            .IsEquivalentTo(["Global installation failed: installation refused", "root deletion refused"], CollectionOrdering.Matching);
+        await Assert.That(combined.Message).IsEqualTo("Acquisition failed; retained root: " + owner.OwnedRoot
+            + " (Global installation failed: installation refused) (root deletion refused)");
+        await Assert.That(combined.Message).DoesNotContain(sentinel);
+        await owner.DisposeAsync();
+        await Assert.That(files.Directory.Exists(owner.OwnedRoot)).IsTrue();
+        await Assert.That(await files.File.ReadAllTextAsync(source, token)).IsEqualTo(configuration.ToString());
+        configuration.Root?.Elements("packageSourceCredentials").Remove();
+        var retained = XDocument.Parse(await files.File.ReadAllTextAsync(owned, token));
+        await Assert.That(retained.ToString()).IsEqualTo(configuration.ToString());
+        await Assert.That(retained.ToString()).DoesNotContain(sentinel);
+    }
+
+    [Test]
     public async Task CreateDnxLaunch_Should_Pass_Http_Arguments_To_The_Remote_Package(CancellationToken token)
     {
         var files = new MockFileSystem();

@@ -61,6 +61,22 @@ public sealed class PackageChannelFixtureTests
             .IsEquivalentTo((string?[])["actor", "credential"], CollectionOrdering.Matching);
     }
 
+    [Test]
+    [Arguments("github-packages", "credential-source")]
+    [Arguments("github-packages", "credential-key")]
+    [Arguments("github-packages", "credential-attribute")]
+    [Arguments("github-packages", "credential-duplicate")]
+    [Arguments("github-packages", "credential-text")]
+    [Arguments("nuget", "credentials")]
+    public async Task Resolve_Should_Refuse_Credentials_Outside_The_Exact_GitHub_Shape(string channel, string fault, CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var fixture = await CreateFixtureAsync(files, channel, fault, token);
+        await Assert.That(async () => { await fixture.ResolveAsync(token); }).ThrowsExactly<InvalidOperationException>().WithMessage(
+            "Channel configuration must match packaging/" + (channel == "nuget" ? "nuget-org" : "github-packages")
+            + ".nuget.config (sources and mapping).", StringComparison.Ordinal);
+    }
+
     private static async Task<PackageChannelFixture> CreateFixtureAsync(MockFileSystem files, string channel, string fault, CancellationToken token)
     {
         var repository = AppContext.BaseDirectory;
@@ -91,11 +107,9 @@ public sealed class PackageChannelFixtureTests
         {
             document.Root?.Add(new XElement("disabledPackageSources", new XElement("clear")));
         }
-        if (fault == "credentials")
+        if (fault is "credentials" or "credential-source" or "credential-key" or "credential-attribute" or "credential-duplicate" or "credential-text")
         {
-            document.Root?.Add(new XElement("packageSourceCredentials", new XElement("opencode-dotnet",
-                new XElement("add", new XAttribute("key", "Username"), new XAttribute("value", "actor")),
-                new XElement("add", new XAttribute("key", "ClearTextPassword"), new XAttribute("value", "credential")))));
+            AddCredentials(document, fault);
         }
         var config = files.Path.Combine(repository, "selected.config");
         await files.File.WriteAllTextAsync(config, document.ToString(), token);
@@ -112,6 +126,31 @@ public sealed class PackageChannelFixtureTests
             ["OPENCODE_MCP_TEST_FEED"] = feed,
             ["OPENCODE_MCP_TEST_RID"] = fault == "rid" ? "unknown" : "linux-x64",
         });
+    }
+
+    private static void AddCredentials(XDocument document, string fault)
+    {
+        var source = new XElement(fault == "credential-source" ? "nuget.org" : "opencode-dotnet",
+            new XElement("add", new XAttribute("key", "Username"), new XAttribute("value", "actor")),
+            new XElement("add", new XAttribute("key", "ClearTextPassword"), new XAttribute("value", "credential")));
+        var credentials = new XElement("packageSourceCredentials", source);
+        if (fault == "credential-key")
+        {
+            source.Add(new XElement("add", new XAttribute("key", "ValidAuthenticationTypes"), new XAttribute("value", "basic")));
+        }
+        if (fault == "credential-attribute")
+        {
+            credentials.SetAttributeValue("extra", "refused");
+        }
+        if (fault == "credential-text")
+        {
+            source.Add("refused text");
+        }
+        document.Root?.Add(credentials);
+        if (fault == "credential-duplicate")
+        {
+            document.Root?.Add(new XElement(credentials));
+        }
     }
 
     [Test]

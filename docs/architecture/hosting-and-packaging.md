@@ -545,6 +545,13 @@ or packaged-startup claim.
   additionally requires public visibility for all seven packages, as seen by this repository's
   Actions access; a failing metadata request fails closed. NuGet.org acquisition uses
   `packaging/nuget-org.nuget.config`. Neither configuration acquires from the candidate reference feed.
+  On every OS, verification writes GitHub credentials directly into the owned configuration copy
+  with the XML API, taking `github.actor` and `GITHUB_TOKEN` only from environment variables:
+  `packageSourceCredentials` contains only `opencode-dotnet`, with exactly `Username` and
+  `ClearTextPassword` entries. No process receives the token as an argument, and nothing prints it.
+  The copy lives under `RUNNER_TEMP`, is never uploaded, and is deleted by always-run cleanup;
+  [the owned-acquisition contract](../engineering/testing-style.md#6-owned-processes-are-hermetic)
+  governs credential-shape refusal and credential removal when root deletion fails.
 - A lazy session-owned real copy of the selected SDK contains only its host, complete SDK directory,
   required Core runtime and matching hostfxr. Acquisition and native startup run without a shared
   ASP.NET Core runtime. Contents-only tests and the managed pass do not create that copy.
