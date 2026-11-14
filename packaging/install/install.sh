@@ -87,7 +87,12 @@ read_owner() {
     old_version=$(line "$data/current" 1); old_rid=$(line "$data/current" 2)
     valid_version "$old_version" || refuse "Install collision: $data."
     case $old_rid in linux-x64|linux-arm64|osx-x64|osx-arm64) ;; *) refuse "Install collision: $data." ;; esac
-    [ "$(wc -l < "$data/current" | tr -d ' ')" = 2 ] || refuse "Install collision: $data."
+    old_archive_hash=$(line "$data/current" 3)
+    case $(wc -l < "$data/current" | tr -d ' ') in
+        2) ;;
+        3) if [ "${#old_archive_hash}" != 64 ] || printf '%s' "$old_archive_hash" | grep -q '[^0-9a-f]'; then refuse "Install collision: $data."; fi ;;
+        *) refuse "Install collision: $data." ;;
+    esac
     payload=$data/versions/$old_version-$old_rid
     [ -d "$data/versions" ] && [ ! -L "$data/versions" ] || refuse "Install collision: $data."
     [ -L "$link" ] && [ "$(readlink "$link")" = "$payload/opencode-mcp" ] || refuse 'Installed files differ from the ownership record: opencode-mcp.'
@@ -380,22 +385,13 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     fi
     if [ -n "$resolved" ] && { [ "$owned" = 0 ] || [ "$resolved" != "$link" ]; }; then refuse "Install collision: $resolved."; fi
     prepare_path
-    phase=staging
-    trap finish 0
-    operation mkdir -p "$install" "$data/versions"
-    work=$(mktemp -d "$data/staging-XXXXXX") || failed
-    if [ "$owned" = 1 ]; then
-        for record in owner current inventory; do operation cp "$data/$record" "$work/old-$record"; done
-    fi
     archive=opencode-mcp-$version-$rid.tar.gz
     phase=download
     if [ -n "$source" ]; then
-        operation cp "$source/SHA256SUMS" "$work/SHA256SUMS"
-        operation cp "$source/$archive" "$work/$archive"
+        checksums=$(cat "$source/SHA256SUMS" 2>/dev/null) || failed
     else
         url=https://github.com/opencode-dotnet/opencode-mcp/releases/download/v$version
-        operation curl -fsSL "$url/SHA256SUMS" -o "$work/SHA256SUMS"
-        operation curl -fsSL "$url/$archive" -o "$work/$archive"
+        checksums=$(curl -fsSL "$url/SHA256SUMS" 2>/dev/null) || failed
     fi
     count=0; hash=
     while IFS= read -r entry || [ -n "$entry" ]; do
@@ -403,8 +399,26 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
             count=$((count + 1)); hash=${entry%"  $archive"}
             if [ "${#hash}" != 64 ] || printf '%s' "$hash" | grep -q '[^0-9a-f]'; then refuse "Invalid checksum entry: $archive."; fi ;;
         esac
-    done < "$work/SHA256SUMS"
+    done <<EOF
+$checksums
+EOF
     [ "$count" = 1 ] || refuse "Invalid checksum entry: $archive."
+    if [ "$owned" = 1 ] && [ "$version/$rid/$hash" = "$old_version/$old_rid/$old_archive_hash" ]; then
+        message "Already installed $version ($rid): $link"
+        message 'PATH unchanged.'
+        return 0
+    fi
+    phase=staging
+    trap finish 0
+    operation mkdir -p "$install" "$data/versions"
+    work=$(mktemp -d "$data/staging-XXXXXX") || failed
+    if [ "$owned" = 1 ]; then
+        for record in owner current inventory; do operation cp "$data/$record" "$work/old-$record"; done
+    fi
+    phase=download
+    if [ -n "$source" ]; then operation cp "$source/$archive" "$work/$archive"
+    else operation curl -fsSL "$url/$archive" -o "$work/$archive"
+    fi
     [ "$(digest "$work/$archive")" = "$hash" ] || refuse "SHA-256 mismatch: $archive."
     phase=staging
     operation mkdir "$work/payload"
@@ -423,7 +437,7 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     elif [ -e "$final" ] || [ -L "$final" ]; then refuse "Install collision: $final."
     fi
     printf 'opencode-mcp\n%s\n%s\n%s\n%s\n' "$data" "$link" "$bin_created" "$data_created" > "$work/owner" || failed
-    printf '%s\n%s\n' "$version" "$rid" > "$work/current" || failed
+    printf '%s\n%s\n%s\n' "$version" "$rid" "$hash" > "$work/current" || failed
     phase=activation
     if [ "$already" = 0 ]; then
         new_payload=1
@@ -452,9 +466,7 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     retained=$work
     operation rm -rf "$work"
     work=
-    if [ "$already" = 1 ]; then message "Already installed $version ($rid): $link"
-    else message "Installed $version ($rid): $link"
-    fi
+    message "Installed $version ($rid): $link"
     if [ "$path_changed" = 1 ]; then message 'PATH updated for future login sessions.'; else message 'PATH unchanged.'; fi
 }
 installer "$@"

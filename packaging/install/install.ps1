@@ -79,8 +79,9 @@ function Get-InstallerOwnership {
     $owner = @(Get-InstallerRecord 'owner')
     if ($owner.Count -ne 3 -or $owner[0] -cne 'opencode-mcp' -or -not [string]::Equals($owner[1], $state.Install, [StringComparison]::OrdinalIgnoreCase) -or $owner[2] -notin @('0','1')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     $selection = @(Get-InstallerRecord 'current')
-    if ($selection.Count -ne 2 -or -not (Test-InstallerVersion $selection[0]) -or $selection[1] -notin @('win-x64','win-arm64')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
+    if ($selection.Count -notin @(2,3) -or -not (Test-InstallerVersion $selection[0]) -or $selection[1] -notin @('win-x64','win-arm64') -or ($selection.Count -eq 3 -and $selection[2] -cnotmatch '\A[0-9a-f]{64}\z')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     $state.OldVersion = $selection[0]; $state.OldRid = $selection[1]
+    $state.OldArchiveHash = if ($selection.Count -eq 3) { $selection[2] } else { $null }
     $state.Created = $owner[2] -ceq '1'
     foreach ($entry in Get-ChildItem -LiteralPath $state.Private -Force) {
         if ($entry.Name -cnotin @('owner','current','inventory','path.record')) { $state.Refused = $true; throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($entry.Name)." }
@@ -168,6 +169,21 @@ function Test-InstallerCommandAccess {
     $handle = [IO.File]::Open($state.Command, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     $handle.Dispose()
 }
+function Invoke-InstallerDirectoryOperation($Source, $Destination, $Recursive = $false) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    for ($attempt = 0; ; $attempt++) {
+        try {
+            if ($Destination) { [IO.Directory]::Move($Source, $Destination) }
+            else { [IO.Directory]::Delete($Source, $Recursive) }
+            return
+        } catch {
+            $cause = $_.Exception.GetBaseException()
+            if (($cause -isnot [IO.IOException] -and $cause -isnot [UnauthorizedAccessException]) -or $cause.HResult -notin @(-2147024864, -2147024891) -or $attempt -ge 39 -or $clock.ElapsedMilliseconds -ge 9800) { throw }
+            Start-Sleep -Milliseconds 200
+            if ($clock.ElapsedMilliseconds -ge 10000) { throw }
+        }
+    }
+}
 function Invoke-InstallerCleanup {
     if (-not $state.Work) { return }
     $errors = @()
@@ -189,11 +205,11 @@ function Invoke-InstallerCleanup {
         if ($state.Activated) {
             try {
                 $state.Staging = Join-Path $state.Private ('removing-' + [guid]::NewGuid().ToString('N'))
-                [IO.Directory]::Move((Join-Path $state.Install 'current'), $state.Staging)
+                Invoke-InstallerDirectoryOperation (Join-Path $state.Install 'current') $state.Staging
             } catch { $errors += $_; $restoreRecords = $false }
         }
         if ($restoreRecords -and $state.Previous -and [IO.Directory]::Exists($state.Previous)) {
-            try { [IO.Directory]::Move($state.Previous, (Join-Path $state.Install 'current')) } catch { $errors += $_; $restoreRecords = $false }
+            try { Invoke-InstallerDirectoryOperation $state.Previous (Join-Path $state.Install 'current') } catch { $errors += $_; $restoreRecords = $false }
         }
         if ($state.RecordsStarted -and $restoreRecords) {
             foreach ($name in @('owner','current','inventory','path.record')) {
@@ -207,20 +223,48 @@ function Invoke-InstallerCleanup {
         }
     }
     if ($state.Staging -and [IO.Directory]::Exists($state.Staging)) {
-        try { [IO.Directory]::Delete($state.Staging, $true) } catch { $errors += $_ }
+        try { Invoke-InstallerDirectoryOperation -Source $state.Staging -Recursive $true } catch { $errors += $_ }
     }
     if ($errors.Count -eq 0 -and $state.Work -and [IO.Directory]::Exists($state.Work)) {
-        try { [IO.Directory]::Delete($state.Work, $true) } catch { $errors += $_ }
+        try { Invoke-InstallerDirectoryOperation -Source $state.Work -Recursive $true } catch { $errors += $_ }
     }
     if (-not $state.Success -and -not $state.Owned) {
         foreach ($directory in @($state.Private, $state.Install)) {
             if (($directory -ceq $state.Install -and -not $state.Created) -or -not [IO.Directory]::Exists($directory)) { continue }
-            try { if ([IO.Directory]::GetFileSystemEntries($directory).Length -eq 0) { [IO.Directory]::Delete($directory) } } catch { $errors += $_; $retained = $directory }
+            try { if ([IO.Directory]::GetFileSystemEntries($directory).Length -eq 0) { Invoke-InstallerDirectoryOperation $directory } } catch { $errors += $_; $retained = $directory }
         }
     }
     if ($errors.Count -gt 0) { 'opencode-mcp: Cleanup failed; retained owned directory: ' + $retained + '.' }
 }
+function Invoke-InstallerDownload($Name, $Destination) {
+    if ($state.Source) {
+        if ($Destination) { [IO.File]::Copy((Join-Path $state.Source $Name), $Destination) }
+        else { [IO.File]::ReadAllText((Join-Path $state.Source $Name)) }
+    } else {
+        if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault -and ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        }
+        $url = 'https://github.com/opencode-dotnet/opencode-mcp/releases/download/v' + $state.Version + '/' + $Name
+        if ($Destination) { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $Destination }
+        else {
+            $content = (Invoke-WebRequest -UseBasicParsing -Uri $url).Content
+            if ($content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($content) } else { $content }
+        }
+    }
+}
 function Invoke-InstallerInstall {
+    $archive = 'opencode-mcp-' + $state.Version + '-' + $state.Rid + '.zip'
+    $state.Phase = 'download'
+    $checksums = Invoke-InstallerDownload 'SHA256SUMS'
+    $entries = @($checksums -split '\r?\n' | Where-Object { $_.EndsWith('  ' + $archive, [StringComparison]::Ordinal) })
+    if ($entries.Count -ne 1 -or $entries[0] -cnotmatch ('\A[0-9a-f]{64}  ' + [regex]::Escape($archive) + '\z')) { $state.Refused = $true; throw "opencode-mcp: Invalid checksum entry: $archive." }
+    $archiveHash = $entries[0].Substring(0, 64)
+    if ($state.Owned -and $state.OldVersion -ceq $state.Version -and $state.OldRid -ceq $state.Rid -and $state.OldArchiveHash -ceq $archiveHash) {
+        $state.Success = $true
+        $state.Message = "Already installed $($state.Version) ($($state.Rid)): $($state.Command)"
+        $state.PathMessage = 'PATH unchanged.'
+        return
+    }
     $state.Phase = 'staging'
     $state.Work = Join-Path $state.Private ('temporary-' + [guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($state.Work) | Out-Null
@@ -228,21 +272,9 @@ function Invoke-InstallerInstall {
         $record = Join-Path $state.Private $name
         if ([IO.File]::Exists($record)) { [IO.File]::Copy($record, (Join-Path $state.Work ('old-' + $name))) }
     }
-    $archive = 'opencode-mcp-' + $state.Version + '-' + $state.Rid + '.zip'
     $state.Phase = 'download'
-    foreach ($name in @('SHA256SUMS', $archive)) {
-        $destination = Join-Path $state.Work $name
-        if ($state.Source) { [IO.File]::Copy((Join-Path $state.Source $name), $destination) }
-        else {
-            if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault -and ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
-                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-            }
-            Invoke-WebRequest -UseBasicParsing -Uri ('https://github.com/opencode-dotnet/opencode-mcp/releases/download/v' + $state.Version + '/' + $name) -OutFile $destination
-        }
-    }
-    $entries = @([IO.File]::ReadAllLines((Join-Path $state.Work 'SHA256SUMS')) | Where-Object { $_.EndsWith('  ' + $archive, [StringComparison]::Ordinal) })
-    if ($entries.Count -ne 1 -or $entries[0] -cnotmatch ('\A[0-9a-f]{64}  ' + [regex]::Escape($archive) + '\z')) { $state.Refused = $true; throw "opencode-mcp: Invalid checksum entry: $archive." }
-    if ((Get-InstallerHash (Join-Path $state.Work $archive)) -cne $entries[0].Substring(0, 64)) { $state.Refused = $true; throw "opencode-mcp: SHA-256 mismatch: $archive." }
+    Invoke-InstallerDownload $archive (Join-Path $state.Work $archive)
+    if ((Get-InstallerHash (Join-Path $state.Work $archive)) -cne $archiveHash) { $state.Refused = $true; throw "opencode-mcp: SHA-256 mismatch: $archive." }
     $state.Phase = 'staging'
     $staging = Join-Path $state.Private ('staging-' + [guid]::NewGuid().ToString('N'))
     $state.Staging = $staging
@@ -258,17 +290,17 @@ function Invoke-InstallerInstall {
         if ($state.Owned) {
             Test-InstallerCommandAccess
             $previous = Join-Path $state.Private ('previous-' + [guid]::NewGuid().ToString('N'))
-            [IO.Directory]::Move($current, $previous)
+            Invoke-InstallerDirectoryOperation $current $previous
             $state.Previous = $previous
         }
-        [IO.Directory]::Move($staging, $current)
+        Invoke-InstallerDirectoryOperation $staging $current
         $state.Staging = $null
         $state.Activated = $true
     }
     $encoding = New-Object Text.UTF8Encoding $false
     $created = if ($state.Created) { '1' } else { '0' }
     [IO.File]::WriteAllLines((Join-Path $state.Work 'owner'), @('opencode-mcp', $state.Install, $created), $encoding)
-    [IO.File]::WriteAllLines((Join-Path $state.Work 'current'), @($state.Version, $state.Rid), $encoding)
+    [IO.File]::WriteAllLines((Join-Path $state.Work 'current'), @($state.Version, $state.Rid, $archiveHash), $encoding)
     [IO.File]::WriteAllLines((Join-Path $state.Work 'inventory'), $inventory, $encoding)
     $state.RecordsStarted = $true
     foreach ($name in @('owner','current','inventory')) {
@@ -281,9 +313,8 @@ function Invoke-InstallerInstall {
     if ([IO.File]::Exists($pathRecord)) { Invoke-InstallerRecordReplace $pathRecord (Join-Path $state.Private 'path.record') }
     $state.Success = $true
     $state.Phase = 'cleanup'
-    if ($state.Previous) { $state.Retained = $state.Private; [IO.Directory]::Delete($state.Previous, $true); $state.Previous = $null }
-    if ($same) { $state.Message = "Already installed $($state.Version) ($($state.Rid)): $($state.Command)" }
-    else { $state.Message = "Installed $($state.Version) ($($state.Rid)): $($state.Command)" }
+    if ($state.Previous) { $state.Retained = $state.Private; Invoke-InstallerDirectoryOperation -Source $state.Previous -Recursive $true; $state.Previous = $null }
+    $state.Message = "Installed $($state.Version) ($($state.Rid)): $($state.Command)"
     $state.PathMessage = if ($state.PathChanged) { 'PATH updated for future login sessions.' } else { 'PATH unchanged.' }
 }
 function Invoke-InstallerUninstall {
@@ -292,12 +323,12 @@ function Invoke-InstallerUninstall {
     $current = Join-Path $state.Install 'current'
     $removing = Join-Path $state.Private ('removing-' + [guid]::NewGuid().ToString('N'))
     Test-InstallerCommandAccess
-    [IO.Directory]::Move($current, $removing)
+    Invoke-InstallerDirectoryOperation $current $removing
     $state.Phase = 'path'
     try { Invoke-InstallerPathRemoval }
     catch {
         $state.Refused = $false
-        try { [IO.Directory]::Move($removing, $current) }
+        try { Invoke-InstallerDirectoryOperation $removing $current }
         catch { $state.Removing = $removing }
         throw
     }
@@ -306,11 +337,11 @@ function Invoke-InstallerUninstall {
     $state.Retained = $state.Private
     [IO.File]::Delete((Join-Path $state.Private 'path.record'))
     foreach ($name in @('owner','current','inventory')) { [IO.File]::Delete((Join-Path $state.Private $name)) }
-    [IO.Directory]::Delete($removing, $true)
+    Invoke-InstallerDirectoryOperation -Source $removing -Recursive $true
     $state.Retained = $state.Private
-    if ([IO.Directory]::GetFileSystemEntries($state.Private).Length -eq 0) { [IO.Directory]::Delete($state.Private) }
+    if ([IO.Directory]::GetFileSystemEntries($state.Private).Length -eq 0) { Invoke-InstallerDirectoryOperation $state.Private }
     $state.Retained = $state.Install
-    if ($state.Created -and [IO.Directory]::GetFileSystemEntries($state.Install).Length -eq 0) { [IO.Directory]::Delete($state.Install) }
+    if ($state.Created -and [IO.Directory]::GetFileSystemEntries($state.Install).Length -eq 0) { Invoke-InstallerDirectoryOperation $state.Install }
     $state.Success = $true
     $state.Message = "Uninstalled opencode-mcp: $($state.Install)"
 }
