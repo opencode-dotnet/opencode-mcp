@@ -484,7 +484,6 @@ jobs:
           name: native-package-feed
           path: artifacts/feed/**
           retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
-          if-no-files-found: error
 
   release-assets:
     name: Assemble release assets
