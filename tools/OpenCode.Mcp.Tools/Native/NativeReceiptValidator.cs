@@ -7,21 +7,12 @@ internal sealed class NativeReceiptValidator(IFileSystem files, IUnixFileModes m
 {
     public async Task<IReadOnlyList<string>> ValidateAsync(NativeManifest manifest, string directory, CancellationToken token)
     {
-        var receipts = new List<NativeReceipt>();
-        var locations = new List<string>();
-        var store = new NativeEvidenceStore(files);
-        if (files.Directory.Exists(directory))
-        {
-            foreach (var path in files.Directory.EnumerateFiles(directory, "receipt.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
-            {
-                receipts.Add(await store.ReadAsync<NativeReceipt>(path, token).ConfigureAwait(false));
-                locations.Add(files.Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Receipt needs a parent directory."));
-            }
-        }
+        var locations = await new NativeEvidenceStore(files).ReadReceiptLocationsAsync(directory, token).ConfigureAwait(false);
+        var receipts = locations.Select(static location => location.Receipt).ToArray();
         var diagnostics = new List<string>(NativeReceiptPolicy.Diagnostics(manifest, receipts));
-        for (var index = 0; index < receipts.Count; index++)
+        foreach (var location in locations)
         {
-            diagnostics.AddRange(await ValidateArtifactsAsync(receipts[index], locations[index], token).ConfigureAwait(false));
+            diagnostics.AddRange(await ValidateArtifactsAsync(location.Receipt, location.Directory, token).ConfigureAwait(false));
         }
         return diagnostics.AsReadOnly();
     }

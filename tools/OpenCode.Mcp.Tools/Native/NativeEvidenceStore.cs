@@ -44,4 +44,50 @@ internal sealed class NativeEvidenceStore(IFileSystem files)
 
     public async Task<string> DigestAsync(string path, CancellationToken token) =>
         Convert.ToHexStringLower(SHA256.HashData(await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false)));
+
+    public async Task<IReadOnlyList<NativeReceiptLocation>> ReadReceiptLocationsAsync(string directory, CancellationToken token)
+    {
+        var locations = new List<NativeReceiptLocation>();
+        if (files.Directory.Exists(directory))
+        {
+            foreach (var path in files.Directory.EnumerateFiles(directory, "receipt.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+            {
+                var receipt = await ReadAsync<NativeReceipt>(path, token).ConfigureAwait(false);
+                locations.Add(new NativeReceiptLocation(receipt, files.Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Receipt needs a parent directory.")));
+            }
+        }
+        return locations.AsReadOnly();
+    }
+
+    public bool IsAbsentOrEmptyDirectory(string directory) =>
+        !files.File.Exists(directory) && (!files.Directory.Exists(directory) || !files.Directory.EnumerateFileSystemEntries(directory).Any());
+
+    public void DeleteOwnedDirectory(string directory)
+    {
+        if (files.Directory.Exists(directory))
+        {
+            files.Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    public async Task WriteOwnedDirectoryAsync(string directory, Func<Task> operation)
+    {
+        try
+        {
+            files.Directory.CreateDirectory(directory);
+            await operation().ConfigureAwait(false);
+        }
+        catch (Exception refusal)
+        {
+            try
+            {
+                DeleteOwnedDirectory(directory);
+            }
+            catch (Exception cleanup)
+            {
+                throw new AggregateException(refusal, cleanup);
+            }
+            throw;
+        }
+    }
 }

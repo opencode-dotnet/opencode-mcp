@@ -5,6 +5,35 @@ namespace OpenCode.Mcp.Tools.Tests.Native;
 public sealed class NativeArgumentsTests
 {
     [Test]
+    public async Task Parse_Should_Select_Assets_And_Require_All_Four_Inputs()
+    {
+        await Assert.That(NativeArguments.Parse(["assets", "--receipts", "receipt tree", "--evidence", "evidence tree", "--output", "release assets", "--version", "exact version"]))
+            .IsEqualTo(new NativeCommand("assets", null, "release assets", null, null, "receipt tree", Evidence: "evidence tree", Version: "exact version"));
+        await Assert.That(() => NativeArguments.Parse(["assets"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --receipts.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["assets", "--receipts", "receipts"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --evidence.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["assets", "--receipts", "receipts", "--evidence", "evidence"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --output.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["assets", "--receipts", "receipts", "--evidence", "evidence", "--output", "output"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --version.", StringComparison.Ordinal);
+        foreach (var name in new[] { "--receipts", "--evidence", "--output", "--version" })
+        {
+            await Assert.That(() => NativeArguments.Parse(["assets", name, "one", name, "two"]))
+                .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: duplicate " + name + ".", StringComparison.Ordinal);
+            await Assert.That(() => NativeArguments.Parse(["assets", name]))
+                .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing value for " + name + ".", StringComparison.Ordinal);
+            await Assert.That(() => NativeArguments.Parse(["assets", name, "--output", "out"]))
+                .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing value for " + name + ".", StringComparison.Ordinal);
+        }
+        foreach (var name in new[] { "--rid", "--manifest", "--unknown" })
+        {
+            await Assert.That(() => NativeArguments.Parse(["assets", name, "value"]))
+                .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: unknown option " + name + " for assets.", StringComparison.Ordinal);
+        }
+    }
+
+    [Test]
     public async Task Parse_Should_Select_Root_Packing_And_Require_Both_Directories()
     {
         await Assert.That(NativeArguments.Parse(["pack-root", "--receipts", "completed evidence", "--feed", "complete feed"]))
@@ -31,7 +60,7 @@ public sealed class NativeArgumentsTests
         await Assert.That(() => NativeArguments.Parse(["pack-child", "--rid", "win-x64"]))
             .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --evidence.", StringComparison.Ordinal);
         await Assert.That(() => NativeArguments.Parse([])).ThrowsExactly<InvalidOperationException>()
-            .WithMessage("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root or snapshot.", StringComparison.Ordinal);
+            .WithMessage("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root, assets or snapshot.", StringComparison.Ordinal);
     }
 
     [Test]

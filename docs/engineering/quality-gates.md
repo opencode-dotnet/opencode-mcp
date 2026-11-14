@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-10
+Date: 2026-11-14
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -223,7 +223,9 @@ or dependency to that job. Local Windows evidence proves neither hosted executio
 support, package acquisition or installation.
 
 The `Native` workflow uses prepare → Linux builder/Windows/macOS build jobs → Linux host proof
-jobs → native validation → packages → one `consumer` leg per manifest row. Job guards are 30 minutes
+jobs → native validation. After native validation, `packages` builds the complete feed and its
+consumer legs run; independently, `release-assets` assembles the release asset set. The release-assets
+job has a 30-minute guard and uses the preparation job's exact SDK. Other job guards are 30 minutes
 for preparation and validation, 150 minutes for builds, and 90 minutes for Linux proof, packages and
 consumers. Every step invoking tests has a 35-minute guard; tool-owned test processes have a
 30-minute outer guard around the 25-minute session bound. Listing steps have a five-minute guard
@@ -232,8 +234,10 @@ phase result directories. Every job owns `DOTNET_INSTALL_DIR` under `runner.temp
 `TEMP` and `TMP` there before SDK setup. Linux proof runs on hosts, not in the builder container,
 and executes downloaded binaries only from the verified extracted tar.
 
-Evidence, test results, symbols and process snapshots have unique per-job/per-RID artifact names
-and seven-day retention. Completed receipts are uploaded only after successful proof; validation
+Every `native-*` artifact has 90-day retention on `workflow_dispatch` runs and seven-day retention
+otherwise. This includes evidence, symbols, test results, package feeds, release assets and process
+snapshots; upload failures remain blocking. Artifact names are unique per job/per RID.
+Completed receipts are uploaded only after successful proof; validation
 has no `always()` override and starts only when all needed jobs succeed. Both workflows prebuild
 the file-based entry in a normal step before tests. Process snapshots run with `always()` and
 `--no-build` through the shared `snapshot` subcommand in both workflows. Upload errors remain
@@ -293,9 +297,9 @@ path and SHA-256 equality. The `packages` job downloads its own run's six comple
 packs and validates the feed, runs `PackageContentsTests` with `/*/*/PackageContentsTests/*`, and
 uploads `native-package-feed` only on success. Its failure listing uses the same class filter.
 It always records a process snapshot and uploads package test results. A failed test gets a
-five-minute listing step, not a rerun. Native, package and all six consumer legs' success at the
-pull request's head are extra acceptance conditions before queue entry; `CI result` remains the
-only required check.
+five-minute listing step, not a rerun. Native validation, package inspection, release-asset assembly
+and all six consumer legs must succeed at the pull request's head before queue entry. `CI result`
+remains the only required check.
 Contents-only acceptance makes no acquisition or packaged-startup claim. The complete Package
 category additionally exercises cold exact-version DNX, owned tool-path/shim startup, the installed
 HTTP entry, missing-host-implementation refusal on both routes, complete payload equality, observed
@@ -310,9 +314,15 @@ directory and `OPENCODE_MCP_TEST_RID` set to its matrix RID. A failed test after
 gets the same category's test listing under a five-minute guard unless cancelled, never a rerun.
 Each leg always records the prebuilt tool's post-test process snapshot and uploads
 `native-process-snapshot-consumer-<RID>` and `native-package-test-results-consumer-<RID>`, with
-seven-day retention and missing files treated as errors. Package results come only from
-`artifacts/test-results/package/**`; owned homes, caches, private SDK copies and the feed are not
-uploaded by consumers.
+retention governed by the native artifact rule above and missing files treated as errors. Package
+results come only from `artifacts/test-results/package/**`; owned homes, caches, private SDK copies
+and the feed are not uploaded by consumers.
+
+Release-asset acceptance requires exactly six version-named archives and `SHA256SUMS`. Each archive
+is byte-identical to its staged input and matches its receipt digest; checksum lines follow manifest
+order. The pull request's hosted `Native` run proves assembly and upload, not publication, installer
+behaviour or a live-channel download. Dispatch retention is confirmed on an authorized manual
+candidate run.
 
 ### Linux builder verification
 
@@ -474,6 +484,9 @@ not parse workflow YAML.
 A prerequisite that is missing or coverage that is unavailable is a visible blocker, never a silent
 skip and never a green support claim. Native and package lanes are a separate manifest-driven
 workflow over the six approved RIDs; `../architecture/hosting-and-packaging.md` owns it.
+Its release-asset acceptance and event-dependent retention follow the
+[native staging and package-pass rules](#native-verification-and-staging) above; managed CI's
+triggers, permissions and retention are unchanged.
 
 ### Session timeout and hang dump
 

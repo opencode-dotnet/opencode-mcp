@@ -8,7 +8,7 @@ using OpenCode.Mcp.Tools.Tests.Support;
 
 namespace OpenCode.Mcp.Tools.Tests.Native;
 
-public sealed class NativeApplicationTests
+public sealed partial class NativeApplicationTests
 {
     [Test]
     public async Task RunAsync_Should_Remove_The_Owned_Feed_When_Reporting_Its_Result_Fails(CancellationToken token)
