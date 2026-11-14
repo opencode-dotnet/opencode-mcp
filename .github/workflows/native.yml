@@ -716,6 +716,7 @@ jobs:
               } finally { $process.Dispose() }
             }
             function Assert-Result($Result, $Code, $Lines) {
+              if ($Result.Code -ne $Code) { Write-Host 'Installer output:'; foreach ($line in @($Result.Lines)) { Write-Host "  $line" } }
               Assert-Equal $Result.Code $Code 'Installer exit code'
               Assert-Equal $Result.Lines $Lines 'Complete ordered installer output'
             }
@@ -1395,7 +1396,7 @@ jobs:
                 if ($cleanup.Code -ne 0) { $cleanupErrors += ($cleanup.Lines -join "`n") }
               }
               foreach ($path in $snapshots.Keys) {
-                if ($null -eq $snapshots[$path]) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path } }
+                if ($null -eq $snapshots[$path]) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
                 else { [IO.File]::WriteAllBytes($path, $snapshots[$path]) }
               }
               if ($windows) { Restore-RawPath; $userKey.Dispose() }
