@@ -57,7 +57,7 @@ verify_payload() {
         fi
     done < "$data/inventory"
     actual=$(inventory "$payload") || refuse 'Installed files differ from the ownership record: current.'
-    recorded=$(cat "$data/inventory")
+    recorded=$(cat "$data/inventory" 2>/dev/null)
     if [ "$actual" != "$recorded" ]; then
         relative=$(printf '%s\n' "$actual" | while IFS= read -r entry; do
             if ! grep -Fx -e "$entry" "$data/inventory" >/dev/null; then printf '%s\n' "${entry#*  }"; break; fi
@@ -174,12 +174,12 @@ write_path() {
           printf '# <<< opencode-mcp %s <<<\n' "$data"
         } > "$work/block" || failed
     fi
-    { printf '%s\n%s\n' "$path_file" "$path_kind"; cat "$work/block"; } > "$work/path.record" || failed
+    { printf '%s\n%s\n' "$path_file" "$path_kind"; cat "$work/block" 2>/dev/null; } > "$work/path.record" || failed
     operation mkdir -p "$(dirname "$path_file")"
-    path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX") || failed
+    path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX" 2>/dev/null) || failed
     if [ -f "$path_file" ]; then operation cp -p "$path_file" "$path_temp"; fi
     if [ -s "$path_temp" ] && [ -n "$(tail -c 1 "$path_temp")" ]; then printf '\n' >> "$path_temp" || failed; fi
-    cat "$work/block" >> "$path_temp" || failed
+    cat "$work/block" 2>/dev/null >> "$path_temp" || failed
     path_written=1
     operation mv -f "$path_temp" "$path_file"
     path_temp=
@@ -188,7 +188,7 @@ remove_path() {
     [ "$path_owned" = 1 ] || return 0
     if [ "$path_kind" = fish ]; then operation rm "$path_file"
     else
-        path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX") || failed
+        path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX" 2>/dev/null) || failed
         operation cp -p "$path_file" "$path_temp"
         { dd if="$path_file" bs=1 count="$path_start" 2>/dev/null
           dd if="$path_file" bs=1 skip="$((path_start + path_size))" 2>/dev/null
@@ -223,7 +223,7 @@ finish() {
             ln -s "$payload/opencode-mcp" "$link" 2>/dev/null || cleanup_error=1
         else
             block_status=$?
-            if [ "$block_status" = 1 ]; then rm -f "$data/path.record" || cleanup_error=1
+            if [ "$block_status" = 1 ]; then rm -f "$data/path.record" 2>/dev/null || cleanup_error=1
             else cleanup_error=1
             fi
         fi
@@ -239,13 +239,13 @@ finish() {
                 fi
             else cleanup_error=1
             fi
-        elif [ "$owned" = 0 ] && [ -L "$link" ] && [ "$(readlink "$link")" = "$final/opencode-mcp" ]; then rm -f "$link" || cleanup_error=1
+        elif [ "$owned" = 0 ] && [ -L "$link" ] && [ "$(readlink "$link")" = "$final/opencode-mcp" ]; then rm -f "$link" 2>/dev/null || cleanup_error=1
         fi
     fi
     if [ "$result" -ne 0 ] && [ "$phase" != cleanup ] && [ "$records_started" = 1 ]; then
         for record in owner current inventory; do
             if [ "$owned" = 1 ]; then mv -f "$work/old-$record" "$data/$record" 2>/dev/null || cleanup_error=1
-            else rm -f "$data/$record" || cleanup_error=1
+            else rm -f "$data/$record" 2>/dev/null || cleanup_error=1
             fi
         done
     fi
@@ -256,24 +256,24 @@ finish() {
         elif [ ! -f "$data/path.record" ]; then cleanup_error=1
         fi
         if path_block_present; then
-            if (trap '[ -z "$path_temp" ] || rm -f "$path_temp"' 0; path_preflight; remove_path) 2>/dev/null; then rm -f "$data/path.record" || cleanup_error=1
+            if (trap '[ -z "$path_temp" ] || rm -f "$path_temp"' 0; path_preflight; remove_path) 2>/dev/null; then rm -f "$data/path.record" 2>/dev/null || cleanup_error=1
             else cleanup_error=1
             fi
         else
             block_status=$?
-            if [ "$block_status" = 1 ]; then rm -f "$data/path.record" || cleanup_error=1
+            if [ "$block_status" = 1 ]; then rm -f "$data/path.record" 2>/dev/null || cleanup_error=1
             else cleanup_error=1
             fi
         fi
     fi
-    [ -z "$path_temp" ] || rm -f "$path_temp" || cleanup_error=1
-    [ -z "$link_temp" ] || rm -f "$link_temp" || cleanup_error=1
+    [ -z "$path_temp" ] || rm -f "$path_temp" 2>/dev/null || cleanup_error=1
+    [ -z "$link_temp" ] || rm -f "$link_temp" 2>/dev/null || cleanup_error=1
     if [ "$cleanup_error" = 0 ] && [ "$result" -ne 0 ] && [ "$phase" != cleanup ] && [ "$new_payload" = 1 ]; then
         if [ -L "$link" ] && [ "$(readlink "$link")" = "$final/opencode-mcp" ]; then cleanup_error=1
-        else rm -rf "$final" || cleanup_error=1
+        else rm -rf "$final" 2>/dev/null || cleanup_error=1
         fi
     fi
-    if [ "$cleanup_error" = 0 ] && [ -n "$work" ]; then rm -rf "$work" || { cleanup_error=1; retained=$work; }; fi
+    if [ "$cleanup_error" = 0 ] && [ -n "$work" ]; then rm -rf "$work" 2>/dev/null || { cleanup_error=1; retained=$work; }; fi
     if [ "$result" -ne 0 ] && [ "$owned" = 0 ]; then
         [ ! -d "$data/versions" ] || rmdir "$data/versions" 2>/dev/null || { cleanup_error=1; retained=$data/versions; }
         [ "$data_created" = 0 ] || [ ! -d "$data" ] || rmdir "$data" 2>/dev/null || { cleanup_error=1; retained=$data; }
@@ -360,7 +360,7 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
         trap finish 0
         operation rm "$link"
         phase=path
-        work=$(mktemp -d "$data/staging-XXXXXX") || failed
+        work=$(mktemp -d "$data/staging-XXXXXX" 2>/dev/null) || failed
         remove_path
         phase=cleanup; retained=$data
         operation rm -f "$data/path.record"
@@ -411,7 +411,7 @@ EOF
     phase=staging
     trap finish 0
     operation mkdir -p "$install" "$data/versions"
-    work=$(mktemp -d "$data/staging-XXXXXX") || failed
+    work=$(mktemp -d "$data/staging-XXXXXX" 2>/dev/null) || failed
     if [ "$owned" = 1 ]; then
         for record in owner current inventory; do operation cp "$data/$record" "$work/old-$record"; done
     fi
