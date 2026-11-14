@@ -80,6 +80,10 @@ Every feed publication and GitHub Release requires his own word with the exact t
 commit, Native run ID, version, filenames and digests. Approval of a candidate or dry run authorizes
 no publication.
 
+Precondition: no `OpenCodeDotNet.Mcp` or `OpenCodeDotNet.Mcp.*` package exists on GitHub Packages
+except those `release.yml` published, because the absence check sees only packages this
+repository's Actions can access.
+
 Promote GitHub Packages first, make all seven packages public with the maintainer's explicit
 irreversible-visibility approval, and verify that channel. Ask separately for NuGet.org publication
 with the successful GitHub Packages verification run ID. Ask separately for the GitHub Release with
@@ -102,6 +106,9 @@ missing-file recovery or abandonment. Never retry a push automatically or reuse 
 a published version. Expired candidate artifacts require abandonment and a new version. The `files`
 input recovers feed pushes only; a partial draft release is left for the maintainer's decision, not
 automatically resumed or cleaned up.
+The release job creates the tag at the candidate commit before creating the draft. A failure after
+tag creation leaves the tag (and possibly a draft) for the maintainer's decision; the next attempt
+for that version refuses until he decides. No tag is automatically deleted.
 
 ## Documentation sessions
 

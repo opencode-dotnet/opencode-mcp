@@ -59,7 +59,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-      packages: read
+      packages: read # GitHub Packages absence check for github-packages and dry-run targets.
     outputs:
       feed: ${{ steps.inventory.outputs.feed }}
       assets: ${{ steps.inventory.outputs.assets }}
@@ -250,6 +250,7 @@ jobs:
             $encoded = [Uri]::EscapeDataString($id)
             for ($page = 1; ; $page++) {
               $response = Get-Response "https://api.github.com/orgs/opencode-dotnet/packages/nuget/$encoded/versions?per_page=100&page=$page" $env:API_TOKEN
+              # Package not found. also covers packages this repository's Actions cannot see.
               $versions = Read-GitHub $response 'Package not found.'
               if ($null -eq $versions) { return $false }
               if ($versions -isnot [array]) { throw 'Malformed GitHub package-version response.' }
@@ -291,7 +292,11 @@ jobs:
               if ($exists) { $present += $names[$i] } else { $missing += $names[$i] }
             }
             Write-Output "$feed present: $($present -join ', ')"
-            Write-Output "$feed missing: $($missing -join ', ')"
+            $record = if ($feed -ceq 'github-packages') {
+              "$feed absent as seen by this repository's Actions access: $($missing -join ', ')"
+            } else { "$feed missing: $($missing -join ', ')" }
+            Write-Output $record
+            $record >> $env:GITHUB_STEP_SUMMARY
             if (@($selected | Where-Object { $present -ccontains $_ }).Count) { throw "$feed already contains a selected version." }
             $root = $names[-1]
             if ($selection.Contains($root)) {
@@ -530,10 +535,10 @@ jobs:
           $latest = if ($preview) { 'false' } else { 'true' }
           $body = @{ tag_name = $tag; target_commitish = $env:COMMIT; name = $tag; body = $env:RELEASE_NOTES;
             draft = $true; prerelease = $preview; make_latest = $latest; generate_release_notes = $false } | ConvertTo-Json
-          $encodedTag = [Uri]::EscapeDataString($tag)
-          $ref = Invoke-WebRequest -Uri "$api/git/ref/tags/$encodedTag" -Headers $headers -SkipHttpErrorCheck
-          if ($ref.StatusCode -eq 200) { throw 'The release tag already exists.' }
-          if ($ref.StatusCode -ne 404 -or ($ref.Content | ConvertFrom-Json).message -cne 'Not Found') { throw "Release tag absence request failed: HTTP $($ref.StatusCode)." }
+          $tagBody = @{ ref = "refs/tags/$tag"; sha = $env:COMMIT } | ConvertTo-Json
+          $ref = Invoke-WebRequest -Uri "$api/git/refs" -Headers $headers -Method Post -ContentType 'application/json' -Body $tagBody -SkipHttpErrorCheck
+          if ($ref.StatusCode -eq 422) { throw 'Release tag creation refused: HTTP 422 (the ref may already exist).' }
+          if ($ref.StatusCode -ne 201) { throw "Release tag creation failed: HTTP $($ref.StatusCode)." }
           $draft = Invoke-RestMethod -Uri "$api/releases" -Headers $headers -Method Post -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($body))
           if ($draft.draft -ne $true -or $draft.tag_name -cne $tag -or $draft.target_commitish -cne $env:COMMIT -or
               $draft.body -cne $env:RELEASE_NOTES -or $draft.prerelease -ne $preview) { throw 'Created draft differs from the approved release identity.' }
