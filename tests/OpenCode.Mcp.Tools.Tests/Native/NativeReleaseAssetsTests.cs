@@ -55,6 +55,10 @@ public sealed class NativeReleaseAssetsTests
         var scenario = await NativeReleaseAssetsScenario.CreateAsync(token);
         var rows = scenario.Manifest.Runtimes;
         scenario.Manifest = scenario.Manifest with { Runtimes = [rows[2], rows[0], rows[5], rows[1], rows[4], rows[3]] };
+        await Assert.That(scenario.Manifest.Runtimes.Select(static runtime => runtime.Rid))
+            .IsEquivalentTo(["linux-x64", "win-x64", "osx-arm64", "win-arm64", "osx-x64", "linux-arm64"], CollectionOrdering.Matching);
+        await Assert.That(scenario.Manifest.Runtimes.Select(static runtime => runtime.Rid).Order(StringComparer.Ordinal))
+            .IsEquivalentTo(["linux-arm64", "linux-x64", "osx-arm64", "osx-x64", "win-arm64", "win-x64"], CollectionOrdering.Matching);
         using var output = new StringWriter(CultureInfo.InvariantCulture);
         await new NativeReleaseAssets(scenario.Files, scenario.Builder.Native.Modes).BuildAsync(scenario.Request, output, token);
         var prefix = "opencode-mcp-" + scenario.Version + "-";
@@ -113,6 +117,26 @@ public sealed class NativeReleaseAssetsTests
         {
             await Assert.That(await scenario.Files.File.ReadAllBytesAsync(scenario.Archive(rid), token)).IsEquivalentTo(scenario.Archives[rid], CollectionOrdering.Matching);
         }
+        await scenario.Files.File.WriteAllTextAsync(scenario.Output, "foreign", token);
+        await Assert.That(() => new NativeReleaseAssets(scenario.Files, scenario.Builder.Native.Modes).BuildAsync(scenario.Request with { Version = "different" }, output, token))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("win-x64: Receipt version must be different.\nwin-arm64: Receipt version must be different.\n"
+                + "linux-x64: Receipt version must be different.\nlinux-arm64: Receipt version must be different.\nosx-x64: Receipt version must be different.\nosx-arm64: Receipt version must be different.", StringComparison.Ordinal);
+        await Assert.That(await scenario.Files.File.ReadAllTextAsync(scenario.Output, token)).IsEqualTo("foreign");
+        await Assert.That(output.ToString()).IsEmpty();
+    }
+
+    [Test]
+    public async Task BuildAsync_Should_Require_The_Requested_Version_Before_Validating_Evidence(CancellationToken token)
+    {
+        var scenario = await NativeReleaseAssetsScenario.CreateAsync(token);
+        foreach (var rid in Rids)
+        {
+            await scenario.WriteReceiptAsync(scenario.Receipt(rid) with { Version = "different" }, token);
+        }
+        await scenario.Files.File.WriteAllTextAsync(scenario.Archive("win-x64"), "altered", token);
+        await AssertInputRefusalAsync(scenario, "win-x64: Receipt version must be " + scenario.Version + ".\nwin-arm64: Receipt version must be " + scenario.Version
+            + ".\nlinux-x64: Receipt version must be " + scenario.Version + ".\nlinux-arm64: Receipt version must be " + scenario.Version
+            + ".\nosx-x64: Receipt version must be " + scenario.Version + ".\nosx-arm64: Receipt version must be " + scenario.Version + ".", token);
     }
 
     [Test]

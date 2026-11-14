@@ -19,6 +19,10 @@ public sealed partial class NativeApplicationTests
         {
             scenario.Files.Directory.Delete(scenario.Evidence, recursive: true);
         }
+        else
+        {
+            await scenario.DetachReceiptsAsync(token);
+        }
         using var output = new StringWriter(CultureInfo.InvariantCulture);
         using var errors = new StringWriter(CultureInfo.InvariantCulture);
         var application = new NativeApplication(scenario.Files, scenario.Runner, new FixtureHostReader(scenario.Build.Host), scenario.Builder.Native.Modes, output, errors);
