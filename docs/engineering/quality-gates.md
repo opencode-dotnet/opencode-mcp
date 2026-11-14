@@ -318,11 +318,27 @@ retention governed by the native artifact rule above and missing files treated a
 results come only from `artifacts/test-results/package/**`; owned homes, caches, private SDK copies
 and the feed are not uploaded by consumers.
 
-Release-asset acceptance requires exactly six version-named archives and `SHA256SUMS`. Each archive
-is byte-identical to its staged input and matches its receipt digest; checksum lines follow manifest
-order. The pull request's hosted `Native` run proves assembly and upload, not publication, installer
+Release-asset acceptance requires exactly six version-named archives, `install.sh`, `install.ps1`
+and `SHA256SUMS`. Archives are byte-identical to staged inputs and match receipt digests; scripts
+are unchanged committed bytes with matching default versions. Eight checksum lines follow manifest
+archive order, then shell and PowerShell scripts. The pull request's hosted `Native` run proves assembly and upload, not publication, installer
 behaviour or a live-channel download. Dispatch retention is confirmed on an authorized manual
 candidate run.
+
+### Installer pass
+
+Installer acceptance is a separate hosted pass over every manifest RID. It consumes that Native run's
+release-assets artifact through the installers' local-source option, checks whole-payload equality,
+runs the existing executable suite against the installed native command, and proves owned uninstall
+and PATH reversal. Windows additionally exercises PowerShell 5.1 and 7.
+
+Lifecycle tests always select an owned installation directory and never run on developer
+workstations. Pinned ShellCheck and PSScriptAnalyzer are CI-only prerequisites; linter findings and
+missing prerequisites fail acceptance. Installer and linter jobs must both succeed at the reviewed
+head before queue entry; they add no new required GitHub check and do not weaken `CI result`.
+The [install-script contract](../architecture/hosting-and-packaging.md#install-scripts) owns options,
+layout, messages and version identity. Existing test-step/listing guards, Native retention and
+process ownership rules remain in force.
 
 ### Publication pass
 
@@ -347,6 +363,10 @@ published channel. Feed acceptance uses cold global-tool and DNX acquisition and
 running-payload path/SHA-256 equality with candidate evidence. NuGet.org's repository-signed package
 envelope is not compared with the original package digest. Release acceptance checks downloaded archive
 hashes against both the published checksum file and independent candidate receipts before execution.
+
+Release-channel acceptance additionally executes the published installer bytes against the
+version-pinned HTTPS release source, after comparing script digests with the candidate. Candidate-local
+installer acceptance does not establish live publication or live download availability.
 
 Secret-bearing channel jobs retain the existing test guards but upload only selected
 credential-redacted TRX and process snapshots. Credential files, acquisition stores and memory dumps

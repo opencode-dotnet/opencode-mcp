@@ -274,17 +274,22 @@ not a second distributed product. The entry is compiled separately from the solu
   matching completed staging evidence. The evidence root contains `native-complete-<RID>`
   directories; the receipt search root may be the same directory or a separate consolidated receipt
   tree. Each staged archive has its canonical RID basename and passes the existing artifact
-  validator. Input refusals precede output ownership.
+  validator. The checkout's `packaging/install/install.sh` and `install.ps1` must both exist with
+  exactly one whole-line default-version assignment matching the requested version (see
+  [install scripts](#install-scripts)). Input refusals precede output ownership.
 
   The output directory must be absent or empty; a file or non-empty directory is refused without
   modification. The command owns an accepted directory and copies the six staged archives to
   `opencode-mcp-<version>-<RID>.zip` or `.tar.gz`, without rebuilding or re-archiving. Each copied
-  archive's SHA-256 must equal its receipt.
+  archive's SHA-256 must equal its receipt. It then copies the two installer scripts unchanged,
+  shell first, and checks each copy's SHA-256 against its captured source bytes.
 
-  `SHA256SUMS` contains exactly six lines in manifest order: lowercase SHA-256, two ASCII spaces,
+  The nine-file output comprises six archives, `install.sh`, `install.ps1` and `SHA256SUMS`.
+  `SHA256SUMS` contains exactly eight lines: six archives in manifest order, then `install.sh`,
+  then `install.ps1`. Each line has lowercase SHA-256, two ASCII spaces,
   release basename and LF, encoded as UTF-8 without BOM. It has no self-entry. Any refusal after
   ownership deletes the output; a cleanup failure follows the original refusal. Success prints the
-  output directory, the six archive names and SHA-256 values in manifest order, then the checksum
+  output directory, the eight asset names and SHA-256 values in that same order, then the checksum
   file's name and SHA-256.
 - `inspect --rid <RID> --path <executable-or-directory>` inspects only the supplied image when the
   path is a file. A directory also scans its companion files recursively. The framework-dependent
@@ -554,6 +559,15 @@ Publication consumes the candidate's seven original packages and release-assets 
 rebuilding, repacking, re-archiving or renaming. A candidate's workflow tree must equal master's at
 publication.
 
+The `publication` command resolves installer sources from the candidate checkout's `packaging/install`.
+After native receipt, candidate identity and feed validation, it requires exactly six versioned
+archives, `install.sh`, `install.ps1` and `SHA256SUMS`, with no extra directory. Archives match
+their receipts; scripts are byte-equal to the committed installers and their default-version
+projections match the requested version. Checksum bytes are rebuilt independently, in the assembly
+order and format above. Inputs remain unchanged. Script identity refuses with
+`<name>: Release script differs from committed installer.`; checksum identity refuses with
+`SHA256SUMS differs from the ordered release checksums.`
+
 NuGet.org repository signing changes the package envelope. Real-channel identity is therefore
 established through the running native payload's complete paths and SHA-256 values, not downloaded
 package-envelope equality.
@@ -568,12 +582,164 @@ surface is a separate delivery increment after native and package proof, never a
   commands, configuration, or data. System packages and some macOS installer scopes need documented
   privilege. No installer silently configures an MCP client or starts a daemon.
 - Channel versions are projections of one release identity with deterministic, monotonic upgrade
-  ordering. Before installer authoring, the MSI tool and its terms are approved and the platform
-  version conversion is fixed and tested.
+  ordering. The MSI tool and its terms are approved before MSI authoring; the version conversion of each installer surface is fixed and tested before that surface is authored.
+  The install scripts install the SemVer release version unchanged. Their version conversion is the identity; installer acceptance tests preserve the exact version, including prerelease and build metadata.
 - Signing and notarization, registry namespaces and prefix authority, real download URLs,
   package-manager submissions, and maintained signed APT or DNF repositories are separately
   authorized release operations. A checksum does not authenticate a publisher; final hashes follow
   every byte-changing signing step. Native debug symbols do not enter a managed symbol package.
+
+### Install scripts
+
+The release includes POSIX-shell and Windows PowerShell installers, copied unchanged from the
+candidate checkout. Their embedded default versions are checked projections of the committed
+product version. Explicit versions select immutable, version-pinned release assets; neither
+installer resolves “latest.” Each script contains exactly one whole line that assigns its
+version variable, without leading whitespace; a longer variable name or a comment is not such a
+line:
+
+```sh
+OPENCODE_MCP_RELEASE_VERSION='<version>'
+```
+
+```powershell
+$OpenCodeMcpReleaseVersion = '<version>'
+```
+
+Assembly and publication require the exact whole-line form above for the requested version.
+Missing or mismatched sources produce, in shell-then-PowerShell order,
+`Missing installer script: <name>.` or `Installer default version must be <version>: <name>.`.
+Neither operation stamps or rewrites the source.
+
+#### Options and defaults
+
+| POSIX spelling | PowerShell spelling | Contract/default |
+|---|---|---|
+| `--version <version>` | `-Version <version>` | Embedded committed release-version projection. Exact SemVer 2.0.0 without leading `v`; no normalization or suffix removal. |
+| `--install-dir <directory>` | `-InstallDir <directory>` | Unix `${XDG_BIN_HOME:-$HOME/.local/bin}` holds the command link; Windows `%LOCALAPPDATA%\Programs\opencode-mcp` holds the installation tree. |
+| `--data-dir <directory>` | None | Unix `${XDG_DATA_HOME:-$HOME/.local/share}/opencode-mcp` holds the private payload and records. No Windows counterpart. |
+| `--add-to-path` | `-AddToPath` | False. Explicit consent to persistent user-scope PATH modification. |
+| `--uninstall` | `-Uninstall` | False. Remove the owned installation and owned PATH modification, without downloading. |
+| `--asset-dir <directory>` | `-AssetDir <directory>` | Absent: version-pinned HTTPS release source. Test-only flat local source, still checksum-verified, without network fallback. |
+
+No additional product options or aliases exist. Empty or relative `XDG_*` values count as unset.
+Explicit relative directories resolve against the invocation's working directory; empty values
+are refused. POSIX options are case-sensitive separate tokens, once only, with no `--name=value`
+form. PowerShell retains ordinary named-parameter/switch binding and its native diagnostics.
+Uninstall accepts only its switch and the installation-directory option, plus Unix `--data-dir`;
+explicit version, asset source and PATH-addition options are refused with uninstall.
+Invalid versions and unrepresentable paths are refused before mutation. PATH insertion refuses
+directories containing the platform PATH separator or a line break; spaces and apostrophes work.
+
+#### Layout and activation
+
+| Platform | Command | Private layout |
+|---|---|---|
+| Unix | `<install-dir>/opencode-mcp`, an installer-owned link to `<data-dir>/versions/<version>-<rid>/opencode-mcp` | `<data-dir>/owner`, `current`, `inventory`, optional `path.record`, `versions/<version>-<rid>/` and staging directories |
+| Windows | `<install-dir>\current\opencode-mcp.exe`, the native executable, not a wrapper | `current\` holds the complete payload; `.opencode-mcp\` holds records, staging and previous payload during activation. No version directory remains after activation. |
+
+Scripts default to user scope and verify the selected archive against that release's checksum
+file before extraction. They preserve the complete native payload and Unix executable modes,
+stage on the destination filesystem and publish only complete payloads. Unix atomically replaces
+the public link by creating a link beside it and renaming it over the old one. The owner record
+names the canonical data directory, absolute link path and installer-created directories.
+Records are data, never sourced or evaluated.
+
+Windows verifies `.opencode-mcp\staging-<unique>`, renames `current` to
+`.opencode-mcp\previous-<unique>`, then renames staging to `current`. If the second rename fails,
+it restores the previous payload and stops. Only after the second rename succeeds does it replace
+the records and delete the previous payload.
+A running command can make the first rename fail with `Installation failed during activation.`;
+nothing is stopped and the old installation remains intact. Individual activation surfaces are
+replaced atomically; this is not a crash-atomic transaction across filesystem state and user PATH.
+An operation failure precedes any cleanup failure, which names retained owned storage.
+
+A same-version, byte-identical installation is idempotent. Explicit versions select that exact
+release, including prerelease/build metadata, without an automatic newest lookup or downgrade
+policy. Both archive and checksum file come from
+`https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/`.
+The selected archive requires exactly one checksum entry: lowercase 64-character SHA-256, two
+spaces and its exact basename. Scripts hash it independently before extraction and never execute
+the downloaded command during installation. Checksums check integrity, not publisher authenticity;
+the HTTPS release source (or explicit local source) is trusted. A piped script cannot authenticate
+its own executing bytes. Script definitions precede an entry-point call on the last line so a
+truncated download cannot execute a partial installation.
+
+PATH modification requires explicit consent. Unix adds the installation directory through one
+exactly recorded, uniquely delimited, correctly quoted block: `sh` uses `~/.profile`; `bash` uses
+the first existing `~/.bash_profile`, `~/.bash_login`, `~/.profile`, else creates `~/.profile`;
+`zsh` uses `${ZDOTDIR:-$HOME}/.zprofile`. Existing bytes and permissions are preserved.
+`fish` uses one owned `${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/opencode-mcp.fish` file and
+refuses an existing file. Other shells refuse `--add-to-path`, not installation without it.
+An already-effective PATH entry is not adopted. Uninstall removes only the exact recorded block
+or byte-identical owned fish file; missing, edited or duplicate owned state is ambiguous.
+
+Windows adds `<install-dir>\current` once to the raw user `Path`, preserving its registry kind
+and unrelated tokens. Upgrades keep the owned token without repeated `-AddToPath`. Writes broadcast
+`WM_SETTINGCHANGE` with `Environment`; no machine PATH, `setx`, or caller-process PATH edit occurs.
+The change is for future sessions, not a promise to refresh an existing terminal or Explorer.
+Uninstall reverses only an unambiguous owned token and preserves pre-existing entries/later edits.
+
+Foreign commands, invalid ownership, changed recorded files/targets and unexpected payload files
+are refused without destructive repair or adoption. Uninstall preflights ownership, inventory and
+PATH reversal, removes only recorded state, and removes installer-created directories only when
+empty. Pre-existing directories, unrelated files, configuration and data survive. Unix ownership
+comes from the data directory; an explicit installation directory must contain the recorded link.
+No owned installation means no change. A running `opencode-mcp` command (a process whose executable
+is the installed command) is refused at once, without process termination, retry or elevation. On
+Windows only, a sharing violation on the installed command or on a directory the installer itself
+created or owns, with no such process running, is retried for at most 30 seconds, because on-access
+scanners briefly hold newly written executables; it then fails as before. `-Verbose` shows the
+underlying cause of a failure; default output is unchanged. Scripts configure no MCP client, start no daemon and
+install no prerequisite.
+
+POSIX requires ordinary platform utilities, `tar`, `curl` for HTTPS, and Linux `sha256sum` or
+macOS `shasum`. PowerShell requires Windows PowerShell 5.1 or PowerShell 7 and built-in archive/hash
+facilities; 5.1 enables TLS 1.2 for downloads when needed. Local-source installation makes no HTTP
+operation; uninstall needs neither network nor archive tools. Platform detection selects the
+manifest's six native OS/architecture pairs, handles Rosetta's native architecture and Windows
+native OS versus process architecture, and refuses unsupported hosts, 32-bit userlands and unknown
+Linux libc rather than assuming glibc; musl is unsupported.
+
+#### Results and diagnostics
+
+| Exit (file/process invocation) | Meaning |
+|---|---|
+| `0` | Installed, already installed, uninstalled, or no owned installation found |
+| `2` | Script-owned validation, ownership or integrity refusal |
+| `1` | Acquisition, filesystem, activation or cleanup operation failed |
+
+PowerShell binding failures retain native diagnostics and exit behavior. Through `iex` or an
+invoked scriptblock, failures are terminating errors, not `exit` statements closing the caller.
+Stable script-owned output has the `opencode-mcp: ` prefix and these diagnostic templates:
+
+| Diagnostic template | Detail |
+|---|---|
+| `Version must be an exact SemVer 2.0.0 value without a leading v.` | Version refusal |
+| `Unknown option: <option>.` | Unknown POSIX option |
+| `Option requires a value: <option>.` | Missing value |
+| `Option may be specified only once: <option>.` | Repeated option |
+| `Uninstall accepts only the installation directory.` | Invalid uninstall combination; Unix also permits its data directory |
+| `Unsupported platform: <os>/<architecture>.` | Unsupported host |
+| `A 64-bit operating system and shell process are required.` | 32-bit refusal |
+| `Linux requires glibc; musl is not supported.` | Libc refusal |
+| `Required command is unavailable: <name>.` | Missing prerequisite |
+| `Install collision: <absolute-path>.` | Foreign destination or command |
+| `Installed files differ from the ownership record: <relative-path>.` | Changed owned payload |
+| `Invalid checksum entry: <archive-basename>.` | Missing, duplicate or malformed entry |
+| `SHA-256 mismatch: <archive-basename>.` | Archive integrity failure |
+| `PATH ownership is ambiguous: <startup-file-or-user-Path>.` | PATH reversal/ownership refusal |
+| `Installation directory differs from the ownership record: <absolute-path>.` | Explicit Unix install directory does not contain the owned link |
+| `Unsupported shell for --add-to-path: <shell>.` | Unsupported Unix PATH shell |
+| `Installation failed during <phase>.` | `download`, `staging`, `activation`, `path`, `uninstall` or `cleanup` |
+| `Cleanup failed; retained owned directory: <absolute-path>.` | Cleanup follows the operation failure |
+
+Success templates are `Installed <version> (<rid>): <absolute-native-command>`,
+`Already installed <version> (<rid>): <absolute-native-command>`,
+`Uninstalled opencode-mcp: <absolute-install-dir>` and `No owned installation: <absolute-install-dir>`.
+Installation also reports exactly `PATH unchanged.` or `PATH updated for future login sessions.`.
+Validation is fail-fast in argument → platform/prerequisite → ownership/collision →
+acquisition/checksum → staging → activation order.
 
 ## Licensing
 

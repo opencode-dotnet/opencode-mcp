@@ -21,6 +21,73 @@ The server's contract is to:
 No package or binary is published. See the [roadmap](docs/ROADMAP.md) for current availability and
 remaining distribution work.
 
+## Install scripts
+
+The scripts arrive with the first release; these URLs are not available before it. Replace
+`<version>` below with the exact release version (without the leading `v`). These pinned commands
+install that release, with no “latest” lookup:
+
+```sh
+curl -fsSL https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.sh | sh
+curl -fsSL https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.sh |
+    sh -s -- --add-to-path
+```
+
+```powershell
+irm https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.ps1 | iex
+
+& ([scriptblock]::Create(
+    (irm 'https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.ps1')
+)) -AddToPath
+```
+
+Download/read/run is recommended when you want to inspect or independently verify the script:
+download `install.sh` or `install.ps1` and `SHA256SUMS` from the same pinned release, read the
+script, and compare its SHA-256 with that file before running it. Checksums verify integrity, not
+publisher authenticity; a script executing through a pipe cannot authenticate itself.
+
+```sh
+curl -fsSL 'https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.sh' -o install.sh
+# Read install.sh and verify its SHA-256 before this step.
+sh ./install.sh --version '<version>'
+```
+
+```powershell
+Invoke-WebRequest 'https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.ps1' -OutFile install.ps1
+# Read install.ps1 and verify its SHA-256 before this step.
+Unblock-File ./install.ps1
+& ./install.ps1 -Version '<version>'
+```
+
+`irm | iex` executes script text without the execution-policy check. A downloaded unsigned
+`install.ps1` needs `Unblock-File` (or `-ExecutionPolicy Bypass` for that one PowerShell process)
+to run; do not change the machine-wide execution policy.
+
+Unix defaults to a command link in `${XDG_BIN_HOME:-~/.local/bin}` and payload/records in
+`${XDG_DATA_HOME:-~/.local/share}/opencode-mcp`. Windows defaults to
+`%LOCALAPPDATA%\Programs\opencode-mcp\current` for the complete payload and command.
+No PATH change occurs without `--add-to-path` / `-AddToPath`. The scripts verify the complete native
+archive before extraction, need no .NET runtime, configure no MCP client and start no daemon.
+
+To upgrade, rerun a downloaded script with the new explicit version and the same directories.
+To uninstall, use those same directories (omit directory options if you used the defaults):
+
+```sh
+sh ./install.sh --version '<version>' --install-dir '<install-dir>' --data-dir '<data-dir>'
+sh ./install.sh --uninstall --install-dir '<install-dir>' --data-dir '<data-dir>'
+```
+
+```powershell
+& ./install.ps1 -Version '<version>' -InstallDir '<install-dir>'
+& ./install.ps1 -Uninstall -InstallDir '<install-dir>'
+```
+
+On Windows, `-InstallDir` is the parent of `current`, not `current` itself. Upgrades preserve an
+owned PATH entry without repeating `-AddToPath`; PATH changes apply to future sessions, not the
+current terminal. Uninstall removes only owned state and refuses changed files or ambiguous PATH
+ownership. See the [install-script contract](docs/architecture/hosting-and-packaging.md#install-scripts)
+for supported hosts, prerequisites, options, layout and diagnostics.
+
 ## Run from source
 
 From the repository root, build Release. Run every build and test command with an owned

@@ -57,8 +57,7 @@ public sealed class ExecutableTests
             if (launch.Container is null)
             {
                 var artifact = launch.Arguments.FirstOrDefault(static argument => argument.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) ?? launch.FileName;
-                var directory = _files.Path.GetDirectoryName(artifact) ?? throw new InvalidOperationException("The product artifact has no directory.");
-                var contentRoot = new PhysicalPathResolver(_files).Resolve(directory);
+                var contentRoot = _files.Path.GetDirectoryName(new PhysicalPathResolver(_files).Resolve(artifact)) ?? throw new InvalidOperationException("The product artifact has no directory.");
                 await Assert.That(process.StandardError).Contains("      Content root path: " + contentRoot + _files.Path.DirectorySeparatorChar);
             }
         }

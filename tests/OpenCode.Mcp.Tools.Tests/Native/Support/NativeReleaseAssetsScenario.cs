@@ -17,7 +17,9 @@ internal sealed class NativeReleaseAssetsScenario(PackageArchiveBuilder builder,
     public string Evidence => Build.Output;
     public string Output => Files.Path.Combine(Build.Root, "artifacts", "release-assets");
     public string Version => Builder.Identity.Version;
-    public NativeReleaseAssetRequest Request => new(Manifest, Receipts, Evidence, Output, Version);
+    public string Installers => Files.Path.Combine(Build.Root, "packaging", "install");
+    public NativeReleaseAssetRequest Request => new(Manifest, Receipts, Evidence, Output, Version, Installers);
+    public IDictionary<string, byte[]> Scripts { get; } = new Dictionary<string, byte[]>(StringComparer.Ordinal);
     public FakeNativeProcessRunner Runner { get; } = new();
     public IDictionary<string, byte[]> Archives { get; } = new Dictionary<string, byte[]>(StringComparer.Ordinal);
 
@@ -26,6 +28,7 @@ internal sealed class NativeReleaseAssetsScenario(PackageArchiveBuilder builder,
         var builder = await PackageArchiveBuilder.CreateRootAsync(token);
         var build = await builder.PrepareCompleteAsync(token);
         var scenario = new NativeReleaseAssetsScenario(builder, build);
+        await scenario.WriteInstallersAsync(token);
         foreach (var child in builder.Children)
         {
             var receipt = child.Receipt;
@@ -63,6 +66,20 @@ internal sealed class NativeReleaseAssetsScenario(PackageArchiveBuilder builder,
 
     public string Digest(string rid) => Convert.ToHexStringLower(SHA256.HashData(Archives[rid]));
 
+    public string ScriptDigest(string name) => Convert.ToHexStringLower(SHA256.HashData(Scripts[name]));
+
+    private async Task WriteInstallersAsync(CancellationToken token)
+    {
+        Files.Directory.CreateDirectory(Installers);
+        // Insert PowerShell first so enumeration/alphabetic ordering cannot satisfy shell-first oracles.
+        Scripts.Add("install.ps1", Encoding.UTF8.GetBytes("# fixture PowerShell\r\n$OpenCodeMcpReleaseVersion = '" + Version + "'\r\n"));
+        Scripts.Add("install.sh", Encoding.UTF8.GetBytes("#!/bin/sh\nOPENCODE_MCP_RELEASE_VERSION='" + Version + "'\n# fixture shell\n"));
+        foreach (var script in Scripts)
+        {
+            await Files.File.WriteAllBytesAsync(Files.Path.Combine(Installers, script.Key), script.Value, token);
+        }
+    }
+
     public IFileSystem DecorateWrites(string fault)
     {
         var file = Substitute.For<IFile>();
@@ -75,6 +92,17 @@ internal sealed class NativeReleaseAssetsScenario(PackageArchiveBuilder builder,
         {
             var path = call.Arg<string>();
             var bytes = call.Arg<byte[]>();
+            if (string.Equals(path, Files.Path.Combine(Output, "install.sh"), StringComparison.Ordinal))
+            {
+                if (fault == "installer")
+                {
+                    throw new IOException("fixture installer write failure");
+                }
+                if (fault == "changed installer")
+                {
+                    bytes = [1, 2, 3];
+                }
+            }
             if (path.EndsWith("-linux-x64.tar.gz", StringComparison.Ordinal))
             {
                 if (fault == "archive")

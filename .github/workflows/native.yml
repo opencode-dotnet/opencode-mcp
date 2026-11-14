@@ -548,6 +548,1034 @@ jobs:
           retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: error
 
+  installer-lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify and run pinned ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d "$RUNNER_TEMP/installer-shellcheck-XXXXXX")
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz -o "$work/shellcheck.tar.xz"
+          printf '%s  %s\n' 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 "$work/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$work/shellcheck.tar.xz" -C "$work"
+          "$work/shellcheck-v0.11.0/shellcheck" --version | grep -Fx 'version: 0.11.0'
+          "$work/shellcheck-v0.11.0/shellcheck" --shell=sh packaging/install/install.sh
+      - name: Verify and run pinned PSScriptAnalyzer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP ('installer-analyzer-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory $work | Out-Null
+          $archive = Join-Path $work 'analyzer.zip'
+          Invoke-WebRequest https://github.com/PowerShell/PSScriptAnalyzer/releases/download/1.25.0/PSScriptAnalyzer.1.25.0.nupkg -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -cne '14E634C828EB98EFB9F40B2918BA90F139ED5ECCDF663A2A747736D996995D60') { throw 'PSScriptAnalyzer archive hash differs.' }
+          Expand-Archive $archive (Join-Path $work 'module')
+          $manifest = @(Get-ChildItem (Join-Path $work 'module') -Recurse -Filter PSScriptAnalyzer.psd1)
+          if ($manifest.Count -ne 1) { throw 'Expected exactly one analyzer manifest.' }
+          $module = Import-Module $manifest[0].FullName -PassThru
+          if ($module.Version.ToString() -cne '1.25.0') { throw 'PSScriptAnalyzer version differs.' }
+          $findings = @(Invoke-ScriptAnalyzer -Path packaging/install/install.ps1)
+          $findings | Format-Table -AutoSize | Out-String | Write-Host
+          if ($findings.Count -ne 0) { throw 'Installer analyzer findings are not empty.' }
+
+  installer:
+    name: Install (${{ matrix.rid }})
+    needs: [prepare, release-assets]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.consumer-matrix) }}
+    env:
+      INSTALLER_RID: ${{ matrix.rid }}
+    steps:
+      - name: Initialize owned SDK environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          "ASPIRE_HOME=$(Join-Path $env:RUNNER_TEMP 'aspire-home')" >> $env:GITHUB_ENV
+          "INSTALLER_ASSETS=$(Join-Path $env:RUNNER_TEMP 'installer-assets')" >> $env:GITHUB_ENV
+          if ($IsWindows) {
+            "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+            "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          }
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup exact .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.sdk-version }}
+          architecture: ${{ endsWith(matrix.rid, '-arm64') && 'arm64' || 'x64' }}
+      - name: Download same-run release assets
+        uses: actions/download-artifact@v8
+        with:
+          name: native-release-assets
+          path: ${{ env.INSTALLER_ASSETS }}
+      - name: Build native tool entry
+        run: |
+          dotnet build tools/native.cs
+          exit $LASTEXITCODE
+      - name: Build product test runner
+        id: build
+        run: |
+          dotnet build tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release -nodeReuse:false -p:UseSharedCompilation=false
+          exit $LASTEXITCODE
+      - name: Installer lifecycle cases and installed ExecutableTests (PowerShell 7)
+        id: test
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cases = {
+            $ErrorActionPreference = 'Stop'
+            $windows = $env:OS -eq 'Windows_NT'
+            $runtime = (Get-Process -Id $PID).Path
+            $assets = $env:INSTALLER_ASSETS
+            $rid = $env:INSTALLER_RID
+            $scriptName = if ($windows) { 'install.ps1' } else { 'install.sh' }
+            $installer = Join-Path $assets $scriptName
+            $text = [IO.File]::ReadAllText($installer)
+            $projection = if ($windows) { '(?m)^\$OpenCodeMcpReleaseVersion = ''([^'']+)''$' } else { '(?m)^OPENCODE_MCP_RELEASE_VERSION=''([^'']+)''$' }
+            $version = [regex]::Match($text, $projection).Groups[1].Value
+            if (-not $version) { throw 'Missing default version projection.' }
+            $root = Join-Path $env:RUNNER_TEMP ('installer-' + [guid]::NewGuid().ToString('N'))
+            $bin = Join-Path $root "command's directory"
+            $data = Join-Path $root "payload's directory"
+            $private = if ($windows) { Join-Path $bin '.opencode-mcp' } else { $data }
+            $command = if ($windows) { Join-Path $bin 'current/opencode-mcp.exe' } else { Join-Path $bin 'opencode-mcp' }
+            $suffix = if ($windows) { '.zip' } else { '.tar.gz' }
+            $archiveName = "opencode-mcp-$version-$rid$suffix"
+            $expected = Join-Path $root 'expected'
+            $alternate = "$version+installer"
+            $fixture = Join-Path $root 'fixture'
+            $alternatePayload = Join-Path $root 'alternate'
+            $bad = Join-Path $root 'bad'
+            $snapshots = @{}
+            $originalPath = $env:PATH
+            $originalShell = $env:SHELL
+            $originalZdot = $env:ZDOTDIR
+            $originalConfig = $env:XDG_CONFIG_HOME
+            $userKey = if ($windows) { [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true) }
+            $rawPath = if ($windows) { $userKey.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+            $rawKind = if ($windows -and $null -ne $rawPath) { $userKey.GetValueKind('Path') }
+            function Assert-Equal($Actual, $Expected, $Because) {
+              $a = @($Actual); $e = @($Expected)
+              $different = $a.Count -ne $e.Count
+              if (-not $different) { for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -cne $e[$i]) { $different = $true; break } } }
+              if ($different) {
+                throw "$Because`nExpected: $($e -join '|')`nActual: $($a -join '|')"
+              }
+            }
+            $diagnostics = @{ Verbose = @() }
+            function Invoke-Case($Name, [scriptblock]$Body) {
+              $diagnostics.Verbose = @()
+              Write-Host "CASE $Name ($rid, $($PSVersionTable.PSVersion))"
+              try { & $Body } catch { $diagnostics.Verbose | ForEach-Object { Write-Host $_ }; throw }
+            }
+            function Invoke-InstallerScriptBlock($Options) {
+              & ([scriptblock]::Create($text)) @Options -Verbose 4>&1 | ForEach-Object {
+                if ($_ -is [Management.Automation.VerboseRecord]) { $diagnostics.Verbose += 'VERBOSE: ' + $_.Message }
+                else { $_ }
+              }
+            }
+            function Get-Inventory($Directory) {
+              @(Get-ChildItem -LiteralPath $Directory -Recurse -File -Force | ForEach-Object {
+                $_.FullName.Substring($Directory.Length + 1).Replace('\', '/') + ' ' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+              } | Sort-Object -CaseSensitive)
+            }
+            function Invoke-Installer($Options, $Source = $assets, $Install = $bin, $DataDirectory = $data, $InputText = $null) {
+              $arguments = @()
+              if ($windows) {
+                $entry = $installer
+                if ($null -ne $InputText) { $entry = Join-Path $root 'invocation.ps1'; [IO.File]::WriteAllText($entry, $InputText) }
+                $arguments += @('-NoProfile', '-File', $entry, '-Verbose')
+              }
+              elseif ($null -ne $InputText) { $arguments += @('-s', '--') }
+              else { $arguments += $installer }
+              $arguments += $(if ($windows) { @('-InstallDir', $Install) } else { @('--install-dir', $Install, '--data-dir', $DataDirectory) })
+              if ($Options -notcontains '--uninstall' -and $Options -notcontains '-Uninstall') {
+                $arguments += $(if ($windows) { @('-AssetDir', $Source) } else { @('--asset-dir', $Source) })
+              }
+              $arguments += $Options
+              $start = New-Object Diagnostics.ProcessStartInfo
+              $start.FileName = if ($windows) { $runtime } else { 'sh' }
+              $start.UseShellExecute = $false
+              $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+              $start.RedirectStandardInput = $true
+              $start.Arguments = ($arguments | ForEach-Object { '"' + ([regex]::Replace([string]$_, '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"' }) -join ' '
+              $process = New-Object Diagnostics.Process
+              $process.StartInfo = $start
+              try {
+                if (-not $process.Start()) { throw 'Installer did not start.' }
+                $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+                if (-not $windows -and $null -ne $InputText) { $process.StandardInput.Write($InputText) }
+                $process.StandardInput.Close()
+                $process.WaitForExit()
+                $out = $stdout.GetAwaiter().GetResult(); $err = $stderr.GetAwaiter().GetResult()
+                $lines = @(([regex]::Replace(($out + $err), '\x1b\[[0-9;]*m', '')) -split '\r?\n' | Where-Object { $_ -ne '' })
+                $verboseLines = @($lines | Where-Object { $_.StartsWith('VERBOSE: ') })
+                $diagnostics.Verbose += $verboseLines
+                @{ Code = $process.ExitCode; Stdout = $out; Stderr = $err; Verbose = $verboseLines; Lines = @($lines | Where-Object { -not $_.StartsWith('VERBOSE: ') }) }
+              } finally { $process.Dispose() }
+            }
+            function Assert-Result($Result, $Code, $Lines) {
+              if ($Result.Code -ne $Code) { Write-Host 'Installer output:'; foreach ($line in @($Result.Lines)) { Write-Host "  $line" } }
+              Assert-Equal $Result.Code $Code 'Installer exit code'
+              Assert-Equal $Result.Lines $Lines 'Complete ordered installer output'
+            }
+            function Start-HeldCommand {
+              $start = New-Object Diagnostics.ProcessStartInfo
+              $start.FileName = $command; $start.UseShellExecute = $false
+              $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+              $child = New-Object Diagnostics.Process; $child.StartInfo = $start
+              try {
+                if (-not $child.Start()) { throw 'Native child did not start.' }
+                $child | Add-Member -NotePropertyName OutputDrain -NotePropertyValue $child.StandardOutput.ReadToEndAsync()
+                $child | Add-Member -NotePropertyName ErrorDrain -NotePropertyValue $child.StandardError.ReadToEndAsync()
+                Assert-Equal $child.HasExited $false 'Installed native child is running with stdin open'
+                return $child
+              } catch { Stop-HeldCommand $child; throw }
+            }
+            function Stop-HeldCommand($Child) {
+              if ($null -eq $Child) { return }
+              try {
+                if (-not $Child.HasExited) { $Child.Kill() }
+                $Child.WaitForExit()
+                if ($Child.OutputDrain) { [void]$Child.OutputDrain.GetAwaiter().GetResult() }
+                if ($Child.ErrorDrain) { [void]$Child.ErrorDrain.GetAwaiter().GetResult() }
+              } finally { $Child.Dispose() }
+            }
+            function Get-Payload {
+              if ($windows) { Join-Path $bin 'current' }
+              else { Join-Path $data "versions/$version-$rid" }
+            }
+            function Assert-Installed($SelectedVersion = $version, $Payload = $expected) {
+              $selected = if ($windows) { Join-Path $bin 'current' } else { Join-Path $data "versions/$SelectedVersion-$rid" }
+              Assert-Equal (Test-Path -LiteralPath $command -PathType Leaf) $true 'Selected native command exists'
+              Assert-Equal (Test-Path -LiteralPath $selected -PathType Container) $true 'Complete payload directory exists'
+              Assert-Equal (Get-Inventory $selected) (Get-Inventory $Payload) 'Complete installed payload bytes'
+              foreach ($record in @('owner', 'current', 'inventory')) {
+                Assert-Equal (Test-Path -LiteralPath (Join-Path $private $record) -PathType Leaf) $true "Ownership record $record exists"
+                Assert-Equal (Get-Item -LiteralPath (Join-Path $private $record)).Name $record 'Named ownership record exists'
+              }
+              $selectedArchive = Join-Path $(if ($SelectedVersion -ceq $version) { $assets } else { $fixture }) "opencode-mcp-$SelectedVersion-$rid$suffix"
+              Assert-Equal ([IO.File]::ReadAllLines((Join-Path $private 'current'))) @($SelectedVersion, $rid, (Get-FileHash -LiteralPath $selectedArchive -Algorithm SHA256).Hash.ToLowerInvariant()) 'Exact selected version/RID/archive SHA-256'
+              if (-not $windows) {
+                Assert-Equal (Get-Item -LiteralPath $command).Target (Join-Path $selected 'opencode-mcp') 'Selected command link'
+                Assert-Equal (Get-Item -LiteralPath (Join-Path $selected 'opencode-mcp')).UnixFileMode (Get-Item -LiteralPath (Join-Path $Payload 'opencode-mcp')).UnixFileMode 'Native executable mode is preserved'
+              }
+            }
+            $uninstall = @(if ($windows) { '-Uninstall' } else { '--uninstall' })
+            $addPath = @(if ($windows) { '-AddToPath' } else { '--add-to-path' })
+            $explicit = @(if ($windows) { '-Version', $version } else { '--version', $version })
+            $upgrade = @(if ($windows) { '-Version', $alternate } else { '--version', $alternate })
+            $installedMessage = "opencode-mcp: Installed $version ($rid): $command"
+            function Save-Startup($Path) {
+              if (-not $snapshots.ContainsKey($Path)) {
+                $snapshots[$Path] = if (Test-Path -LiteralPath $Path) { [IO.File]::ReadAllBytes($Path) } else { $null }
+              }
+            }
+            function Get-RawPath {
+              if ($windows) { $userKey.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+              else { [Convert]::ToBase64String([IO.File]::ReadAllBytes($startup)) }
+            }
+            function Restore-RawPath {
+              if ($null -eq $rawPath) { $userKey.DeleteValue('Path', $false) } else { $userKey.SetValue('Path', $rawPath, $rawKind) }
+            }
+            $failure = $null; $cleanupErrors = @()
+            try {
+              New-Item -ItemType Directory $root, $expected, $fixture | Out-Null
+              if (-not $windows) {
+                $realMove = @(Get-Command mv -CommandType Application)[0].Source
+                $signalCommands = Join-Path $root 'signal-observation'
+                $moveFixture = Join-Path $signalCommands 'mv'
+              }
+              [IO.File]::WriteAllText((Join-Path $root 'neighbor'), 'neighbor unchanged')
+              [IO.File]::WriteAllText((Join-Path $root 'configuration'), 'configuration unchanged')
+              if ($windows) { Expand-Archive -LiteralPath (Join-Path $assets $archiveName) -DestinationPath $expected }
+              else {
+                & tar -xzf (Join-Path $assets $archiveName) -C $expected
+                if ($LASTEXITCODE -ne 0) { throw 'Candidate extraction failed.' }
+                $env:SHELL = '/bin/sh'; $startup = Join-Path $HOME '.profile'; Save-Startup $startup
+                if (-not (Test-Path -LiteralPath $startup)) { [IO.File]::WriteAllText($startup, '') }
+              }
+              $before = Get-RawPath
+              Invoke-Case Install_Default_Version {
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                Assert-Installed
+              }
+              Invoke-Case Install_Without_Path_Consent {
+                $withoutConsentBefore = Get-RawPath
+                Assert-Result (Invoke-Installer @()) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                Assert-Equal (Get-RawPath) $withoutConsentBefore 'Repeat invocation leaves raw PATH bytes unchanged'
+                Assert-Equal (Get-RawPath) $before 'No persistent PATH change without consent'
+                Assert-Equal $env:PATH $originalPath 'Caller process PATH is unchanged'
+                if ($windows -and $null -ne $rawPath) { Assert-Equal ($userKey.GetValueKind('Path')) $rawKind 'Raw PATH registry kind is unchanged' }
+              }
+              Invoke-Case Install_Explicit_Version {
+                $alternateArchive = Join-Path $fixture "opencode-mcp-$alternate-$rid$suffix"
+                Copy-Item -LiteralPath (Join-Path $assets $archiveName) -Destination $alternateArchive
+                $hash = (Get-FileHash $alternateArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+                [IO.File]::WriteAllText((Join-Path $fixture 'SHA256SUMS'), "$hash  opencode-mcp-$alternate-$rid$suffix`n")
+                Assert-Equal (Get-Item $alternateArchive).Name "opencode-mcp-$alternate-$rid$suffix" 'Explicit-version fixture asset basename'
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Result (Invoke-Installer $upgrade $fixture) 0 @("opencode-mcp: Installed $alternate ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                Assert-Installed $alternate
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                Assert-Installed
+              }
+              Invoke-Case Install_Is_Idempotent {
+                $checksumOnly = Join-Path $root 'checksum-only'; New-Item -ItemType Directory $checksumOnly | Out-Null
+                Copy-Item -LiteralPath (Join-Path $assets 'SHA256SUMS') -Destination $checksumOnly
+                $unchanged = @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { $_.FullName } else { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks } })
+                Assert-Result (Invoke-Installer @() $checksumOnly) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                Assert-Equal @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { $_.FullName } else { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks } }) $unchanged 'Idempotence changes no installed entry or timestamp'
+                Assert-Result (Invoke-Installer @()) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                Assert-Installed
+                $selectionFile = Join-Path $private 'current'; $selectionBytes = [IO.File]::ReadAllBytes($selectionFile)
+                try {
+                  if ($windows) {
+                    foreach ($processPath in @('$null', "throw [ArgumentException]::new('Unreadable process path.')")) {
+                      [IO.File]::WriteAllLines($selectionFile, @($version, $rid), (New-Object Text.UTF8Encoding $false))
+                      $observation = @"
+          function Get-Process {
+            `$process = New-Object PSObject
+            `$process | Add-Member ScriptProperty Path { $processPath }
+            `$process | Add-Member ScriptProperty MainModule { throw [ArgumentException]::new('Unreadable process module.') }
+            `$process | Add-Member ScriptMethod Dispose { }
+            `$process
+          }
+          & '$($installer.Replace("'", "''"))' @args
+          exit `$LASTEXITCODE
+          "@
+                      $result = Invoke-Installer @() $assets $bin $data $observation
+                      Assert-Result $result 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                      Assert-Equal @($result.Verbose | Where-Object { $_ -match 'Unreadable process (path|module)\.' }) @() 'Unreadable processes produce no installer failure diagnostic'
+                      Assert-Installed
+                    }
+                  }
+                  foreach ($archiveRecord in @(@($version, $rid), @($version, $rid, ('0' * 64)))) {
+                    [IO.File]::WriteAllLines($selectionFile, $archiveRecord, (New-Object Text.UTF8Encoding $false))
+                    Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                    Assert-Installed
+                  }
+                } finally { [IO.File]::WriteAllBytes($selectionFile, $selectionBytes) }
+                if ($windows) {
+                  $ownerFile = Join-Path $private 'owner'; $ownerBytes = [IO.File]::ReadAllBytes($ownerFile)
+                  try {
+                    $ownerLines = [IO.File]::ReadAllLines($ownerFile); $ownerLines[1] = $ownerLines[1].ToUpperInvariant()
+                    [IO.File]::WriteAllLines($ownerFile, $ownerLines, (New-Object Text.UTF8Encoding $false))
+                    Assert-Result (Invoke-Installer @()) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                    Assert-Installed
+                  } finally { [IO.File]::WriteAllBytes($ownerFile, $ownerBytes) }
+                }
+              }
+              Invoke-Case Upgrade_Selects_Complete_New_Payload {
+                Copy-Item -LiteralPath (Join-Path $assets $archiveName) -Destination (Join-Path $fixture "opencode-mcp-$alternate-$rid$suffix")
+                $alternatePayload = Join-Path $root 'alternate'; New-Item -ItemType Directory $alternatePayload | Out-Null
+                Copy-Item "$expected/*" $alternatePayload -Recurse -Force
+                [IO.File]::AppendAllText((Join-Path $alternatePayload 'LICENSE'), "`ninstaller alternate fixture`n")
+                $alternateArchive = Join-Path $fixture "opencode-mcp-$alternate-$rid$suffix"
+                Remove-Item -LiteralPath $alternateArchive
+                if ($windows) { Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory($alternatePayload, $alternateArchive) }
+                else { & tar -czf $alternateArchive -C $alternatePayload .; if ($LASTEXITCODE -ne 0) { throw 'Fixture pack failed.' } }
+                $hash = (Get-FileHash $alternateArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+                [IO.File]::WriteAllText((Join-Path $fixture 'SHA256SUMS'), "$hash  opencode-mcp-$alternate-$rid$suffix`n")
+                Assert-Result (Invoke-Installer $upgrade $fixture) 0 @("opencode-mcp: Installed $alternate ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                Assert-Installed $alternate $alternatePayload
+                if ($windows) { Assert-Equal @(Get-ChildItem $private -Filter 'previous-*' | ForEach-Object Name) @() 'No previous payload remains' }
+                else { Assert-Equal (Test-Path (Join-Path $data "versions/$version-$rid")) $false 'Old owned version removed' }
+                Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+              }
+              function Invoke-ScannerLockedInstaller($LockedPath, $Options, $Source = $assets, $HoldSeconds = 2) {
+                $lockLine = (Select-String -LiteralPath $installer -Pattern '^    \$state.Phase = ''activation''$').LineNumber
+                $retryLine = (Select-String -LiteralPath $installer -Pattern '^            \$cause = \$_.Exception.GetBaseException\(\)$').LineNumber
+                $scannerObservation = @"
+          `$global:OpenCodeMcpScannerRelease = `$null; `$global:OpenCodeMcpScannerPending = `$null; `$global:OpenCodeMcpScannerHeld = `$null
+          `$breakpoint = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $lockLine -Action {
+            `$global:OpenCodeMcpScannerHeld = [IO.File]::Open($LockedPath, 'Open', 'Read', 'Read')
+          }
+          `$retryBreakpoint = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $retryLine -Action {
+            if (`$global:OpenCodeMcpScannerHeld -and -not `$global:OpenCodeMcpScannerRelease) {
+              `$global:OpenCodeMcpScannerRelease = [powershell]::Create()
+              [void]`$global:OpenCodeMcpScannerRelease.AddScript('param(`$handle) Start-Sleep -Seconds $HoldSeconds; `$handle.Dispose()').AddArgument(`$global:OpenCodeMcpScannerHeld)
+              `$global:OpenCodeMcpScannerPending = `$global:OpenCodeMcpScannerRelease.BeginInvoke()
+            }
+          }
+          try { & '$($installer.Replace("'", "''"))' @args; `$code = `$LASTEXITCODE }
+          finally {
+            Remove-PSBreakpoint `$breakpoint, `$retryBreakpoint
+            if (`$global:OpenCodeMcpScannerRelease) { try { [void]`$global:OpenCodeMcpScannerRelease.EndInvoke(`$global:OpenCodeMcpScannerPending) } finally { `$global:OpenCodeMcpScannerRelease.Dispose() } }
+            if (`$global:OpenCodeMcpScannerHeld) { `$global:OpenCodeMcpScannerHeld.Dispose() }
+          }
+          if (-not `$global:OpenCodeMcpScannerHeld -or `$global:OpenCodeMcpScannerHeld.CanRead) { throw 'Scanner fixture did not hold and release its file.' }
+          exit `$code
+          "@
+                Invoke-Installer $Options $Source $bin $data $scannerObservation
+              }
+              if ($windows) { Invoke-Case Upgrade_With_Brief_Scanner_Lock {
+                foreach ($lockedPath in @('(Join-Path $staging ''LICENSE'')', ("'" + $command.Replace("'", "''") + "'"))) {
+                  Assert-Result (Invoke-ScannerLockedInstaller $lockedPath $upgrade $fixture) 0 @("opencode-mcp: Installed $alternate ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                  Assert-Installed $alternate $alternatePayload
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory | ForEach-Object Name) @() 'Scanner lock leaves no staging, temporary or previous directory'
+                  Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                }
+              } }
+              if ($windows) { Invoke-Case Reinstall_With_Command_Scanner_Lock {
+                foreach ($holdSeconds in @(2, 12)) { # The longer hold distinguishes the thirty-second bound from ten seconds.
+                  $selectionFile = Join-Path $private 'current'
+                  [IO.File]::WriteAllLines($selectionFile, @($version, $rid, ('0' * 64)), (New-Object Text.UTF8Encoding $false))
+                  $result = Invoke-ScannerLockedInstaller ("'" + $command.Replace("'", "''") + "'") @() $assets $holdSeconds
+                  Assert-Result $result 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                  Assert-Equal @($result.Verbose | Where-Object { $_ -match '^VERBOSE: System.IO.IOException: .+' } | Select-Object -First 1 | ForEach-Object { $_.Split(':')[1].Trim() }) @('System.IO.IOException') 'Verbose cause proves the command sharing violation was retried'
+                  Assert-Installed
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Force | ForEach-Object Name) @() 'Command scanner lock leaves no staging, temporary or previous directory'
+                }
+              } }
+              Invoke-Case Upgrade_Preserves_Previous_On_Failure {
+                $selection = [IO.File]::ReadAllBytes((Join-Path $private 'current'))
+                $recordsBefore = @{}
+                foreach ($name in @('owner','current','inventory')) { $recordsBefore[$name] = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name))) }
+                $pathBefore = Get-RawPath
+                $handle = $null
+                $heldCommand = $null
+                try {
+                  if ($windows) { $heldCommand = Start-HeldCommand }
+                  else { & chmod a-w $bin; if ($LASTEXITCODE -ne 0) { throw 'Activation obstruction failed.' } }
+                  Assert-Result (Invoke-Installer $upgrade $fixture) 1 @('opencode-mcp: Installation failed during activation.')
+                  if ($windows) { Assert-Equal $heldCommand.HasExited $false 'Upgrade never stops the held native child' }
+                  Assert-Installed
+                  Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private 'current')))) ([Convert]::ToBase64String($selection)) 'Selection preserved'
+                  foreach ($name in @('owner','current','inventory')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $recordsBefore[$name] "Upgrade failure preserves $name bytes" }
+                  Assert-Equal (Get-RawPath) $pathBefore 'PATH preserved after activation failure'
+                } finally {
+                  Stop-HeldCommand $heldCommand
+                  if ($handle) { $handle.Dispose() }
+                  if (-not $windows) { & chmod u+w $bin; if ($LASTEXITCODE -ne 0) { throw 'Obstruction cleanup failed.' } }
+                }
+                if ($windows) {
+                  try {
+                    $handle = [IO.File]::Open((Join-Path $private 'inventory'), 'Open', 'Read', 'Read')
+                    Assert-Result (Invoke-Installer $upgrade $fixture) 1 @('opencode-mcp: Installation failed during activation.', "opencode-mcp: Cleanup failed; retained owned directory: $private.")
+                    Assert-Installed
+                    foreach ($name in @('owner','current','inventory')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $recordsBefore[$name] "Post-activation rollback preserves $name bytes" }
+                    Assert-Equal (Get-RawPath) $pathBefore 'Post-activation rollback preserves PATH'
+                  } finally {
+                    if ($handle) { $handle.Dispose() }
+                    Get-ChildItem -LiteralPath $private -Filter 'temporary-*' -Directory | Remove-Item -Recurse -Force
+                  }
+                  $faultLine = (Select-String -LiteralPath $installer -Pattern '^    Invoke-InstallerPathAddition$').LineNumber
+                  $rollbackObservation = @"
+          `$script:locks = @()
+          `$breakpoint = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $faultLine -Action {
+            `$script:locks += [IO.File]::Open('$($command.Replace("'", "''"))', 'Open', 'Read', 'Read')
+            `$record = Join-Path `$state.Work 'path.record'
+            [IO.File]::WriteAllText(`$record, '')
+            `$script:locks += [IO.File]::Open(`$record, 'Open', 'Read', 'None')
+          }
+          try { & '$($installer.Replace("'", "''"))' @args; `$code = `$LASTEXITCODE }
+          finally { Remove-PSBreakpoint `$breakpoint; foreach (`$lock in `$script:locks) { `$lock.Dispose() } }
+          exit `$code
+          "@
+                  try {
+                    Assert-Result (Invoke-Installer $upgrade $fixture $bin $data $rollbackObservation) 1 @('opencode-mcp: Installation failed during path.', "opencode-mcp: Cleanup failed; retained owned directory: $private.")
+                    Assert-Installed $alternate $alternatePayload
+                    Assert-Equal (Get-RawPath) $pathBefore 'Failed payload rollback keeps PATH unchanged'
+                    Assert-Equal @(Get-ChildItem -LiteralPath $private -Filter 'previous-*' -Directory | ForEach-Object { Get-Inventory $_.FullName }) (Get-Inventory $expected) 'Failed payload rollback retains the complete old payload'
+                  } finally {
+                    Get-ChildItem -LiteralPath $private -Directory | Where-Object { $_.Name -like 'temporary-*' -or $_.Name -like 'previous-*' } | Remove-Item -Recurse -Force
+                  }
+                  Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                  Assert-Installed
+                }
+                if (-not $windows) {
+                  New-Item -ItemType Directory $signalCommands | Out-Null
+                  $linkPrefix = ($bin + '/.opencode-mcp-').Replace("'", "'\''")
+                  try {
+                    $env:PATH = $signalCommands + ':' + $originalPath
+                    foreach ($point in @('*/payload', "'$linkPrefix'*")) {
+                      foreach ($signal in @(@('HUP',129), @('INT',130), @('TERM',143))) {
+                        foreach ($timing in @('before','after')) {
+                          $moveAction = "'$realMove' `"`$@`" || exit 1`n"
+                          $signalAction = "case `"`$1`" in $point) kill -$($signal[0]) `"`$PPID`"; exit 0;; esac`ncase `"`$2`" in $point) kill -$($signal[0]) `"`$PPID`"; exit 0;; esac`n"
+                          $fixtureBody = if ($timing -eq 'before') { $signalAction + $moveAction } else { $moveAction + $signalAction }
+                          Write-Host "Signal $($signal[0]), point $point, timing $timing"
+                          [IO.File]::WriteAllText($moveFixture, "#!/bin/sh`n$fixtureBody")
+                          & chmod +x $moveFixture; if ($LASTEXITCODE -ne 0) { throw 'Signal fixture chmod failed.' }
+                          Assert-Result (Invoke-Installer $upgrade $fixture) $signal[1] @()
+                          Assert-Installed
+                          foreach ($name in @('owner','current','inventory')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $recordsBefore[$name] "Signal cleanup restores $name bytes" }
+                          Assert-Equal (Get-RawPath) $pathBefore 'Signal cleanup preserves PATH bytes'
+                        }
+                      }
+                    }
+                  } finally { $env:PATH = $originalPath }
+                }
+              }
+              Invoke-Case Uninstall_Refuses_Changed_Owned_State {
+                $license = Join-Path (Get-Payload) 'LICENSE'; $original = [IO.File]::ReadAllBytes($license)
+                try {
+                  [IO.File]::WriteAllText($license, 'changed owned payload')
+                  Assert-Result (Invoke-Installer @()) 2 @('opencode-mcp: Installed files differ from the ownership record: LICENSE.')
+                  Assert-Result (Invoke-Installer $uninstall) 2 @('opencode-mcp: Installed files differ from the ownership record: LICENSE.')
+                  Assert-Equal ([IO.File]::ReadAllText($license)) 'changed owned payload' 'Altered bytes preserved'
+                } finally { [IO.File]::WriteAllBytes($license, $original) }
+                if (-not $windows) {
+                  $target = (Get-Item -LiteralPath $command).Target
+                  Remove-Item -LiteralPath $command; New-Item -ItemType SymbolicLink -Path $command -Target (Join-Path $root 'neighbor') | Out-Null
+                  try { Assert-Result (Invoke-Installer $uninstall) 2 @('opencode-mcp: Installed files differ from the ownership record: opencode-mcp.') }
+                  finally { Remove-Item -LiteralPath $command; New-Item -ItemType SymbolicLink -Path $command -Target $target | Out-Null }
+                  $other = Join-Path $root 'different'
+                  Assert-Result (Invoke-Installer $uninstall $assets $other) 2 @("opencode-mcp: Installation directory differs from the ownership record: $other.")
+                  Assert-Installed
+                  Assert-Equal (Test-Path -LiteralPath $other) $false 'Mismatched uninstall directory is not created'
+                }
+                $unexpected = Join-Path (Get-Payload) 'unexpected-directory'
+                New-Item -ItemType Directory $unexpected | Out-Null
+                try {
+                  Assert-Result (Invoke-Installer $uninstall) 2 @('opencode-mcp: Installed files differ from the ownership record: unexpected-directory.')
+                  Assert-Equal (Get-Item -LiteralPath $unexpected).Name 'unexpected-directory' 'Unexpected directory is preserved'
+                } finally { Remove-Item -LiteralPath $unexpected }
+              }
+              Invoke-Case Uninstall_Preserves_Unrelated_State {
+                New-Item -ItemType Directory $bin -Force | Out-Null
+                [IO.File]::WriteAllText((Join-Path $bin 'unrelated'), 'unrelated unchanged')
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Equal ([IO.File]::ReadAllText((Join-Path $bin 'unrelated'))) 'unrelated unchanged' 'Unrelated installation file preserved'
+                Assert-Equal (Test-Path -LiteralPath $command) $false 'Owned command removed'
+                Assert-Equal (Test-Path -LiteralPath $private) $false 'Owned private root removed'
+                Assert-Equal @(Get-ChildItem -LiteralPath $bin -Force | ForEach-Object Name) @('unrelated') 'Only the named unrelated file remains, with no dangling command link'
+                if ($windows) { Assert-Equal (Test-Path -LiteralPath (Join-Path $bin 'current')) $false 'Windows payload removed' }
+                Remove-Item -LiteralPath (Join-Path $bin 'unrelated'); Remove-Item -LiteralPath $bin
+                Assert-Equal ([IO.File]::ReadAllText((Join-Path $root 'configuration'))) 'configuration unchanged' 'Configuration preserved'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                $container = if ($windows) { $bin } else { $data }
+                $userFile = Join-Path $container 'user-file'
+                [IO.File]::WriteAllText($userFile, 'user bytes unchanged')
+                if ($windows) {
+                  $privateUserFile = Join-Path $private 'user-file'; [IO.File]::WriteAllText($privateUserFile, 'private user bytes unchanged')
+                  $unchanged = Get-Inventory $bin; $pathBefore = Get-RawPath
+                  try {
+                    Assert-Result (Invoke-Installer $uninstall) 2 @('opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/user-file.')
+                    Assert-Equal (Get-Inventory $bin) $unchanged 'Private foreign file refusal changes no installation bytes'
+                    Assert-Equal (Get-RawPath) $pathBefore 'Private foreign file refusal preserves PATH'
+                    Assert-Equal ([IO.File]::ReadAllText($privateUserFile)) 'private user bytes unchanged' 'Private foreign bytes survive'
+                  } finally { Remove-Item -LiteralPath $privateUserFile }
+                }
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Equal ([IO.File]::ReadAllText($userFile)) 'user bytes unchanged' 'User file bytes survive uninstall'
+                Assert-Equal (Test-Path -LiteralPath $container -PathType Container) $true 'Container with user file survives'
+                Remove-Item -LiteralPath $userFile; Remove-Item -LiteralPath $container
+              }
+              Invoke-Case Install_Refuses_Foreign_Command {
+                New-Item -ItemType Directory $bin | Out-Null
+                $foreign = if ($windows) { Join-Path $bin 'current' } else { $command }
+                if ($windows) { New-Item -ItemType Directory $foreign | Out-Null; [IO.File]::WriteAllText((Join-Path $foreign 'sentinel'), 'foreign') }
+                else { [IO.File]::WriteAllText($foreign, 'foreign') }
+                Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Install collision: $foreign.")
+                Assert-Equal ([IO.File]::ReadAllText($(if ($windows) { Join-Path $foreign 'sentinel' } else { $foreign }))) 'foreign' 'Foreign command preserved'
+                Remove-Item -LiteralPath $bin -Recurse -Force
+                $foreignDirectory = Join-Path $root 'foreign'; New-Item -ItemType Directory $foreignDirectory | Out-Null
+                $foreignCommand = Join-Path $foreignDirectory $(if ($windows) { 'opencode-mcp.exe' } else { 'opencode-mcp' })
+                [IO.File]::WriteAllText($foreignCommand, 'foreign PATH sentinel')
+                if (-not $windows) { & chmod +x $foreignCommand; if ($LASTEXITCODE -ne 0) { throw 'Foreign fixture chmod failed.' } }
+                try {
+                  $env:PATH = $foreignDirectory + [IO.Path]::PathSeparator + $originalPath
+                  Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Install collision: $foreignCommand.")
+                  Assert-Equal ([IO.File]::ReadAllText($foreignCommand)) 'foreign PATH sentinel' 'Foreign PATH bytes unchanged'
+                  Assert-Equal (Test-Path -LiteralPath $bin) $false 'Foreign PATH refusal never mutates destination'
+                } finally { $env:PATH = $originalPath }
+                if (-not $windows) {
+                  $commands = Join-Path $root 'link-obstruction'; New-Item -ItemType Directory $commands | Out-Null
+                  $realLink = @(Get-Command ln -CommandType Application)[0].Source
+                  $fixtureLink = Join-Path $commands 'ln'
+                  $quotedCommand = $command.Replace("'", "'\''")
+                  [IO.File]::WriteAllText($fixtureLink, "#!/bin/sh`n'$realLink' `"`$@`" || exit 1`nmkdir '$quotedCommand'`nprintf foreign > '$quotedCommand/sentinel'`n")
+                  & chmod +x $fixtureLink; if ($LASTEXITCODE -ne 0) { throw 'Link fixture chmod failed.' }
+                  try {
+                    $env:PATH = $commands + ':' + $originalPath
+                    Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Install collision: $command.", "opencode-mcp: Cleanup failed; retained owned directory: $bin.")
+                    Assert-Equal ([IO.File]::ReadAllText((Join-Path $command 'sentinel'))) 'foreign' 'Racing directory is not replaced'
+                    Assert-Equal @(Get-ChildItem -LiteralPath $command -Force | ForEach-Object Name) @('sentinel') 'Candidate link is never moved into racing directory'
+                  } finally { $env:PATH = $originalPath; Remove-Item -LiteralPath $bin -Recurse -Force }
+                  $realMove = @(Get-Command mv -CommandType Application)[0].Source
+                  $collisionMove = Join-Path $commands 'mv'; $linkPrefix = ($bin + '/.opencode-mcp-').Replace("'", "'\''")
+                  Remove-Item -LiteralPath $fixtureLink
+                  [IO.File]::WriteAllText($collisionMove, "#!/bin/sh`ncase `"`$2`" in '$linkPrefix'*) mkdir '$quotedCommand'; printf foreign > '$quotedCommand/sentinel';; esac`nexec '$realMove' `"`$@`"`n")
+                  & chmod +x $collisionMove; if ($LASTEXITCODE -ne 0) { throw 'Rename collision fixture chmod failed.' }
+                  try {
+                    $env:PATH = $commands + ':' + $originalPath
+                    Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Install collision: $command.", "opencode-mcp: Cleanup failed; retained owned directory: $bin.")
+                    Assert-Equal ([IO.File]::ReadAllText((Join-Path $command 'sentinel'))) 'foreign' 'Post-check directory bytes survive rename'
+                    Assert-Equal @(Get-ChildItem -LiteralPath $command -Force | ForEach-Object Name) @('sentinel') 'Nested temporary link is removed'
+                  } finally { $env:PATH = $originalPath; Remove-Item -LiteralPath $bin -Recurse -Force }
+                }
+              }
+              Invoke-Case Uninstall_Preserves_Preexisting_Directory {
+                New-Item -ItemType Directory $bin | Out-Null
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Equal (Test-Path -LiteralPath $bin -PathType Container) $true 'Preexisting installation directory survives empty'
+                Assert-Equal @(Get-ChildItem -LiteralPath $bin -Force | ForEach-Object Name) @() 'No installer entry remains in preexisting directory'
+                Remove-Item -LiteralPath $bin
+              }
+              Invoke-Case Install_Refuses_Bad_Checksum {
+                $bad = Join-Path $root 'bad'; New-Item -ItemType Directory $bad | Out-Null
+                Copy-Item -LiteralPath (Join-Path $assets $archiveName) $bad
+                $valid = (Get-FileHash (Join-Path $bad $archiveName) -Algorithm SHA256).Hash.ToLowerInvariant() + "  $archiveName`n"
+                foreach ($entry in @('', ($valid + $valid), "malformed  $archiveName`n", (('0' * 64) + "  $archiveName`n"))) {
+                  [IO.File]::WriteAllText((Join-Path $bad 'SHA256SUMS'), $entry)
+                  $message = if ($entry.StartsWith(('0' * 64))) { 'SHA-256 mismatch' } else { 'Invalid checksum entry' }
+                  Assert-Result (Invoke-Installer @() $bad) 2 @("opencode-mcp: ${message}: $archiveName.")
+                  Assert-Equal (Test-Path -LiteralPath $command) $false 'Checksum refusal never publishes command'
+                }
+              }
+              if ($windows) { Invoke-Case Install_Refuses_Missing_Command {
+                $missing = Join-Path $root 'missing-command'; New-Item -ItemType Directory $missing | Out-Null
+                $missingArchive = Join-Path $missing $archiveName
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                $zip = [IO.Compression.ZipFile]::Open($missingArchive, 'Create')
+                try { [void]$zip.CreateEntry('LICENSE') } finally { $zip.Dispose() }
+                $hash = (Get-FileHash $missingArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+                [IO.File]::WriteAllText((Join-Path $missing 'SHA256SUMS'), "$hash  $archiveName`n")
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Fresh failure starts with absent installation directory'
+                $result = Invoke-Installer @() $missing
+                Assert-Result $result 1 @('opencode-mcp: Installation failed during staging.')
+                Assert-Equal $result.Verbose @('VERBOSE: System.Management.Automation.RuntimeException: Native command is absent.') 'Child runtime exposes the staging cause exactly once'
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Fresh failure restores absent installation directory'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                Assert-Installed
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+              } }
+              Invoke-Case Install_Refuses_Unsupported_Host {
+                if ($windows) {
+                  $native = $env:PROCESSOR_ARCHITEW6432; $architecture = $env:PROCESSOR_ARCHITECTURE
+                  try {
+                    $env:PROCESSOR_ARCHITEW6432 = 'UNKNOWN'; $env:PROCESSOR_ARCHITECTURE = 'UNKNOWN'
+                    $observation = "function Get-ItemProperty { param(`$LiteralPath, `$Name); @{ PROCESSOR_ARCHITECTURE = 'UNKNOWN' } }`n& '" + $installer.Replace("'", "''") + "' @args`nexit `$LASTEXITCODE"
+                    Assert-Result (Invoke-Installer @() $assets $bin $data $observation) 2 @('opencode-mcp: Unsupported platform: Windows/UNKNOWN.')
+                    $env:PROCESSOR_ARCHITEW6432 = ''; $env:PROCESSOR_ARCHITECTURE = 'AMD64'
+                    Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                    Assert-Installed
+                    Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                    $env:PROCESSOR_ARCHITEW6432 = ''; $env:PROCESSOR_ARCHITECTURE = 'x86'
+                    Assert-Result (Invoke-Installer @()) 2 @('opencode-mcp: A 64-bit operating system and shell process are required.')
+                  } finally { $env:PROCESSOR_ARCHITEW6432 = $native; $env:PROCESSOR_ARCHITECTURE = $architecture }
+                } else {
+                  $commands = Join-Path $root 'observations'; New-Item -ItemType Directory $commands | Out-Null
+                  $uname = Join-Path $commands 'uname'; $getconf = Join-Path $commands 'getconf'
+                  try {
+                    $env:PATH = $commands + ':' + $originalPath
+                    foreach ($observation in @(@('Linux','x86_64','64','musl'), @('Linux','x86_64','32','glibc 2.35'), @('Unknown','mystery','64','glibc 2.35'), @('Linux','mystery','64','glibc 2.35'))) {
+                      [IO.File]::WriteAllText($uname, "#!/bin/sh`ncase `"`$1`" in -s) echo '$($observation[0])';; *) echo '$($observation[1])';; esac`n")
+                      [IO.File]::WriteAllText($getconf, "#!/bin/sh`ncase `"`$1`" in LONG_BIT) echo '$($observation[2])';; *) echo '$($observation[3])';; esac`n")
+                      & chmod +x $uname $getconf; if ($LASTEXITCODE -ne 0) { throw 'Observation fixture chmod failed.' }
+                      $message = if ($observation[2] -eq '32') { 'A 64-bit operating system and shell process are required.' } elseif ($observation[3] -eq 'musl') { 'Linux requires glibc; musl is not supported.' } else { "Unsupported platform: $($observation[0])/$($observation[1])." }
+                      Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: $message")
+                    }
+                  } finally { $env:PATH = $originalPath }
+                }
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Unsupported host never mutates destination'
+              }
+              Invoke-Case Argument_Refusals {
+                $invalid = @(if ($windows) { '-Version', ('v' + $version) } else { '--version', ('v' + $version) })
+                Assert-Result (Invoke-Installer $invalid) 2 @('opencode-mcp: Version must be an exact SemVer 2.0.0 value without a leading v.')
+                Assert-Result (Invoke-Installer ($uninstall + $explicit)) 2 @('opencode-mcp: Uninstall accepts only the installation directory.')
+                if (-not $windows) {
+                  Assert-Result (Invoke-Installer @('--version=invalid')) 2 @('opencode-mcp: Unknown option: --version=invalid.')
+                  Assert-Result (Invoke-Installer ($explicit + $explicit)) 2 @('opencode-mcp: Option may be specified only once: --version.')
+                  Assert-Result (Invoke-Installer @('--version')) 2 @('opencode-mcp: Option requires a value: --version.')
+                  $env:SHELL = '/bin/unsupported'
+                  try { Assert-Result (Invoke-Installer $addPath) 2 @('opencode-mcp: Unsupported shell for --add-to-path: unsupported.') }
+                  finally { $env:SHELL = '/bin/sh' }
+                }
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Argument refusal never mutates destination'
+              }
+              Invoke-Case Pipe_Invocation {
+                if ($windows) {
+                  Add-Type -TypeDefinition @'
+          namespace OpenCodeMcpInstaller {
+              public static class NativeMethods {
+                  public static System.IntPtr SendMessageTimeout(System.IntPtr w, uint m,
+                      System.UIntPtr p, string l, uint f, uint t, out System.UIntPtr r) {
+                      r = System.UIntPtr.Zero;
+                      return System.IntPtr.Zero;
+                  }
+              }
+          }
+          '@
+                  # A failed broadcast must not undo a successful registry write.
+                  $pipeOutput = @(Invoke-InstallerScriptBlock @{ AssetDir = $assets; InstallDir = $bin; AddToPath = $true })
+                  Assert-Equal $pipeOutput @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.') 'Scriptblock installs with consent'
+                  Assert-Installed
+                  Assert-Equal $env:PATH $originalPath 'Scriptblock never rewrites caller PATH'
+                  $pipeOutput = @(Invoke-InstallerScriptBlock @{ Uninstall = $true; InstallDir = $bin })
+                  Assert-Equal $pipeOutput @("opencode-mcp: Uninstalled opencode-mcp: $bin") 'Repeated in-session broadcast reuses interop type'
+                  Assert-Equal (Get-RawPath) $rawPath 'Scriptblock uninstall restores original raw PATH'
+                  $caught = $null
+                  $diagnostics.Verbose = @()
+                  try { Invoke-InstallerScriptBlock @{ AssetDir = $bad; InstallDir = (Join-Path $root 'pipe-failure') } }
+                  catch { $caught = $_.Exception.Message }
+                  Assert-Equal $caught "opencode-mcp: SHA-256 mismatch: $archiveName." 'Scriptblock failure is terminating and caller continues'
+                  Assert-Equal $diagnostics.Verbose @("VERBOSE: System.Management.Automation.RuntimeException: opencode-mcp: SHA-256 mismatch: $archiveName.", "VERBOSE: System.Management.Automation.RuntimeException: opencode-mcp: SHA-256 mismatch: $archiveName.") 'Original refusal and final scriptblock throw each expose their cause once'
+                  $outer = "param(`$AssetDir, `$InstallDir)`ntry { & ([scriptblock]::Create([IO.File]::ReadAllText('" + $installer.Replace("'", "''") + "'))) -AssetDir `$AssetDir -InstallDir `$InstallDir -Verbose } catch { `$_.Exception.Message }`n'outer-continued'"
+                  Assert-Result (Invoke-Installer @() $bad $bin $data $outer) 0 @("opencode-mcp: SHA-256 mismatch: $archiveName.", 'outer-continued')
+                  $outer = "`$env:OS = 'unsupported'`n`$VerbosePreference = 'Continue'`ntry { Invoke-Expression ([IO.File]::ReadAllText('" + $installer.Replace("'", "''") + "')) -Verbose } catch { `$_.Exception.Message }`n'iex-outer-continued'"
+                  Assert-Result (Invoke-Installer @() $assets $bin $data $outer) 0 @("opencode-mcp: Unsupported platform: $([Environment]::OSVersion.Platform)/$env:PROCESSOR_ARCHITECTURE.", 'iex-outer-continued')
+                  $functionsBefore = @(Get-ChildItem Function: | ForEach-Object Name)
+                  $callerVersion = $version; $Version = 'caller-version'
+                  $definitions = $text.Substring(0, $text.LastIndexOf("`n", $text.TrimEnd().Length - 1) + 1)
+                  Invoke-Expression $definitions
+                  Assert-Equal $Version 'caller-version' 'iex definitions preserve caller parameter variables'
+                  Assert-Equal @(Get-ChildItem Function: | Where-Object { $functionsBefore -notcontains $_.Name } | ForEach-Object Name) @('Invoke-OpenCodeMcpInstaller') 'iex exposes only the entry function'
+                  $version = $callerVersion
+                  $processDirectory = [Environment]::CurrentDirectory
+                  $otherLocation = Join-Path $root 'process-location'; New-Item -ItemType Directory $otherLocation | Out-Null
+                  [Environment]::CurrentDirectory = $otherLocation
+                  Push-Location $root
+                  try {
+                    $pipeOutput = @(Invoke-InstallerScriptBlock @{ AssetDir = $assets; InstallDir = (Split-Path $bin -Leaf) })
+                    Assert-Equal $pipeOutput @($installedMessage, 'opencode-mcp: PATH unchanged.') 'Relative install directory resolves against PowerShell location'
+                  } finally { Pop-Location; [Environment]::CurrentDirectory = $processDirectory }
+                  Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                  Assert-Equal (Test-Path -LiteralPath $command) $false 'Successful uninstall retry removes command'
+                  Assert-Equal (Test-Path -LiteralPath $private) $false 'Successful uninstall retry removes records and payload'
+                  $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
+                  $observations = @{ Protocols = @(); Assets = @() }
+                  function Invoke-WebRequest {
+                    param([switch]$UseBasicParsing, $Uri, $OutFile)
+                    $observations.Protocols += [string][Net.ServicePointManager]::SecurityProtocol
+                    $observations.Assets += ([uri]$Uri).Segments[-1]
+                    if ($OutFile) { [IO.File]::Copy((Join-Path $assets ([uri]$Uri).Segments[-1]), $OutFile) }
+                    else { @{ Content = [IO.File]::ReadAllText((Join-Path $assets ([uri]$Uri).Segments[-1])) } }
+                  }
+                  try {
+                    foreach ($protocol in @(@('SystemDefault', 'SystemDefault'), @('Tls, Tls11', 'Tls, Tls11, Tls12'))) {
+                      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]$protocol[0]
+                      $observations.Protocols = @()
+                      $observations.Assets = @()
+                      Assert-Equal @(Invoke-InstallerScriptBlock @{ InstallDir = $bin }) @($installedMessage, 'opencode-mcp: PATH unchanged.') 'Download fixture installs the untouched candidate'
+                      Assert-Equal $observations.Protocols @($protocol[1], $protocol[1]) 'TLS preserves SystemDefault or adds TLS 1.2 without replacing existing flags'
+                      Assert-Equal $observations.Assets @('SHA256SUMS', $archiveName) 'Fresh download requests checksum then archive'
+                      Assert-Installed
+                      $observations.Assets = @()
+                      Assert-Equal @(Invoke-InstallerScriptBlock @{ InstallDir = $bin }) @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.') 'Repeat HTTPS installation is idempotent'
+                      Assert-Equal $observations.Assets @('SHA256SUMS') 'Already installed downloads only SHA256SUMS'
+                      Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                    }
+                  } finally { [Net.ServicePointManager]::SecurityProtocol = $originalProtocol; Remove-Item Function:Invoke-WebRequest }
+                  Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                } else { Assert-Result (Invoke-Installer @() $assets $bin $data $text) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.') }
+                Assert-Installed
+              }
+              Invoke-Case Install_And_Uninstall_Path {
+                $shells = @(if ($windows) { 'Windows' } else { 'sh','bash','zsh','fish' })
+                foreach ($shell in $shells) {
+                  Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                  if (-not $windows) {
+                    $env:SHELL = '/bin/' + $shell; $env:ZDOTDIR = Join-Path $root 'zsh'; $env:XDG_CONFIG_HOME = Join-Path $root 'config'
+                    $loginShell = @(Get-Command $shell -CommandType Application -ErrorAction SilentlyContinue)[0]
+                    New-Item -ItemType Directory $env:ZDOTDIR -Force | Out-Null
+                    $startup = switch ($shell) {
+                      sh { Join-Path $HOME '.profile' }
+                      bash { @('.bash_profile','.bash_login','.profile' | ForEach-Object { Join-Path $HOME $_ } | Where-Object { Test-Path -LiteralPath $_ })[0] }
+                      zsh { Join-Path $env:ZDOTDIR '.zprofile' }
+                      fish { Join-Path $env:XDG_CONFIG_HOME 'fish/conf.d/opencode-mcp.fish' }
+                    }
+                    Save-Startup $startup
+                    if ($shell -ne 'fish') { [IO.File]::AppendAllText($startup, "`n# installer-prefix") }
+                    else {
+                      New-Item -ItemType Directory (Split-Path $startup) -Force | Out-Null
+                      [IO.File]::WriteAllText($startup, '# foreign fish configuration')
+                      Assert-Result (Invoke-Installer $addPath) 2 @("opencode-mcp: PATH ownership is ambiguous: $startup.")
+                      Assert-Equal ([IO.File]::ReadAllText($startup)) '# foreign fish configuration' 'Existing fish file is never adopted'
+                      Remove-Item -LiteralPath $startup
+                    }
+                  }
+                  $prefix = if ($windows) { Get-RawPath } elseif ($shell -ne 'fish') { ,([IO.File]::ReadAllBytes($startup)) }
+                  $permissions = if (-not $windows -and $shell -ne 'fish') { (Get-Item -LiteralPath $startup -Force).UnixFileMode }
+                  Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                  Assert-Installed
+                  if (-not $windows) {
+                    $quotedPath = $bin.Replace("'", "'\''")
+                    $block = "# >>> opencode-mcp $data >>>`nexport PATH='$quotedPath':`"`$PATH`"`n# <<< opencode-mcp $data <<<`n"
+                    $kind = '0'
+                    $startupBytes = [byte[]]($prefix + [Text.Encoding]::UTF8.GetBytes("`n$block"))
+                    if ($shell -eq 'fish') {
+                      $quotedPath = $bin.Replace('\', '\\').Replace("'", "\'")
+                      $block = "if not contains -- '$quotedPath' `$PATH; set -gx PATH '$quotedPath' `$PATH; end`n"
+                      $kind = 'fish'
+                      $startupBytes = [Text.Encoding]::UTF8.GetBytes($block)
+                    }
+                    Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes($startup))) ([Convert]::ToBase64String($startupBytes)) 'Exact startup bytes include the independently quoted owned block'
+                    Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private 'path.record')))) ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$startup`n$kind`n$block"))) 'Exact PATH ownership record bytes'
+                    if ($loginShell) {
+                      $resolved = & $loginShell.Source -l -c 'command -v opencode-mcp'
+                      Assert-Equal $resolved $command 'Fresh login resolves installed command'
+                      Write-Host "Login lookup performed: $shell"
+                    } else { Write-Host "Login lookup unavailable: $shell; startup bytes, block, record and removal remain covered." }
+                  }
+                  $ownedPath = Get-RawPath
+                  if ($windows) {
+                    $pathRecord = Join-Path $private 'path.record'; $recordBytes = [IO.File]::ReadAllBytes($pathRecord)
+                    $kind = $userKey.GetValueKind('Path'); $caseBin = $bin.ToUpperInvariant()
+                    try {
+                      $recordLines = [IO.File]::ReadAllLines($pathRecord); $recordLines[0] = $recordLines[0].ToUpperInvariant()
+                      [IO.File]::WriteAllLines($pathRecord, $recordLines, (New-Object Text.UTF8Encoding $false))
+                      $userKey.SetValue('Path', $ownedPath.Replace((Join-Path $bin 'current'), (Join-Path $bin 'current').ToLowerInvariant()), $kind)
+                      $caseInstall = (Get-Item -LiteralPath $caseBin).FullName; $caseCommand = Join-Path $caseInstall 'current/opencode-mcp.exe'
+                      Assert-Result (Invoke-Installer $addPath $assets $caseBin) 0 @("opencode-mcp: Already installed $version ($rid): $caseCommand", 'opencode-mcp: PATH unchanged.')
+                      Assert-Installed
+                      Assert-Result (Invoke-Installer $uninstall $assets $caseBin) 0 @("opencode-mcp: Uninstalled opencode-mcp: $caseInstall")
+                      Assert-Equal (Get-RawPath) $prefix 'Different-case uninstall removes only the owned token'
+                    } finally { if (Test-Path -LiteralPath $pathRecord) { [IO.File]::WriteAllBytes($pathRecord, $recordBytes) } }
+                    Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                  }
+                  Assert-Result (Invoke-Installer $addPath) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                  Assert-Equal (Get-RawPath) $ownedPath 'No duplicate PATH ownership'
+                  if (-not $windows) {
+                    $alias = Join-Path $root 'bin-alias'; New-Item -ItemType SymbolicLink -Path $alias -Target $bin | Out-Null
+                    try {
+                      $env:PATH = $alias + '/:' + $originalPath
+                      Assert-Result (Invoke-Installer @()) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                      Assert-Installed
+                    } finally { $env:PATH = $originalPath; Remove-Item -LiteralPath $alias }
+                  }
+                  Assert-Result (Invoke-Installer $upgrade $fixture) 0 @("opencode-mcp: Installed $alternate ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                  Assert-Installed $alternate $alternatePayload
+                  Assert-Equal (Get-RawPath) $ownedPath 'Upgrade retains owned PATH without another consent flag'
+                  Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                  $records = @{}
+                  foreach ($name in @('owner','current','inventory','path.record')) { $records[$name] = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name))) }
+                  $heldCommand = $null
+                  try {
+                    if ($windows) { $heldCommand = Start-HeldCommand }
+                    else { & chmod a-w $bin; if ($LASTEXITCODE -ne 0) { throw 'Uninstall obstruction failed.' } }
+                    Assert-Result (Invoke-Installer $uninstall) 1 @('opencode-mcp: Installation failed during uninstall.')
+                    if ($windows) { Assert-Equal $heldCommand.HasExited $false 'Uninstall never stops the held native child' }
+                    Assert-Installed
+                    Assert-Equal (Get-RawPath) $ownedPath 'Failed command removal preserves owned PATH'
+                    foreach ($name in @('owner','current','inventory','path.record')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $records[$name] "Failed uninstall preserves $name bytes" }
+                  } finally {
+                    Stop-HeldCommand $heldCommand
+                    if (-not $windows) { & chmod u+w $bin; if ($LASTEXITCODE -ne 0) { throw 'Uninstall obstruction cleanup failed.' } }
+                  }
+                  if ($windows) {
+                    Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                    Assert-Equal (Get-RawPath) $prefix 'Uninstall after child exit reverses owned token'
+                    Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                  }
+                  if (-not $windows -and $shell -eq 'zsh') {
+                    $parent = Split-Path $startup
+                    try {
+                      & chmod a-w $parent; if ($LASTEXITCODE -ne 0) { throw 'PATH obstruction failed.' }
+                      Assert-Result (Invoke-Installer $uninstall) 1 @('opencode-mcp: Installation failed during path.')
+                      Assert-Installed
+                      Assert-Equal (Get-RawPath) $ownedPath 'Failed PATH removal restores command and keeps block'
+                      foreach ($name in @('owner','current','inventory','path.record')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $records[$name] "Failed PATH removal preserves $name bytes" }
+                    } finally { & chmod u+w $parent; if ($LASTEXITCODE -ne 0) { throw 'PATH obstruction cleanup failed.' } }
+                    $tempNames = @(Get-ChildItem -LiteralPath $parent -Filter '.opencode-mcp-*' -Force | ForEach-Object Name | Sort-Object)
+                    $quotedStartup = $startup.Replace("'", "'\''")
+                    [IO.File]::WriteAllText($moveFixture, "#!/bin/sh`n'$realMove' `"`$@`" || exit 1`ncase `"`$3`" in '$quotedStartup') kill -TERM `"`$PPID`";; esac`n")
+                    & chmod +x $moveFixture; if ($LASTEXITCODE -ne 0) { throw 'PATH signal fixture chmod failed.' }
+                    try {
+                      $env:PATH = $signalCommands + ':' + $originalPath
+                      Assert-Result (Invoke-Installer $uninstall) 143 @()
+                      Assert-Equal (Test-Path -LiteralPath $command) $false 'Removed PATH block never gets a restored command link'
+                      Assert-Equal (Test-Path -LiteralPath (Join-Path $private 'path.record')) $false 'Removed block leaves no PATH ownership record'
+                      Assert-Equal ([IO.File]::ReadAllText($startup).Contains("# >>> opencode-mcp $data >>>")) $false 'Owned block is gone after interrupted uninstall'
+                      Assert-Equal @(Get-ChildItem -LiteralPath $parent -Filter '.opencode-mcp-*' -Force | ForEach-Object Name | Sort-Object) $tempNames 'Startup rewrite leaves no temporary file'
+                    } finally {
+                      $env:PATH = $originalPath
+                      [IO.File]::WriteAllBytes($startup, [Convert]::FromBase64String($ownedPath))
+                      [IO.File]::WriteAllBytes((Join-Path $private 'path.record'), [Convert]::FromBase64String($records['path.record']))
+                      if (-not (Test-Path -LiteralPath $command)) { New-Item -ItemType SymbolicLink -Path $command -Target (Join-Path (Get-Payload) 'opencode-mcp') | Out-Null }
+                    }
+                  }
+                  if ($windows) {
+                    $ownedKind = $userKey.GetValueKind('Path')
+                    try {
+                      $userKey.SetValue('Path', $ownedPath + ';' + (Join-Path $bin 'current'), $ownedKind)
+                      Assert-Result (Invoke-Installer $uninstall) 2 @('opencode-mcp: PATH ownership is ambiguous: user-Path.')
+                      Assert-Equal (Get-RawPath) ($ownedPath + ';' + (Join-Path $bin 'current')) 'Ambiguous raw tokens are preserved'
+                    } finally { $userKey.SetValue('Path', $ownedPath, $ownedKind) }
+                    $fresh = $userKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    Assert-Equal @($fresh -split ';' | Where-Object { $_ -ceq (Join-Path $bin 'current') }) @((Join-Path $bin 'current')) 'Owned raw token appears once'
+                    $env:PATH = [Environment]::ExpandEnvironmentVariables($fresh) + ';' + $originalPath
+                    Assert-Equal @(Get-Command opencode-mcp -CommandType Application)[0].Source $command 'Fresh environment resolves command'
+                    $env:PATH = $originalPath
+                    $userKey.SetValue('Path', $fresh + ';installer-neighbor', $userKey.GetValueKind('Path'))
+                  } elseif ($shell -ne 'fish') {
+                    [IO.File]::AppendAllText($startup, "# installer-neighbor`n")
+                    $ownedBytes = [IO.File]::ReadAllBytes($startup)
+                    try {
+                      $changed = [IO.File]::ReadAllText($startup).Replace('export PATH=', 'export pATH=')
+                      [IO.File]::WriteAllText($startup, $changed)
+                      Assert-Result (Invoke-Installer $uninstall) 2 @("opencode-mcp: PATH ownership is ambiguous: $startup.")
+                      Assert-Equal ([IO.File]::ReadAllText($startup)) $changed 'One-byte owned-block edit preserved'
+                    } finally { [IO.File]::WriteAllBytes($startup, $ownedBytes) }
+                    try {
+                      [IO.File]::AppendAllText($startup, "# >>> opencode-mcp $data >>>`n")
+                      Assert-Result (Invoke-Installer $uninstall) 2 @("opencode-mcp: PATH ownership is ambiguous: $startup.")
+                    } finally { [IO.File]::WriteAllBytes($startup, $ownedBytes) }
+                  } else {
+                    $quotedFishPath = $bin.Replace('\', '\\').Replace("'", "\'")
+                    Assert-Equal ([IO.File]::ReadAllText($startup)) "if not contains -- '$quotedFishPath' `$PATH; set -gx PATH '$quotedFishPath' `$PATH; end`n" 'Exact fish quoting supports apostrophes'
+                    $ownedBytes = [IO.File]::ReadAllBytes($startup)
+                    try {
+                      [IO.File]::AppendAllText($startup, '# changed')
+                      Assert-Result (Invoke-Installer $uninstall) 2 @("opencode-mcp: PATH ownership is ambiguous: $startup.")
+                    } finally { [IO.File]::WriteAllBytes($startup, $ownedBytes) }
+                  }
+                  Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                  if ($windows) {
+                    $expectedRaw = if ([string]::IsNullOrEmpty($prefix)) { 'installer-neighbor' } else { $prefix + ';installer-neighbor' }
+                    Assert-Equal (Get-RawPath) $expectedRaw 'Exact raw representation preserves neighboring tokens'
+                    Restore-RawPath
+                  }
+                  elseif ($shell -ne 'fish') {
+                    $expectedBytes = [byte[]]($prefix + [Text.Encoding]::UTF8.GetBytes("`n# installer-neighbor`n"))
+                    Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes($startup))) ([Convert]::ToBase64String($expectedBytes)) 'Exact surrounding startup bytes survive'
+                    Assert-Equal (Get-Item -LiteralPath $startup -Force).UnixFileMode $permissions 'Startup permissions survive'
+                  }
+                  else { Assert-Equal (Test-Path -LiteralPath $startup) $false 'Owned fish file removed' }
+                  Assert-Equal (Test-Path -LiteralPath $bin) $false 'Successful uninstall retry removes command directory'
+                  Assert-Equal (Test-Path -LiteralPath $private) $false 'Successful uninstall retry removes private root'
+                  # The next shell starts from an installed state, then explicitly removes it.
+                  Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                }
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                if (-not $windows) {
+                  $env:SHELL = '/bin/sh'; $startup = Join-Path $HOME '.profile'
+                  Remove-Item -LiteralPath $startup -Force
+                  Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                  Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                  Assert-Equal (Test-Path -LiteralPath $startup) $false 'Installer-created startup file disappears when empty'
+                  $env:SHELL = '/bin/zsh'; $env:ZDOTDIR = Join-Path $root 'rollback-startup'
+                  New-Item -ItemType Directory $env:ZDOTDIR | Out-Null
+                  $startup = Join-Path $env:ZDOTDIR '.zprofile'; Save-Startup $startup
+                  $quotedStartup = $startup.Replace("'", "'\''"); $quotedParent = $env:ZDOTDIR.Replace("'", "'\''")
+                  [IO.File]::WriteAllText($moveFixture, "#!/bin/sh`n'$realMove' `"`$@`" || exit 1`ncase `"`$3`" in '$quotedStartup') chmod a-w '$quotedParent'; kill -TERM `"`$PPID`";; esac`n")
+                  & chmod +x $moveFixture; if ($LASTEXITCODE -ne 0) { throw 'Rollback fixture chmod failed.' }
+                  try {
+                    $env:PATH = $signalCommands + ':' + $originalPath
+                    Assert-Result (Invoke-Installer $addPath) 143 @("opencode-mcp: Cleanup failed; retained owned directory: $data.")
+                    Assert-Equal ([IO.File]::ReadAllLines((Join-Path $data 'path.record'))[0]) $startup 'Failed PATH rollback retains the owned startup record'
+                    Assert-Equal ([IO.File]::ReadAllLines($startup)[0]) "# >>> opencode-mcp $data >>>" 'Failed PATH rollback retains its exact block'
+                    Assert-Equal @(Get-ChildItem -LiteralPath $env:ZDOTDIR -Force | ForEach-Object Name) @('.zprofile') 'Failed startup rewrite leaves no temporary file'
+                  } finally {
+                    $env:PATH = $originalPath
+                    & chmod u+w $env:ZDOTDIR; if ($LASTEXITCODE -ne 0) { throw 'Rollback fixture cleanup failed.' }
+                    @($data, $bin) | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Remove-Item -LiteralPath $_ -Recurse -Force }
+                    $env:SHELL = '/bin/sh'
+                  }
+                }
+              }
+              Invoke-Case Install_Preserves_Preexisting_Path {
+                $entry = if ($windows) { Join-Path $bin 'current' } else { $bin }
+                $env:PATH = $entry + [IO.Path]::PathSeparator + $originalPath
+                if ($windows) { $kind = if ($null -eq $rawPath) { [Microsoft.Win32.RegistryValueKind]::ExpandString } else { $rawKind }; $userKey.SetValue('Path', $entry + ';' + $rawPath, $kind) }
+                Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                Assert-Equal (Test-Path -LiteralPath (Join-Path $private 'path.record')) $false 'Preexisting PATH is not claimed'
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Equal ($env:PATH.Split([IO.Path]::PathSeparator)[0]) $entry 'Preexisting process token survives'
+                if ($windows) { Assert-Equal ((Get-RawPath) -split ';' | Select-Object -First 1) $entry 'Preexisting raw token survives'; Restore-RawPath }
+                $env:PATH = $originalPath
+              }
+              Invoke-Case Truncated_Download_Executes_Nothing {
+                $truncated = $text.Substring(0, $text.LastIndexOf("`n", $text.TrimEnd().Length - 1) + 1)
+                $result = Invoke-Installer @() $assets $bin $data $truncated
+                Assert-Result $result 0 @()
+                Assert-Equal $result.Stdout '' 'Truncated stream has empty stdout'
+                Assert-Equal $result.Stderr '' 'Truncated stream has empty stderr'
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Truncated stream never mutates destination'
+                Assert-Equal (Test-Path -LiteralPath $data) $false 'Truncated stream never creates data directory'
+              }
+              # Native startup always selects the untouched candidate, never the alternate fixture.
+              Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+              Assert-Installed
+              $env:OPENCODE_MCP_TEST_EXECUTABLE = $command
+              $env:OPENCODE_MCP_TEST_EXPECT_NATIVE = 'true'
+              dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter '/*/*/ExecutableTests/*' --report-trx --results-directory "artifacts/test-results/installer/$rid/$($PSVersionTable.PSVersion.Major)" --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+              if ($LASTEXITCODE -ne 0) { throw "Installed ExecutableTests failed: $LASTEXITCODE" }
+              Invoke-Case Uninstall_Leaves_Nothing {
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Exact installation root absent'
+                Assert-Equal (Test-Path -LiteralPath $private) $false 'Exact private root absent'
+                Assert-Equal ([IO.File]::ReadAllText((Join-Path $root 'neighbor'))) 'neighbor unchanged' 'Named sibling sentinel preserved'
+              }
+            } catch { $failure = $_ } finally {
+              # ExecutableTests owns and awaits its native children before it returns.
+              $env:PATH = $originalPath
+              if (Test-Path -LiteralPath (Join-Path $private 'owner')) {
+                $cleanup = Invoke-Installer $uninstall
+                if ($cleanup.Code -ne 0) { $cleanupErrors += ($cleanup.Lines -join "`n") }
+              }
+              foreach ($path in $snapshots.Keys) {
+                if ($null -eq $snapshots[$path]) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
+                else { [IO.File]::WriteAllBytes($path, $snapshots[$path]) }
+              }
+              if ($windows) { Restore-RawPath; $userKey.Dispose() }
+              $env:SHELL = $originalShell; $env:ZDOTDIR = $originalZdot; $env:XDG_CONFIG_HOME = $originalConfig
+              $env:OPENCODE_MCP_TEST_EXECUTABLE = $null; $env:OPENCODE_MCP_TEST_EXPECT_NATIVE = $null
+              if ($cleanupErrors.Count -eq 0 -and (Test-Path -LiteralPath $root)) { Remove-Item -LiteralPath $root -Recurse -Force }
+            }
+            if ($failure -or $cleanupErrors.Count) { throw ((@($failure | Where-Object { $null -ne $_ }) + $cleanupErrors) -join "`n") }
+          }
+          $caseFile = Join-Path $env:RUNNER_TEMP 'installer-cases.ps1'
+          [IO.File]::WriteAllText($caseFile, $cases.ToString())
+          & pwsh -NoProfile -File $caseFile
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 7 installer lifecycle failed.' }
+      - name: Installer lifecycle cases and installed ExecutableTests (Windows PowerShell 5.1)
+        id: legacy-test
+        if: ${{ !cancelled() && startsWith(matrix.rid, 'win-') }}
+        timeout-minutes: 35
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $legacy = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+          if (-not (Test-Path -LiteralPath $legacy)) { throw 'Windows PowerShell 5.1 is required.' }
+          & $legacy -NoProfile -File (Join-Path $env:RUNNER_TEMP 'installer-cases.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 installer lifecycle failed.' }
+      - name: List executable tests after failure
+        if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && (steps.test.outcome == 'failure' || steps.legacy-test.outcome == 'failure') }}
+        timeout-minutes: 5
+        run: |
+          dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/ExecutableTests/*" --list-tests
+          exit $LASTEXITCODE
+      - name: Record processes after tests
+        if: always()
+        run: |
+          dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
+          exit $LASTEXITCODE
+      - name: Upload process snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-process-snapshot-installer-${{ matrix.rid }}
+          path: ${{ runner.temp }}/process-snapshot/processes.txt
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: error
+      - name: Upload installer test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-installer-test-results-${{ matrix.rid }}
+          path: artifacts/test-results/installer/**
+          retention-days: ${{ env.NATIVE_ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: error
+
   consumer:
     name: Acquire (${{ matrix.rid }})
     needs: [prepare, packages]
