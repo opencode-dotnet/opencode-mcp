@@ -594,8 +594,9 @@ surface is a separate delivery increment after native and package proof, never a
 The release includes POSIX-shell and Windows PowerShell installers, copied unchanged from the
 candidate checkout. Their embedded default versions are checked projections of the committed
 product version. Explicit versions select immutable, version-pinned release assets; neither
-installer resolves “latest.” Each script contains exactly one assignment starting with its
-version prefix, without leading whitespace:
+installer resolves “latest.” Each script contains exactly one whole line that assigns its
+version variable, without leading whitespace; a longer variable name or a comment is not such a
+line:
 
 ```sh
 OPENCODE_MCP_RELEASE_VERSION='<version>'
@@ -646,7 +647,8 @@ Records are data, never sourced or evaluated.
 
 Windows verifies `.opencode-mcp\staging-<unique>`, renames `current` to
 `.opencode-mcp\previous-<unique>`, then renames staging to `current`. If the second rename fails,
-it restores the previous payload. It then replaces records and deletes the previous payload.
+it restores the previous payload and stops. Only after the second rename succeeds does it replace
+the records and delete the previous payload.
 A running command can make the first rename fail with `Installation failed during activation.`;
 nothing is stopped and the old installation remains intact. Individual activation surfaces are
 replaced atomically; this is not a crash-atomic transaction across filesystem state and user PATH.
