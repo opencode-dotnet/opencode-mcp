@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-10
+Date: 2026-11-14
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in
@@ -218,6 +218,16 @@ cannot own its server fails.
   tool stores; it does not mean SDK-first-use operations ran. Environment, ambient refusal,
   cold-store refusal, sentinel, private-SDK layout and cleanup are proven using synthetic state;
   a mutant of an isolation input runs only against that state, never a developer profile.
+- **Remote acquisition preserves the local boundary.** It uses the same owned-process environment,
+  private SDK and ambient-configuration refusal. The explicitly selected channel configuration is
+  copied into owned storage; the candidate feed supplies comparison evidence only and is never an
+  acquisition source. Missing remote inputs fail, never default to local acquisition or skip.
+  Remote global installation uses the plain install command without `--framework`; local-feed
+  tool-path acquisition retains `--framework net10.0`. Before global installation the fixture
+  resolves and validates its logical and physical owned global-tools path. Afterwards it requires
+  the shim/store there and unchanged real global-tool state. Both routes retain every running-entry,
+  version, whole-payload, protocol and cleanup assertion. GitHub credentials are written only to
+  owned configuration, never logged or included in uploaded artifacts.
 - **Bounded diagnostic retention is not a drain limit.** The owner drains stderr through EOF even
   after it has retained 200 selected lines. Each selected line is limited to 2,000 characters;
   oversized lines carry a truncation marker. Lifetime-category lines, selector refusals, and the

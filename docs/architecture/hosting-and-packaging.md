@@ -527,9 +527,10 @@ or packaged-startup claim.
   evidence, not candidate evidence. A source or build-input change makes a new candidate that is
   verified again; an earlier artifact or receipt is never relabeled as produced from a later
   commit.
-- Acquisition uses an exact product version and the complete controlled local feed through both
-  `dotnet dnx` and an owned tool-path installation; neither route installs globally or changes a
-  product tool manifest.
+- Local package acceptance uses an exact product version and the complete controlled feed through
+  DNX and owned tool-path installation. Real-channel acceptance additionally uses the selected remote
+  source configuration through DNX and global-tool installation inside an owned CLI home. Neither
+  route changes the machine's real global-tool store or a product tool manifest.
   Windows launches the SDK's `.cmd` through the absolute system command interpreter with a verbatim
   command tail; Unix launches the installed symbolic link directly, never by changing `PATH`.
 - Acquisition children use the process owner's isolation policy, extended with owned NuGet package,
@@ -538,6 +539,12 @@ or packaged-startup claim.
   NuGet configuration and macOS's fixed machine configuration are refused, never read or hidden.
   `../engineering/testing-style.md` section 6 owns the exact environment and SDK-first-use boundary.
   Cold means empty package, tool and temporary acquisition stores, not execution of SDK first use.
+- GitHub Packages acquisition uses `packaging/github-packages.nuget.config`, mapping this product's
+  root and implementation IDs exclusively to GitHub and other IDs to nuget.org. Authentication is
+  required even for public GitHub NuGet packages. Verification uses the job's `GITHUB_TOKEN` and
+  additionally requires public visibility for all seven packages, as seen by this repository's
+  Actions access; a failing metadata request fails closed. NuGet.org acquisition uses
+  `packaging/nuget-org.nuget.config`. Neither configuration acquires from the candidate reference feed.
 - A lazy session-owned real copy of the selected SDK contains only its host, complete SDK directory,
   required Core runtime and matching hostfxr. Acquisition and native startup run without a shared
   ASP.NET Core runtime. Contents-only tests and the managed pass do not create that copy.

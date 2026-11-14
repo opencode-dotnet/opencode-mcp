@@ -178,8 +178,9 @@ of their own, never beside the managed pass:
 - **Packages.** Tests that need SDK-produced packages from the feed carry the `Package` category.
   Unit tests of the package inspector and its policy over archives built in the test file system
   stay in the managed pass. The managed pass excludes that category with
-  `--treenode-filter "/*/*/*/*[Category!=Package]"`; the package pass runs the category on its owning
-  product-test project against the complete feed produced after the native pass.
+  `--treenode-filter "/*/*/*/*[Category!=Package]"`; the local package pass selects `PackageContentsTests`
+  and `PackageAcquisitionTests` on the owning product-test project against the complete feed produced
+  after the native pass. Remote `ChannelAcquisitionTests` run only in the separate channel pass.
 
 `../architecture/hosting-and-packaging.md` owns the native and package contract;
 `../ROADMAP.md` records which of these passes exist today.
@@ -251,7 +252,7 @@ After the complete native pass, consolidate its completed evidence and run:
 
 ```text
 dotnet run tools/native.cs -- pack-root --receipts artifacts/native-receipts --feed artifacts/feed
-dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/*/*[Category=Package]" --report-trx --results-directory artifacts/test-results/package/product --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter "/*/*/(PackageContentsTests|PackageAcquisitionTests)/*" --report-trx --results-directory artifacts/test-results/package/product --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
 ```
 
 Build the owning test project in Release before the no-build test pass. Set
@@ -300,8 +301,8 @@ It always records a process snapshot and uploads package test results. A failed 
 five-minute listing step, not a rerun. Native validation, package inspection, release-asset assembly
 and all six consumer legs must succeed at the pull request's head before queue entry. `CI result`
 remains the only required check.
-Contents-only acceptance makes no acquisition or packaged-startup claim. The complete Package
-category additionally exercises cold exact-version DNX, owned tool-path/shim startup, the installed
+Contents-only acceptance makes no acquisition or packaged-startup claim. The local acquisition
+class additionally exercises cold exact-version DNX, owned tool-path/shim startup, the installed
 HTTP entry, missing-host-implementation refusal on both routes, complete payload equality, observed
 native process paths and owned cleanup. Local matching-host results establish only that host's
 development evidence; they are no hosted, six-RID, final-candidate or publication claim.
@@ -309,9 +310,9 @@ development evidence; they are no hosted, six-RID, final-candidate or publicatio
 The `matrix` subcommand projects `consumer-matrix` from every manifest row in manifest order, with
 only `rid` and `runner`; no second RID list is maintained. After `packages` succeeds, each consumer
 leg runs on its matching RID host, downloads its own workflow run's complete `native-package-feed`
-to `artifacts/feed`, and runs the whole `Package` category with `OPENCODE_MCP_TEST_FEED` set to that
+to `artifacts/feed`, and runs `/*/*/(PackageContentsTests|PackageAcquisitionTests)/*` with `OPENCODE_MCP_TEST_FEED` set to that
 directory and `OPENCODE_MCP_TEST_RID` set to its matrix RID. A failed test after a successful build
-gets the same category's test listing under a five-minute guard unless cancelled, never a rerun.
+gets the same class filter's test listing under a five-minute guard unless cancelled, never a rerun.
 Each leg always records the prebuilt tool's post-test process snapshot and uploads
 `native-process-snapshot-consumer-<RID>` and `native-package-test-results-consumer-<RID>`, with
 retention governed by the native artifact rule above and missing files treated as errors. Package
@@ -347,6 +348,16 @@ published channel. Feed acceptance uses cold global-tool and DNX acquisition and
 running-payload path/SHA-256 equality with candidate evidence. NuGet.org's repository-signed package
 envelope is not compared with the original package digest. Release acceptance checks downloaded archive
 hashes against both the published checksum file and independent candidate receipts before execution.
+
+The manual `verify-channel.yml` validates the Native candidate, waits for exact channel presence,
+and selects only `ChannelAcquisitionTests` for feeds or `ExecutableTests` for release archives.
+Remote feed tests carry `Category("Package")` but never run in the local package pass or local check.
+They require explicit channel, owned configuration, candidate reference feed and matching RID inputs;
+missing inputs fail rather than skip. The reference feed supplies payload comparison evidence, not
+an acquisition source. GitHub Packages metadata and installs use the job's `GITHUB_TOKEN` with
+`packages: read`; every leg requires all seven packages to be public as seen by this repository's
+Actions access. Metadata failures fail closed. A successful aggregate retains manifest-ordered,
+nonzero test totals and result-artifact links in `channel-verification` for promotion.
 
 Secret-bearing channel jobs retain the existing test guards but upload only selected
 credential-redacted TRX and process snapshots. Credential files, acquisition stores and memory dumps

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Abstractions;
 using System.Text.Json.Nodes;
 using System.Xml.Linq;
@@ -15,6 +16,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     private readonly INativeProcessRunner _runner;
     private string? _configurationPath;
     private string? _framework;
+    private string[]? _realTools;
     private Task? _dispose;
     public OwnedToolAcquisition(IFileSystem fileSystem, INativeProcessRunner? runner = null, PrivateSdkCopy? sdk = null)
     {
@@ -33,6 +35,43 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
     public string SdkVersion { get; private set; } = "";
     public string SdkDirectory => _files.Path.Combine(_sdk.Root, "sdk", SdkVersion);
     public string ToolPath => _files.Path.Combine(OwnedRoot, "tool-path");
+    public string GlobalToolPath => _files.Path.Combine(OwnedRoot, "home", ".dotnet", "tools");
+    public async Task<ProcessLaunch> InstallGlobalAsync(string version, CancellationToken token)
+    {
+        try
+        {
+            var config = _configurationPath ?? throw new InvalidOperationException("Prepare the acquisition before installing.");
+            var path = GlobalToolPath;
+            TestContext.Current?.Output.WriteLine("Owned global tools: " + path);
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var resolver = new PhysicalPathResolver(_files);
+            if (!_files.Path.GetFullPath(path).StartsWith(OwnedRoot + _files.Path.DirectorySeparatorChar, comparison)
+                || !resolver.Resolve(path).StartsWith(resolver.Resolve(OwnedRoot) + _files.Path.DirectorySeparatorChar, comparison))
+            {
+                throw new InvalidOperationException("Global tools directory must remain inside the owned root: " + path);
+            }
+            _files.Directory.CreateDirectory(path);
+            RequireColdStores([.. ColdStores.Select(relative => _files.Path.Combine(OwnedRoot, relative)), path]);
+            _realTools = ObserveRealTools();
+            InstallResult = await RunCommandAsync(BaseLaunch(["tool", "install", "-g", "OpenCodeDotNet.Mcp", "--version", version, "--configfile", config]), token);
+            if (InstallResult.ExitCode != 0)
+            {
+                InstalledCommands = ObserveInstalledCommands();
+                throw new InvalidOperationException("Global installation failed: " + InstallResult.Output.Trim());
+            }
+            var launch = await CompleteInstallAsync(path, token);
+            if (!_files.Directory.Exists(_files.Path.Combine(path, ".store")))
+            {
+                throw new InvalidOperationException("The SDK reported success without the global tool store: " + path);
+            }
+            return launch;
+        }
+        catch (Exception original)
+        {
+            await ReleaseAfterFailureAsync(original);
+            throw;
+        }
+    }
     public string? InstalledExecutable { get; private set; }
     public NativeProcessResult? InstallResult { get; private set; }
     public IReadOnlyList<string>? InstalledCommands { get; private set; }
@@ -71,25 +110,42 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
                 InstalledCommands = ObserveInstalledCommands();
                 throw new InvalidOperationException("Tool-path installation failed: " + InstallResult.Output.Trim());
             }
-            var shim = _files.Path.Combine(ToolPath, OperatingSystem.IsWindows() ? "opencode-mcp.cmd" : "opencode-mcp");
-            if (!_files.File.Exists(shim))
-            {
-                throw new InvalidOperationException("The SDK reported success without the installed command: " + shim);
-            }
-            InstalledExecutable = await FindNativeEntryAsync(ToolPath, token);
-            var launch = BaseLaunch(["--transport", "stdio"]) with { FileName = shim };
-            return OperatingSystem.IsWindows() ? launch with
-            {
-                FileName = _files.Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-                Arguments = [],
-                VerbatimCommandLine = "/d /e:on /v:off /s /c \"\"" + shim + "\" --transport stdio\"",
-            } : launch;
+            return await CompleteInstallAsync(ToolPath, token);
         }
         catch (Exception original)
         {
             await ReleaseAfterFailureAsync(original);
             throw;
         }
+    }
+
+    private async Task<ProcessLaunch> CompleteInstallAsync(string directory, CancellationToken token)
+    {
+        var shim = _files.Path.Combine(directory, OperatingSystem.IsWindows() ? "opencode-mcp.cmd" : "opencode-mcp");
+        if (!_files.File.Exists(shim))
+        {
+            throw new InvalidOperationException("The SDK reported success without the installed command: " + shim);
+        }
+        InstalledExecutable = await FindNativeEntryAsync(directory, token);
+        var launch = BaseLaunch(["--transport", "stdio"]) with { FileName = shim };
+        return OperatingSystem.IsWindows() ? launch with
+        {
+            FileName = _files.Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+            Arguments = [],
+            VerbatimCommandLine = "/d /e:on /v:off /s /c \"\"" + shim + "\" --transport stdio\"",
+        } : launch;
+    }
+
+    private string[] ObserveRealTools()
+    {
+        var path = _files.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet", "tools");
+        if (!_files.Directory.Exists(path))
+        {
+            return [];
+        }
+        return [.. _files.Directory.EnumerateFileSystemEntries(path, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
+            .Select(entry => _files.File.Exists(entry)
+                ? string.Create(CultureInfo.InvariantCulture, $"{entry}|{_files.FileInfo.New(entry).Length}|{_files.FileInfo.New(entry).LastWriteTimeUtc.Ticks}") : entry)];
     }
 
     private async Task ReleaseAfterFailureAsync(Exception original)
@@ -147,7 +203,27 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         }
     }
 
-    public async Task PrepareAsync(string repositoryRoot, string feed, string sdkVersion, CancellationToken cancellationToken)
+    public Task PrepareRemoteAsync(string repositoryRoot, string configurationPath, string sdkVersion, CancellationToken cancellationToken)
+        => PrepareCoreAsync(repositoryRoot, sdkVersion, () =>
+        {
+            _configurationPath = _files.Path.Combine(OwnedDirectory("config"), _files.Path.GetFileName(configurationPath));
+            _files.File.Copy(configurationPath, _configurationPath);
+            return Task.CompletedTask;
+        }, cancellationToken);
+
+    public Task PrepareAsync(string repositoryRoot, string feed, string sdkVersion, CancellationToken cancellationToken)
+        => PrepareCoreAsync(repositoryRoot, sdkVersion, () => ConfigureLocalAsync(repositoryRoot, feed, cancellationToken), cancellationToken);
+
+    private async Task ConfigureLocalAsync(string repositoryRoot, string feed, CancellationToken token)
+    {
+        var configuration = XDocument.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(repositoryRoot, "packaging", "local-feed.nuget.config"), token));
+        configuration.Descendants("packageSources").Single().Elements("add").Single().SetAttributeValue("value", _files.Path.GetFullPath(feed));
+        _configurationPath = _files.Path.Combine(OwnedDirectory("config"), "local-feed.nuget.config");
+        await using var stream = _files.File.Create(_configurationPath);
+        await configuration.SaveAsync(stream, SaveOptions.None, token);
+    }
+
+    private async Task PrepareCoreAsync(string repositoryRoot, string sdkVersion, Func<Task> configure, CancellationToken cancellationToken)
     {
         try
         {
@@ -160,13 +236,7 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
             var version = global?["sdk"]?["version"]?.GetValue<string>() ?? throw new InvalidOperationException("global.json has no SDK version.");
             var cli = OwnedDirectory("home", ".dotnet");
             await _files.File.WriteAllTextAsync(_files.Path.Combine(cli, sdkVersion + ".dotnetFirstUseSentinel"), "", cancellationToken);
-            var configuration = XDocument.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(repositoryRoot, "packaging", "local-feed.nuget.config"), cancellationToken));
-            configuration.Descendants("packageSources").Single().Elements("add").Single().SetAttributeValue("value", _files.Path.GetFullPath(feed));
-            _configurationPath = _files.Path.Combine(OwnedDirectory("config"), "local-feed.nuget.config");
-            await using (var stream = _files.File.Create(_configurationPath))
-            {
-                await configuration.SaveAsync(stream, SaveOptions.None, cancellationToken);
-            }
+            await configure();
             var properties = XDocument.Parse(await _files.File.ReadAllTextAsync(_files.Path.Combine(repositoryRoot, "Directory.Build.props"), cancellationToken));
             _framework = properties.Descendants("TargetFramework").Single().Value;
             await _sdk.PrepareAsync(sdkVersion, cancellationToken);
@@ -192,18 +262,24 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         }
     }
 
-    public ProcessLaunch CreateDnxLaunch(string version)
+    public ProcessLaunch CreateDnxLaunch(string version) => CreateDnxLaunch(version, ["--transport", "stdio"]);
+
+    public ProcessLaunch CreateDnxLaunch(string version, IReadOnlyList<string> productArguments)
     {
         var config = _configurationPath ?? throw new InvalidOperationException("Prepare the acquisition before creating a launch.");
         RefuseAmbientConfiguration();
-        var entries = ColdStores
-            .SelectMany(relative => _files.Directory.EnumerateFileSystemEntries(_files.Path.Combine(OwnedRoot, relative)))
+        RequireColdStores(ColdStores.Select(relative => _files.Path.Combine(OwnedRoot, relative)));
+        return BaseLaunch(["dnx", "-v", "minimal", "OpenCodeDotNet.Mcp@" + version, "--configfile", config, "--yes", "--", .. productArguments]);
+    }
+
+    private void RequireColdStores(IEnumerable<string> directories)
+    {
+        var entries = directories.SelectMany(_files.Directory.EnumerateFileSystemEntries)
             .Order(StringComparer.Ordinal).ToArray();
         if (entries.Length != 0)
         {
             throw new InvalidOperationException("Cold package acquisition requires empty stores:\n" + string.Join('\n', entries));
         }
-        return BaseLaunch(["dnx", "-v", "minimal", "OpenCodeDotNet.Mcp@" + version, "--configfile", config, "--yes", "--", "--transport", "stdio"]);
     }
 
     private ProcessLaunch BaseLaunch(IReadOnlyList<string> arguments) => new()
@@ -292,9 +368,19 @@ internal sealed class OwnedToolAcquisition : IAsyncDisposable
         await Process.DisposeAsync();
         try
         {
-            if (_ownsSdk)
+            try
             {
-                await _sdk.DisposeAsync();
+                if (_realTools is not null && !_realTools.SequenceEqual(ObserveRealTools(), StringComparer.Ordinal))
+                {
+                    throw new InvalidOperationException("The real profile global-tools inventory changed.");
+                }
+            }
+            finally
+            {
+                if (_ownsSdk)
+                {
+                    await _sdk.DisposeAsync();
+                }
             }
         }
         finally
