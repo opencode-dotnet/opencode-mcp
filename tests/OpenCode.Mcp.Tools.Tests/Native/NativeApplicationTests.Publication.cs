@@ -35,4 +35,23 @@ public sealed partial class NativeApplicationTests
             .IsEquivalentTo(directories, TUnit.Assertions.Enums.CollectionOrdering.Matching);
         await Assert.That(scenario.Candidate.Runner.Calls).IsEmpty();
     }
+
+    [Test]
+    public async Task RunAsync_Should_Validate_Installer_Projections_From_The_Candidate_Checkout(CancellationToken token)
+    {
+        var scenario = await NativePublicationScenario.CreateAsync(token);
+        scenario.Files.Directory.Delete(scenario.Candidate.Installers, recursive: true);
+        var before = await scenario.CaptureAsync(token);
+        using var output = new StringWriter(CultureInfo.InvariantCulture);
+        using var errors = new StringWriter(CultureInfo.InvariantCulture);
+        var application = new NativeApplication(scenario.Files, scenario.Candidate.Runner, new FixtureHostReader(scenario.Candidate.Build.Host), scenario.Candidate.Builder.Native.Modes, output, errors);
+        var result = await application.RunAsync(["publication", "--receipts", scenario.Request.Receipts, "--feed", scenario.Feed,
+            "--assets", scenario.Request.Assets, "--version", scenario.Request.Version, "--commit", scenario.Commit], token);
+        await Assert.That(result).IsEqualTo(2);
+        await Assert.That(output.ToString()).IsEmpty();
+        await Assert.That(errors.ToString().Replace("\r\n", "\n", StringComparison.Ordinal))
+            .IsEqualTo("Missing installer script: install.sh.\nMissing installer script: install.ps1.\n");
+        await scenario.AssertUnchangedAsync(before, token);
+        await Assert.That(scenario.Candidate.Runner.Calls).IsEmpty();
+    }
 }

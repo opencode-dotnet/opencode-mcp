@@ -361,7 +361,7 @@ jobs:
         run: |
           dotnet run --no-build tools/native.cs -- publication --receipts artifacts/native-receipts --feed artifacts/feed --assets artifacts/release-assets --version $env:VERSION --commit $env:COMMIT
           exit $LASTEXITCODE
-      - name: Record validated inventories and digests
+      - name: Record validated feed and nine-release-asset inventories and digests
         id: inventory
         run: &inventory-code |
           $ErrorActionPreference = 'Stop'

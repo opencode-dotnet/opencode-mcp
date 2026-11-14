@@ -75,6 +75,15 @@ suppression or an audit override (`quality-gates.md`).
 
 ## Publication procedure
 
+A release-version change updates the installer default-version projections in the same source
+change as the existing manifest projections. Candidate assembly checks their equality with the
+evaluated version. Assembly and publication never stamp or rewrite installer files. The
+[install-script contract](../architecture/hosting-and-packaging.md#install-scripts) owns their forms.
+
+A publication candidate contains nine release assets, including both committed install scripts.
+A pre-installer seven-asset artifact cannot be promoted as a nine-asset candidate; select a new,
+fully verified candidate rather than adding scripts to an older artifact.
+
 Settings and public identities require the maintainer's approval before the release lane is enabled.
 Every feed publication and GitHub Release requires his own word with the exact target, candidate
 commit, Native run ID, version, filenames and digests. Approval of a candidate or dry run authorizes
