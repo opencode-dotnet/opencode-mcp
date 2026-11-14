@@ -684,6 +684,7 @@ jobs:
               try { & $Body } catch { $diagnostics.Verbose | ForEach-Object { Write-Host $_ }; throw }
             }
             function Invoke-InstallerScriptBlock($Options) {
+              $diagnostics.Verbose = @()
               & ([scriptblock]::Create($text)) @Options -Verbose 4>&1 | ForEach-Object {
                 if ($_ -is [Management.Automation.VerboseRecord]) { $diagnostics.Verbose += 'VERBOSE: ' + $_.Message }
                 else { $_ }
@@ -695,6 +696,7 @@ jobs:
               } | Sort-Object -CaseSensitive)
             }
             function Invoke-Installer($Options, $Source = $assets, $Install = $bin, $DataDirectory = $data, $InputText = $null) {
+              $diagnostics.Verbose = @()
               $arguments = @()
               if ($windows) {
                 $entry = $installer
@@ -1179,7 +1181,17 @@ jobs:
                     Assert-Installed
                     Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
                     $env:PROCESSOR_ARCHITEW6432 = ''; $env:PROCESSOR_ARCHITECTURE = 'x86'
-                    Assert-Result (Invoke-Installer @()) 2 @('opencode-mcp: A 64-bit operating system and shell process are required.')
+                    Assert-Equal @(Invoke-InstallerScriptBlock @{ AssetDir = $assets; InstallDir = $bin }) @($installedMessage, 'opencode-mcp: PATH unchanged.') 'A caller environment value cannot turn a 64-bit process into a 32-bit process'
+                    Assert-Installed
+                    Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                    $nativeRuntime = $runtime
+                    try {
+                      $runtime = Join-Path $env:SystemRoot 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'
+                      Assert-Equal (Test-Path -LiteralPath $runtime -PathType Leaf) $true 'Real 32-bit Windows PowerShell is available'
+                      $observation = "if ([Environment]::Is64BitProcess) { throw 'The refusal fixture requires a real 32-bit process.' }`n& '" + $installer.Replace("'", "''") + "' @args`nexit `$LASTEXITCODE"
+                      Assert-Result (Invoke-Installer @() $assets $bin $data $observation) 2 @('opencode-mcp: A 64-bit operating system and shell process are required.')
+                      Assert-Equal $diagnostics.Verbose @('VERBOSE: System.Management.Automation.RuntimeException: opencode-mcp: A 64-bit operating system and shell process are required.') 'Verbose capture contains only this invocation'
+                    } finally { $runtime = $nativeRuntime }
                   } finally { $env:PROCESSOR_ARCHITEW6432 = $native; $env:PROCESSOR_ARCHITECTURE = $architecture }
                 } else {
                   $commands = Join-Path $root 'observations'; New-Item -ItemType Directory $commands | Out-Null
@@ -1198,6 +1210,12 @@ jobs:
                 Assert-Equal (Test-Path -LiteralPath $bin) $false 'Unsupported host never mutates destination'
               }
               Invoke-Case Argument_Refusals {
+                if ($windows) {
+                  $caught = @()
+                  try { & ([scriptblock]::Create($text)) -AssetDir $assets -InstallDir $bin $version }
+                  catch { $caught += $_.Exception.Message }
+                  Assert-Equal $caught @("A positional parameter cannot be found that accepts argument '$version'.") 'Version never binds positionally'
+                }
                 $invalid = @(if ($windows) { '-Version', ('v' + $version) } else { '--version', ('v' + $version) })
                 Assert-Result (Invoke-Installer $invalid) 2 @('opencode-mcp: Version must be an exact SemVer 2.0.0 value without a leading v.')
                 Assert-Result (Invoke-Installer ($uninstall + $explicit)) 2 @('opencode-mcp: Uninstall accepts only the installation directory.')
@@ -1232,6 +1250,13 @@ jobs:
                   $pipeOutput = @(Invoke-InstallerScriptBlock @{ Uninstall = $true; InstallDir = $bin })
                   Assert-Equal $pipeOutput @("opencode-mcp: Uninstalled opencode-mcp: $bin") 'Repeated in-session broadcast reuses interop type'
                   Assert-Equal (Get-RawPath) $rawPath 'Scriptblock uninstall restores original raw PATH'
+                  foreach ($switchSuffix in @('', ':$true')) {
+                    $outer = "param(`$AssetDir, `$InstallDir)`n& ([scriptblock]::Create([IO.File]::ReadAllText('" + $installer.Replace("'", "''") + "'))) -AssetDir `$AssetDir -InstallDir `$InstallDir -AddToPath$switchSuffix -Verbose"
+                    Assert-Result (Invoke-Installer @() $assets $bin $data $outer) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                    Assert-Installed
+                    Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                    Assert-Equal (Get-RawPath) $rawPath 'Literal and explicit-true scriptblock switches restore raw PATH'
+                  }
                   $caught = $null
                   $diagnostics.Verbose = @()
                   try { Invoke-InstallerScriptBlock @{ AssetDir = $bad; InstallDir = (Join-Path $root 'pipe-failure') } }

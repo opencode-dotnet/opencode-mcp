@@ -1,5 +1,5 @@
 function Invoke-OpenCodeMcpInstaller {
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Version,
     [string]$InstallDir,
@@ -385,7 +385,7 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
         $state.Source = if ($Options.ContainsKey('AssetDir')) { Get-InstallerPath $Options.AssetDir '-AssetDir' } else { $null }
         if ($state.AddPath -and $state.Install.Contains(';')) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
         if ($env:OS -cne 'Windows_NT') { $state.Refused = $true; throw "opencode-mcp: Unsupported platform: $([Environment]::OSVersion.Platform)/$env:PROCESSOR_ARCHITECTURE." }
-        if ([IntPtr]::Size -ne 8 -or $env:PROCESSOR_ARCHITECTURE -ieq 'x86') { $state.Refused = $true; throw 'opencode-mcp: A 64-bit operating system and shell process are required.' }
+        if (-not [Environment]::Is64BitProcess) { $state.Refused = $true; throw 'opencode-mcp: A 64-bit operating system and shell process are required.' }
         $architecture = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE).PROCESSOR_ARCHITECTURE
         switch ($architecture) {
             'AMD64' { $state.Rid = 'win-x64' }
@@ -441,4 +441,28 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
     if ($state.PathMessage) { Write-InstallerMessage $state.PathMessage }
     if ($FileInvocation) { exit 0 }
 }
-Invoke-OpenCodeMcpInstaller @args
+$OpenCodeMcpInstallerEntry = {
+    param([object[]]$Arguments)
+    # Preserve PowerShell's named-argument metadata, including attached switch values.
+    # Argument values stay array references, never executable text; the native binder owns validation.
+    $command = ([scriptblock]::Create('Invoke-OpenCodeMcpInstaller')).Ast.EndBlock.Statements[0].PipelineElements[0]
+    $extent = $command.Extent
+    $elements = New-Object 'Collections.Generic.List[Management.Automation.Language.CommandElementAst]'
+    $elements.Add($command.CommandElements[0].Copy())
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $name = if ($null -ne $Arguments[$i]) { $Arguments[$i].PSObject.Properties['<CommandParameterName>'] }
+        $attached = $name -and ([string]$Arguments[$i]).EndsWith(':')
+        if ($attached) { $i++ }
+        $value = $null
+        if (-not $name -or $attached) {
+            $value = [Management.Automation.Language.IndexExpressionAst]::new($extent, [Management.Automation.Language.VariableExpressionAst]::new($extent, 'Arguments', $false), [Management.Automation.Language.ConstantExpressionAst]::new($extent, $i))
+        }
+        if ($name) { $elements.Add([Management.Automation.Language.CommandParameterAst]::new($extent, $name.Value, $value, $extent)) }
+        else { $elements.Add($value) }
+    }
+    $command = [Management.Automation.Language.CommandAst]::new($extent, $elements, [Management.Automation.Language.TokenKind]::Unknown, $null)
+    $pipeline = [Management.Automation.Language.PipelineAst]::new($extent, $command)
+    $body = [Management.Automation.Language.StatementBlockAst]::new($extent, [Management.Automation.Language.StatementAst[]]@($pipeline), $null)
+    & ([Management.Automation.Language.ScriptBlockAst]::new($extent, $null, $body, $false).GetScriptBlock())
+}
+& $OpenCodeMcpInstallerEntry $args
