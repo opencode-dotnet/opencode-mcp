@@ -15,6 +15,8 @@ $FileInvocation = [bool]{}.File
 function Write-InstallerMessage($Message) { Write-Output ('opencode-mcp: ' + $Message) }
 function Write-InstallerFailure($Failure) {
     $cause = $Failure.Exception.GetBaseException()
+    if ($cause.Data.Contains('OpenCodeMcpInstaller.Logged')) { return }
+    $cause.Data['OpenCodeMcpInstaller.Logged'] = $true
     Write-Verbose ('{0}: {1}' -f $cause.GetType().FullName, ($cause.Message -replace '[\r\n]+', ' '))
 }
 function Test-InstallerVersion($Value) {
@@ -167,15 +169,17 @@ function Invoke-InstallerPathAddition {
 }
 function Invoke-InstallerRecordReplace($Source, $Destination) {
     Invoke-InstallerOperation {
-        if ([IO.File]::Exists($Destination)) { [IO.File]::Replace($Source, $Destination, $null) }
+        # $null binds as an empty backup filename, not a null string, on both runtimes.
+        if ([IO.File]::Exists($Destination)) { [IO.File]::Replace($Source, $Destination, [NullString]::Value) }
         else { [IO.File]::Move($Source, $Destination) }
     }
 }
 function Test-InstallerCommandAccess {
     $running = @(foreach ($process in Get-Process) {
         try {
-            if ([string]::Equals($process.MainModule.FileName, $state.Command, [StringComparison]::OrdinalIgnoreCase)) { $process.Id }
-        } catch { Write-InstallerFailure $_ }
+            $path = $process.Path
+            if ($path -and [string]::Equals($path, $state.Command, [StringComparison]::OrdinalIgnoreCase)) { $process.Id }
+        } catch { continue } # Unreadable system/other-user processes are not installed-command matches.
         finally { $process.Dispose() }
     })
     if ($running.Count -gt 0) { throw 'Installed command is running.' }
@@ -431,7 +435,7 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
         if ($failure) { $messages += $failure }
         $messages += $cleanup
         if ($FileInvocation) { foreach ($message in $messages) { [Console]::Error.WriteLine($message) }; exit $code }
-        throw ($messages -join "`n")
+        try { throw ($messages -join "`n") } catch { Write-InstallerFailure $_; throw }
     }
     Write-InstallerMessage $state.Message
     if ($state.PathMessage) { Write-InstallerMessage $state.PathMessage }
