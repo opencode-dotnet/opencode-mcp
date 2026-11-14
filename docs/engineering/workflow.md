@@ -85,9 +85,16 @@ irreversible-visibility approval, and verify that channel. Ask separately for Nu
 with the successful GitHub Packages verification run ID. Ask separately for the GitHub Release with
 its tag, asset digests, release-notes text and successful NuGet verification run ID.
 
-The lane dispatches the workflow after the word; the maintainer approves the waiting `release` job
-in GitHub. The lane never approves deployments, publishes releases or changes package visibility
-with its own credentials.
+The lane dispatches no workflow but master's `release.yml` for publication after the word; the
+maintainer approves the waiting `release` job in GitHub. The `release` environment binds NuGet.org
+through its Trusted Publishing policy. Its GitHub Packages and GitHub Releases gate is procedural:
+a branch copy of a workflow can request `packages: write` or `contents: write` with `GITHUB_TOKEN`.
+The lane never approves deployments, publishes releases or changes package visibility with its own
+credentials.
+
+A dry run proves published-release and tag absence, not draft absence. The `github-release` job
+checks drafts with `contents: write` before creating anything; see the
+[publication pass](quality-gates.md#publication-pass).
 
 Hold workflow-tree changes from candidate selection until release publication. Partial publication
 blocks promotion. Record push responses and the verified present/missing sets; ask for exactly the

@@ -332,8 +332,15 @@ Publication consumes that run's validated package feed and release-assets artifa
 
 The manual release workflow checks candidate provenance, evaluated version, workflow-tree equality,
 target absence and artifact integrity before publication. A dry run performs those checks without
-publication privileges or an environment deployment. Publishing requires the `release` environment
-and the maintainer's separate authorization.
+publication privileges or an environment deployment. Its release-identity check proves absence of
+published releases and the tag, not drafts; the `github-release` job checks drafts with
+`contents: write` before creating anything.
+
+Publishing requires the `release` environment and the maintainer's separate authorization. The
+environment binds NuGet.org publication through its Trusted Publishing policy. For GitHub Packages
+and GitHub Releases, the gate is procedural: a branch copy of a workflow can request `packages: write`
+or `contents: write` with `GITHUB_TOKEN`. The lane therefore dispatches no workflow but master's
+`release.yml` for publication.
 
 Real-channel acceptance requires every manifest RID's verification leg to succeed against the selected
 published channel. Feed acceptance uses cold global-tool and DNX acquisition and complete

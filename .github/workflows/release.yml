@@ -59,6 +59,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      packages: read
     outputs:
       feed: ${{ steps.inventory.outputs.feed }}
       assets: ${{ steps.inventory.outputs.assets }}
@@ -82,7 +83,7 @@ jobs:
           COMMIT: ${{ inputs.commit }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'commit must be a full SHA.' }
+          if ($env:COMMIT -cnotmatch '^[0-9a-f]{40}\z') { throw 'commit must be a full SHA.' }
           $head = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($head -cne $env:COMMIT) { throw 'Checkout does not equal the candidate commit.' }
@@ -98,7 +99,7 @@ jobs:
           COMMIT: ${{ inputs.commit }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:NATIVE_RUN_ID -notmatch '^[1-9][0-9]*$') { throw 'native-run-id must be a run ID.' }
+          if ($env:NATIVE_RUN_ID -notmatch '^[1-9][0-9]*\z') { throw 'native-run-id must be a run ID.' }
           $workflow = gh api "repos/$env:REPOSITORY/actions/workflows/native.yml" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $run = gh api "repos/$env:REPOSITORY/actions/runs/$env:NATIVE_RUN_ID" | ConvertFrom-Json
@@ -134,6 +135,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git merge-base --is-ancestor $env:COMMIT origin/master
+          if ($LASTEXITCODE -ne 0) { throw 'master does not contain the candidate commit.' }
           $candidate = git rev-parse "$($env:COMMIT):.github/workflows"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $master = git rev-parse 'origin/master:.github/workflows'
@@ -151,7 +154,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $id = if ($env:TARGET -ceq 'nuget') { $env:GITHUB_VERIFICATION } else { $env:NUGET_VERIFICATION }
-          if ($id -notmatch '^[1-9][0-9]*$') { throw 'The preceding channel verification run ID is required.' }
+          if ($id -notmatch '^[1-9][0-9]*\z') { throw 'The preceding channel verification run ID is required.' }
           $workflow = gh api "repos/$env:REPOSITORY/actions/workflows/verify-channel.yml" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $run = gh api "repos/$env:REPOSITORY/actions/runs/$id" | ConvertFrom-Json
@@ -224,9 +227,9 @@ jobs:
           RELEASE_NOTES: ${{ inputs.release-notes }}
           REPOSITORY: ${{ github.repository }}
           API_TOKEN: ${{ github.token }}
-          PACKAGES_READ_TOKEN: ${{ secrets.GH_PACKAGES_READ_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_NOTES -cmatch '\r') { throw 'release-notes must not contain a carriage return.' }
           function Get-Response($url, $token) {
             $headers = @{ Accept = 'application/json' }
             if ($token) {
@@ -236,9 +239,9 @@ jobs:
             }
             return Invoke-WebRequest -Uri $url -Headers $headers -SkipHttpErrorCheck
           }
-          function Read-GitHub($response) {
+          function Read-GitHub($response, $absenceMessage) {
             $value = ConvertFrom-Json -InputObject $response.Content -NoEnumerate
-            if ($response.StatusCode -eq 404 -and $value.message -ceq 'Not Found') { return $null }
+            if ($response.StatusCode -eq 404 -and $absenceMessage -and $value.message -ceq $absenceMessage) { return $null }
             if ($response.StatusCode -ne 200) { throw "GitHub metadata request failed: HTTP $($response.StatusCode)." }
             if ($null -eq $value) { throw 'Malformed GitHub metadata response.' }
             return ,$value
@@ -246,8 +249,8 @@ jobs:
           function Test-GitHubVersion($id) {
             $encoded = [Uri]::EscapeDataString($id)
             for ($page = 1; ; $page++) {
-              $response = Get-Response "https://api.github.com/orgs/opencode-dotnet/packages/nuget/$encoded/versions?per_page=100&page=$page" $env:PACKAGES_READ_TOKEN
-              $versions = Read-GitHub $response
+              $response = Get-Response "https://api.github.com/orgs/opencode-dotnet/packages/nuget/$encoded/versions?per_page=100&page=$page" $env:API_TOKEN
+              $versions = Read-GitHub $response 'Package not found.'
               if ($null -eq $versions) { return $false }
               if ($versions -isnot [array]) { throw 'Malformed GitHub package-version response.' }
               foreach ($version in $versions) {
@@ -280,11 +283,6 @@ jobs:
           }
           $selected = @($names | Where-Object { $selection.Contains($_) })
           "selected=$(ConvertTo-Json -InputObject $selected -Compress)" >> $env:GITHUB_OUTPUT
-          if ($env:TARGET -in @('github-packages', 'dry-run')) {
-            if ([string]::IsNullOrWhiteSpace($env:PACKAGES_READ_TOKEN)) { throw 'GH_PACKAGES_READ_TOKEN is required for GitHub Packages metadata.' }
-            $user = Read-GitHub (Get-Response 'https://api.github.com/user' $env:PACKAGES_READ_TOKEN)
-            if ([string]::IsNullOrEmpty($user.login)) { throw 'GitHub Packages read-token authentication failed.' }
-          }
           foreach ($feed in @('github-packages', 'nuget') | Where-Object { $env:TARGET -ceq $_ -or $env:TARGET -ceq 'dry-run' }) {
             $present = @()
             $missing = @()
@@ -304,18 +302,24 @@ jobs:
           if ($env:TARGET -in @('github-release', 'dry-run')) {
             if ($env:TARGET -ceq 'github-release' -and [string]::IsNullOrWhiteSpace($env:RELEASE_NOTES)) { throw 'Literal approved release-notes are required.' }
             $tag = "v$env:VERSION"
+            $releaseScope = if ($env:GITHUB_JOB -ceq 'preflight') { 'published releases' } else { 'releases, including drafts' }
             for ($page = 1; ; $page++) {
-              $releases = Read-GitHub (Get-Response "https://api.github.com/repos/$env:REPOSITORY/releases?per_page=100&page=$page" $env:API_TOKEN)
+              $releases = Read-GitHub (Get-Response "https://api.github.com/repos/$env:REPOSITORY/releases?per_page=100&page=$page" $env:API_TOKEN) ''
               if ($releases -isnot [array]) { throw 'Malformed release-list response.' }
               foreach ($release in $releases) {
                 if ($release.tag_name -isnot [string]) { throw 'Malformed release identity.' }
-                if ($release.tag_name -ceq $tag) { throw 'The release identity already exists, including drafts.' }
+                if ($release.tag_name -ceq $tag) { throw "The release identity already exists in $releaseScope." }
               }
               if ($releases.Count -lt 100) { break }
             }
             $encodedTag = [Uri]::EscapeDataString($tag)
-            $ref = Read-GitHub (Get-Response "https://api.github.com/repos/$env:REPOSITORY/git/ref/tags/$encodedTag" $env:API_TOKEN)
+            $ref = Read-GitHub (Get-Response "https://api.github.com/repos/$env:REPOSITORY/git/ref/tags/$encodedTag" $env:API_TOKEN) 'Not Found'
             if ($null -ne $ref) { throw 'The release tag already exists.' }
+            $record = if ($env:GITHUB_JOB -ceq 'preflight') {
+              'Checked published releases and the tag only; drafts are checked by the github-release job before it creates anything.'
+            } else { 'Checked releases, including drafts, and the tag.' }
+            Write-Output $record
+            $record >> $env:GITHUB_STEP_SUMMARY
           }
       - &feed-download
         name: Download original candidate feed
@@ -417,6 +421,7 @@ jobs:
       - name: Push selected packages once child-first root-last
         env:
           SELECTED: ${{ needs.preflight.outputs.selected }}
+          EXPECTED_FEED: ${{ needs.preflight.outputs.feed }}
           PUSH_KEY: ${{ github.token }}
           PUSH_SOURCE: https://nuget.pkg.github.com/opencode-dotnet/index.json
         run: &push-code |
@@ -424,8 +429,13 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           if ([string]::IsNullOrWhiteSpace($env:PUSH_KEY)) { throw 'Publication credential is required.' }
           $selected = ConvertFrom-Json -InputObject $env:SELECTED -NoEnumerate
+          $expected = (ConvertFrom-Json -InputObject $env:EXPECTED_FEED).files
           $digests = [ordered]@{}
-          foreach ($name in $selected) { $digests[$name] = (Get-FileHash -LiteralPath (Join-Path 'artifacts/feed' $name) -Algorithm SHA256).Hash.ToLowerInvariant() }
+          foreach ($name in $selected) {
+            $digests[$name] = (Get-FileHash -LiteralPath (Join-Path 'artifacts/feed' $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            $matches = @($expected | Where-Object { $_.path -ceq $name })
+            if ($matches.Count -ne 1 -or $digests[$name] -cne $matches[0].sha256) { throw "Package differs from the validated preflight digest: $name" }
+          }
           $attempted = [Collections.Generic.List[string]]::new()
           $accepted = [Collections.Generic.List[string]]::new()
           $failed = [Collections.Generic.List[string]]::new()
@@ -481,6 +491,7 @@ jobs:
       - name: Push selected packages once child-first root-last
         env:
           SELECTED: ${{ needs.preflight.outputs.selected }}
+          EXPECTED_FEED: ${{ needs.preflight.outputs.feed }}
           PUSH_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
           PUSH_SOURCE: https://api.nuget.org/v3/index.json
         run: *push-code
@@ -511,6 +522,7 @@ jobs:
           ASSET_INVENTORY: ${{ needs.preflight.outputs.assets }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_NOTES -cmatch '\r') { throw 'release-notes must not contain a carriage return.' }
           $headers = @{ Authorization = "Bearer $env:API_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
           $api = "https://api.github.com/repos/$env:REPOSITORY"
           $tag = "v$env:VERSION"
@@ -518,6 +530,10 @@ jobs:
           $latest = if ($preview) { 'false' } else { 'true' }
           $body = @{ tag_name = $tag; target_commitish = $env:COMMIT; name = $tag; body = $env:RELEASE_NOTES;
             draft = $true; prerelease = $preview; make_latest = $latest; generate_release_notes = $false } | ConvertTo-Json
+          $encodedTag = [Uri]::EscapeDataString($tag)
+          $ref = Invoke-WebRequest -Uri "$api/git/ref/tags/$encodedTag" -Headers $headers -SkipHttpErrorCheck
+          if ($ref.StatusCode -eq 200) { throw 'The release tag already exists.' }
+          if ($ref.StatusCode -ne 404 -or ($ref.Content | ConvertFrom-Json).message -cne 'Not Found') { throw "Release tag absence request failed: HTTP $($ref.StatusCode)." }
           $draft = Invoke-RestMethod -Uri "$api/releases" -Headers $headers -Method Post -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($body))
           if ($draft.draft -ne $true -or $draft.tag_name -cne $tag -or $draft.target_commitish -cne $env:COMMIT -or
               $draft.body -cne $env:RELEASE_NOTES -or $draft.prerelease -ne $preview) { throw 'Created draft differs from the approved release identity.' }
