@@ -2,7 +2,7 @@
 
 message() { printf 'opencode-mcp: %s\n' "$*"; }
 refuse() { message "$*" >&2; exit 2; }
-failed() { message "Installation failed during $phase." >&2; exit 1; }
+failed() { if [ "$phase" != cleanup ]; then message "Installation failed during $phase." >&2; fi; exit 1; }
 operation() { if ! "$@" 2>/dev/null; then failed; fi; }
 required() { command -v "$1" >/dev/null 2>&1 || refuse "Required command is unavailable: $1."; }
 line() { sed -n "${2}p" "$1"; }
@@ -111,8 +111,6 @@ path_preflight() {
         [ "$count" = 1 ] || refuse "PATH ownership is ambiguous: $path_file."
         number=$(grep -Fnx -e "$header" "$path_file" | cut -d : -f 1)
         path_start=$(head -n "$((number - 1))" "$path_file" | wc -c | tr -d ' ')
-        [ "$path_start" -gt 0 ] || refuse "PATH ownership is ambiguous: $path_file."
-        path_start=$((path_start - 1))
         path_size=$(tail -n +3 "$data/path.record" | wc -c | tr -d ' ')
         observed=$(dd if="$path_file" bs=1 skip="$path_start" count="$path_size" 2>/dev/null | digest_stdin)
         expected=$(tail -n +3 "$data/path.record" | digest_stdin)
@@ -164,17 +162,18 @@ write_path() {
     phase=path
     if [ "$path_kind" = fish ]; then
         escaped=$(printf '%s' "$install" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-        printf "fish_add_path --path '%s'\n" "$escaped" > "$work/block" || failed
+        printf "if not contains -- '%s' \$PATH; set -gx PATH '%s' \$PATH; end\n" "$escaped" "$escaped" > "$work/block" || failed
     else
-        { printf '\n# >>> opencode-mcp %s >>>\n' "$data"
-          printf 'export PATH=%s:"$PATH"\n' "$(quote_sh "$install")"
+        { printf '# >>> opencode-mcp %s >>>\n' "$data"
+          printf "export PATH=%s:\"\$PATH\"\n" "$(quote_sh "$install")"
           printf '# <<< opencode-mcp %s <<<\n' "$data"
         } > "$work/block" || failed
     fi
     { printf '%s\n%s\n' "$path_file" "$path_kind"; cat "$work/block"; } > "$work/path.record" || failed
     operation mkdir -p "$(dirname "$path_file")"
-    path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX") || failed
+    path_temp=$(mktemp "$work/path-XXXXXX") || failed
     if [ -f "$path_file" ]; then operation cp -p "$path_file" "$path_temp"; fi
+    if [ -s "$path_temp" ] && [ -n "$(tail -c 1 "$path_temp")" ]; then printf '\n' >> "$path_temp" || failed; fi
     cat "$work/block" >> "$path_temp" || failed
     operation mv -f "$path_temp" "$path_file"
     path_temp=; path_written=1
@@ -183,14 +182,14 @@ remove_path() {
     [ "$path_owned" = 1 ] || return 0
     if [ "$path_kind" = fish ]; then operation rm "$path_file"
     else
-        path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX") || failed
+        path_temp=$(mktemp "$work/path-XXXXXX") || failed
         operation cp -p "$path_file" "$path_temp"
         { dd if="$path_file" bs=1 count="$path_start" 2>/dev/null
           dd if="$path_file" bs=1 skip="$((path_start + path_size))" 2>/dev/null
         } > "$path_temp" || failed
-        operation mv -f "$path_temp" "$path_file"
-        path_temp=
-        if [ "$path_kind" = 1 ] && [ ! -s "$path_file" ]; then operation rm "$path_file"; fi
+        if [ "$path_kind" = 1 ] && [ ! -s "$path_temp" ]; then operation rm "$path_file"
+        else operation mv -f "$path_temp" "$path_file"; path_temp=
+        fi
     fi
 }
 finish() {
@@ -198,12 +197,18 @@ finish() {
     trap - 0
     cleanup_error=0
     if [ "$result" -ne 0 ] && [ "$phase" = cleanup ]; then cleanup_error=1; fi
+    if [ "$result" -ne 0 ] && [ "$uninstall_link_removed" = 1 ]; then
+        ln -s "$payload/opencode-mcp" "$link" 2>/dev/null || cleanup_error=1
+    fi
     if [ "$result" -ne 0 ] && [ "$activated" = 1 ]; then
         if [ "$owned" = 1 ]; then
             rollback_link=$install/.opencode-mcp-$$
             if ln -s "$payload/opencode-mcp" "$rollback_link" 2>/dev/null; then
                 link_temp=$rollback_link
-                mv -f "$link_temp" "$link" 2>/dev/null || cleanup_error=1
+                if { [ ! -e "$link" ] && [ ! -L "$link" ]; } || { [ -L "$link" ] && [ ! -d "$link" ] && [ "$(readlink "$link")" = "$final/opencode-mcp" ]; }; then
+                    mv -f "$link_temp" "$link" 2>/dev/null || cleanup_error=1
+                else cleanup_error=1; retained=$install
+                fi
             else cleanup_error=1
             fi
         else rm -f "$link" || cleanup_error=1
@@ -225,14 +230,14 @@ finish() {
     fi
     [ -z "$path_temp" ] || rm -f "$path_temp" || cleanup_error=1
     [ -z "$link_temp" ] || rm -f "$link_temp" || cleanup_error=1
-    if [ "$cleanup_error" = 0 ] && [ "$result" -ne 0 ] && [ "$new_payload" = 1 ]; then rm -rf "$final" || cleanup_error=1; fi
-    if [ "$cleanup_error" = 0 ] && [ -n "$work" ]; then rm -rf "$work" || cleanup_error=1; fi
+    if [ "$cleanup_error" = 0 ] && [ "$result" -ne 0 ] && [ "$new_payload" = 1 ]; then rm -rf "$final" || { cleanup_error=1; retained=$final; }; fi
+    if [ "$cleanup_error" = 0 ] && [ -n "$work" ]; then rm -rf "$work" || { cleanup_error=1; retained=$work; }; fi
     if [ "$result" -ne 0 ] && [ "$owned" = 0 ]; then
-        [ ! -d "$data/versions" ] || rmdir "$data/versions" 2>/dev/null || cleanup_error=1
-        [ "$data_created" = 0 ] || [ ! -d "$data" ] || rmdir "$data" 2>/dev/null || cleanup_error=1
-        [ "$bin_created" = 0 ] || [ ! -d "$install" ] || rmdir "$install" 2>/dev/null || cleanup_error=1
+        [ ! -d "$data/versions" ] || rmdir "$data/versions" 2>/dev/null || { cleanup_error=1; retained=$data/versions; }
+        [ "$data_created" = 0 ] || [ ! -d "$data" ] || rmdir "$data" 2>/dev/null || { cleanup_error=1; retained=$data; }
+        [ "$bin_created" = 0 ] || [ ! -d "$install" ] || rmdir "$install" 2>/dev/null || { cleanup_error=1; retained=$install; }
     fi
-    if [ "$cleanup_error" = 1 ]; then message "Cleanup failed; retained owned directory: $data." >&2; [ "$result" -ne 0 ] || result=1; fi
+    if [ "$cleanup_error" = 1 ]; then message "Cleanup failed; retained owned directory: ${retained:-$data}." >&2; [ "$result" -ne 0 ] || result=1; fi
     exit "$result"
 }
 installer() {
@@ -276,14 +281,15 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     case $os in
         Linux) libc=$(getconf GNU_LIBC_VERSION 2>/dev/null) || refuse 'Linux requires glibc; musl is not supported.'
             case $libc in 'glibc '*) ;; *) refuse 'Linux requires glibc; musl is not supported.' ;; esac
-            prefix=linux; required sha256sum ;;
+            prefix=linux ;;
         Darwin) required sysctl
             native=$(sysctl -n hw.optional.arm64 2>/dev/null)
             [ "$native" != 1 ] || arch=arm64
-            prefix=osx; required shasum ;;
+            prefix=osx ;;
         *) refuse "Unsupported platform: $os/$arch." ;;
     esac
     case $arch in x86_64) rid=$prefix-x64 ;; arm64|aarch64) rid=$prefix-arm64 ;; *) refuse "Unsupported platform: $os/$arch." ;; esac
+    if [ "$os" = Darwin ]; then required shasum; else required sha256sum; fi
     if [ "$uninstall" = 0 ]; then
         required tar
         [ -n "$source" ] || required curl
@@ -299,23 +305,40 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     [ -d "$data" ] || data_created=1
     read_owner
     path_preflight
-    work=; link_temp=; path_temp=; path_written=0; activated=0; records_started=0; new_payload=0
+    work=; link_temp=; path_temp=; path_written=0; activated=0; records_started=0; new_payload=0; uninstall_link_removed=0; retained=
+    trap 'exit 130' INT HUP
+    trap 'exit 143' TERM
     if [ "$uninstall" = 1 ]; then
         [ "$owned" = 1 ] || { message "No owned installation: $install"; return 0; }
         phase=uninstall
         trap finish 0
-        remove_path
         operation rm "$link"
+        uninstall_link_removed=1
+        phase=path
+        work=$(mktemp -d "$data/staging-XXXXXX") || failed
+        remove_path
+        uninstall_link_removed=0
+        phase=cleanup; retained=$data
+        operation rm -f "$data/path.record"
+        operation rm -f "$data/owner" "$data/current" "$data/inventory"
+        retained=$payload
         operation rm -rf "$payload"
-        operation rm -f "$data/owner" "$data/current" "$data/inventory" "$data/path.record"
+        retained=$work
+        operation rm -rf "$work"
+        work=; retained=$data
         # Only empty installer-created containers may disappear.
         if [ -z "$(find "$data/versions" -mindepth 1 -print)" ]; then operation rmdir "$data/versions"; fi
         if [ "$data_created" = 1 ] && [ -z "$(find "$data" -mindepth 1 -print)" ]; then operation rmdir "$data"; fi
+        retained=$install
         if [ "$bin_created" = 1 ] && [ -z "$(find "$install" -mindepth 1 -print)" ]; then operation rmdir "$install"; fi
         message "Uninstalled opencode-mcp: $install"; return 0
     fi
     if [ "$owned" = 0 ] && { [ -e "$link" ] || [ -L "$link" ]; }; then refuse "Install collision: $link."; fi
     resolved=$(command -v opencode-mcp 2>/dev/null) || resolved=
+    if [ -n "$resolved" ]; then
+        resolved_parent=$(absolute "$(dirname "$resolved")") || refuse "Install collision: $resolved."
+        resolved=$resolved_parent/$(basename "$resolved")
+    fi
     if [ -n "$resolved" ] && { [ "$owned" = 0 ] || [ "$resolved" != "$link" ]; }; then refuse "Install collision: $resolved."; fi
     prepare_path
     phase=staging
@@ -339,7 +362,7 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     while IFS= read -r entry || [ -n "$entry" ]; do
         case $entry in *"  $archive")
             count=$((count + 1)); hash=${entry%"  $archive"}
-            [ "${#hash}" = 64 ] && ! printf '%s' "$hash" | grep -q '[^0-9a-f]' || refuse "Invalid checksum entry: $archive." ;;
+            if [ "${#hash}" != 64 ] || printf '%s' "$hash" | grep -q '[^0-9a-f]'; then refuse "Invalid checksum entry: $archive."; fi ;;
         esac
     done < "$work/SHA256SUMS"
     [ "$count" = 1 ] || refuse "Invalid checksum entry: $archive."
@@ -349,7 +372,10 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     operation tar -xzpf "$work/$archive" -C "$work/payload"
     [ -f "$work/payload/opencode-mcp" ] && [ -x "$work/payload/opencode-mcp" ] || failed
     inventory "$work/payload" > "$work/inventory" || failed
-    inventory "$work/payload" > "$work/verified" && cmp -s "$work/inventory" "$work/verified" || failed
+    if inventory "$work/payload" > "$work/verified"; then
+        if ! cmp -s "$work/inventory" "$work/verified"; then failed; fi
+    else failed
+    fi
     final=$data/versions/$version-$rid
     already=0
     if [ "$owned" = 1 ] && [ "$version/$rid" = "$old_version/$old_rid" ]; then
@@ -371,6 +397,9 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
         [ ! -e "$candidate_link" ] && [ ! -L "$candidate_link" ] || failed
         operation ln -s "$final/opencode-mcp" "$candidate_link"
         link_temp=$candidate_link
+        if [ -e "$link" ] || [ -L "$link" ]; then
+            if [ "$owned" != 1 ] || [ ! -L "$link" ] || [ -d "$link" ] || [ "$(readlink "$link")" != "$payload/opencode-mcp" ]; then refuse "Install collision: $link."; fi
+        fi
         operation mv -f "$link_temp" "$link"
         link_temp=; activated=1
     fi
@@ -379,7 +408,9 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     if [ "$path_written" = 1 ]; then operation mv "$work/path.record" "$data/path.record"; fi
     activated=0; records_started=0; new_payload=0; path_written=0
     phase=cleanup
+    retained=$payload
     if [ "$owned" = 1 ] && [ "$already" = 0 ]; then operation rm -rf "$payload"; fi
+    retained=$work
     operation rm -rf "$work"
     work=
     if [ "$already" = 1 ]; then message "Already installed $version ($rid): $link"

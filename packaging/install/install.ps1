@@ -1,3 +1,4 @@
+function Invoke-OpenCodeMcpInstaller {
 [CmdletBinding()]
 param(
     [string]$Version,
@@ -6,6 +7,10 @@ param(
     [switch]$Uninstall,
     [string]$AssetDir
 )
+
+$ErrorActionPreference = 'Stop'
+$Options = $PSBoundParameters
+$FileInvocation = [bool]{}.File
 
 function Write-InstallerMessage($Message) { Write-Output ('opencode-mcp: ' + $Message) }
 function Test-InstallerVersion($Value) {
@@ -21,7 +26,7 @@ function Test-InstallerVersion($Value) {
 function Get-InstallerPath($Value, $Option) {
     if ([string]::IsNullOrEmpty($Value) -or $Value.IndexOfAny([char[]]"`r`n") -ge 0) { $state.Refused = $true; throw "opencode-mcp: Option requires a value: $Option." }
     try {
-        $full = [IO.Path]::GetFullPath($Value)
+        $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Value)
         if ($full -ceq [IO.Path]::GetPathRoot($full)) { $full } else { $full.TrimEnd('\', '/') }
     }
     catch { $state.Refused = $true; throw "opencode-mcp: Install collision: $Value." }
@@ -72,7 +77,7 @@ function Get-InstallerOwnership {
     }
     if (((Get-Item -LiteralPath $state.Private -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     $owner = @(Get-InstallerRecord 'owner')
-    if ($owner.Count -ne 3 -or $owner[0] -cne 'opencode-mcp' -or $owner[1] -cne $state.Install -or $owner[2] -notin @('0','1')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
+    if ($owner.Count -ne 3 -or $owner[0] -cne 'opencode-mcp' -or -not [string]::Equals($owner[1], $state.Install, [StringComparison]::OrdinalIgnoreCase) -or $owner[2] -notin @('0','1')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     $selection = @(Get-InstallerRecord 'current')
     if ($selection.Count -ne 2 -or -not (Test-InstallerVersion $selection[0]) -or $selection[1] -notin @('win-x64','win-arm64')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     $state.OldVersion = $selection[0]; $state.OldRid = $selection[1]
@@ -105,8 +110,7 @@ namespace OpenCodeMcpInstaller {
 '@
     }
     $result = [UIntPtr]::Zero
-    $sent = [OpenCodeMcpInstaller.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
-    if ($sent -eq [IntPtr]::Zero) { throw 'Environment notification failed.' }
+    [void][OpenCodeMcpInstaller.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
 }
 function Invoke-InstallerPathWrite($Value, $Kind) {
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
@@ -114,7 +118,7 @@ function Invoke-InstallerPathWrite($Value, $Kind) {
         if ($null -eq $Value) { $key.DeleteValue('Path', $false) }
         else { $key.SetValue('Path', $Value, $Kind) }
     } finally { $key.Dispose() }
-    Invoke-InstallerPathBroadcast
+    try { Invoke-InstallerPathBroadcast } catch { return } # Notification is best-effort after the registry write.
 }
 function Get-InstallerPathOwnership {
     $state.PathOwned = $false
@@ -174,7 +178,10 @@ function Invoke-InstallerCleanup {
             } catch { $errors += $_ }
         }
         if ($state.Activated) {
-            try { [IO.Directory]::Delete((Join-Path $state.Install 'current'), $true) } catch { $errors += $_ }
+            try {
+                $state.Staging = Join-Path $state.Private ('removing-' + [guid]::NewGuid().ToString('N'))
+                [IO.Directory]::Move((Join-Path $state.Install 'current'), $state.Staging)
+            } catch { $errors += $_ }
         }
         if ($state.Previous -and [IO.Directory]::Exists($state.Previous)) {
             try { [IO.Directory]::Move($state.Previous, (Join-Path $state.Install 'current')) } catch { $errors += $_ }
@@ -215,7 +222,7 @@ function Invoke-InstallerInstall {
         $destination = Join-Path $state.Work $name
         if ($state.Source) { [IO.File]::Copy((Join-Path $state.Source $name), $destination) }
         else {
-            if (([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
+            if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault -and ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
             }
             Invoke-WebRequest -UseBasicParsing -Uri ('https://github.com/opencode-dotnet/opencode-mcp/releases/download/v' + $state.Version + '/' + $name) -OutFile $destination
@@ -261,7 +268,7 @@ function Invoke-InstallerInstall {
     if ([IO.File]::Exists($pathRecord)) { Invoke-InstallerRecordReplace $pathRecord (Join-Path $state.Private 'path.record') }
     $state.Success = $true
     $state.Phase = 'cleanup'
-    if ($state.Previous) { [IO.Directory]::Delete($state.Previous, $true); $state.Previous = $null }
+    if ($state.Previous) { $state.Retained = $state.Previous; [IO.Directory]::Delete($state.Previous, $true); $state.Previous = $null }
     if ($same) { $state.Message = "Already installed $($state.Version) ($($state.Rid)): $($state.Command)" }
     else { $state.Message = "Installed $($state.Version) ($($state.Rid)): $($state.Command)" }
     $state.PathMessage = if ($state.PathChanged) { 'PATH updated for future login sessions.' } else { 'PATH unchanged.' }
@@ -269,17 +276,32 @@ function Invoke-InstallerInstall {
 function Invoke-InstallerUninstall {
     if (-not $state.Owned) { $state.Message = "No owned installation: $($state.Install)"; $state.Success = $true; return }
     $state.Phase = 'uninstall'
-    Invoke-InstallerPathRemoval
-    [IO.Directory]::Delete((Join-Path $state.Install 'current'), $true)
-    foreach ($name in @('owner','current','inventory','path.record')) { [IO.File]::Delete((Join-Path $state.Private $name)) }
+    $current = Join-Path $state.Install 'current'
+    $removing = Join-Path $state.Private ('removing-' + [guid]::NewGuid().ToString('N'))
+    [IO.Directory]::Move($current, $removing)
+    $state.Phase = 'path'
+    try { Invoke-InstallerPathRemoval }
+    catch {
+        $state.Refused = $false
+        try { [IO.Directory]::Move($removing, $current) }
+        catch { $state.Removing = $removing }
+        throw
+    }
+    $state.Success = $true
+    $state.Phase = 'cleanup'
+    $state.Retained = $state.Private
+    [IO.File]::Delete((Join-Path $state.Private 'path.record'))
+    foreach ($name in @('owner','current','inventory')) { [IO.File]::Delete((Join-Path $state.Private $name)) }
+    $state.Retained = $removing
+    [IO.Directory]::Delete($removing, $true)
+    $state.Retained = $state.Private
     if ([IO.Directory]::GetFileSystemEntries($state.Private).Length -eq 0) { [IO.Directory]::Delete($state.Private) }
+    $state.Retained = $state.Install
     if ($state.Created -and [IO.Directory]::GetFileSystemEntries($state.Install).Length -eq 0) { [IO.Directory]::Delete($state.Install) }
     $state.Success = $true
     $state.Message = "Uninstalled opencode-mcp: $($state.Install)"
 }
-function Invoke-OpenCodeMcpInstaller($Options, $FileInvocation) {
 $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
-    $ErrorActionPreference = 'Stop'
     $state = @{
         Phase = 'staging'; Success = $false; Owned = $false; Created = $false; Refused = $false
         Activated = $false; RecordsStarted = $false; Previous = $null; Work = $null; Staging = $null
@@ -299,7 +321,7 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
         if ($state.AddPath -and $state.Install.Contains(';')) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
         if ($env:OS -cne 'Windows_NT') { $state.Refused = $true; throw "opencode-mcp: Unsupported platform: $([Environment]::OSVersion.Platform)/$env:PROCESSOR_ARCHITECTURE." }
         if ([IntPtr]::Size -ne 8 -or $env:PROCESSOR_ARCHITECTURE -ieq 'x86') { $state.Refused = $true; throw 'opencode-mcp: A 64-bit operating system and shell process are required.' }
-        $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+        $architecture = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE).PROCESSOR_ARCHITECTURE
         switch ($architecture) {
             'AMD64' { $state.Rid = 'win-x64' }
             'ARM64' { $state.Rid = 'win-arm64' }
@@ -332,16 +354,18 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
         }
     } catch {
         if ($state.Refused) { $code = 2; $failure = $_.Exception.Message }
+        elseif ($state.Success -and $state.Phase -eq 'cleanup') { $code = 1; $failure = 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Retained + '.' }
         else { $code = 1; $failure = 'opencode-mcp: Installation failed during ' + $state.Phase + '.' }
     } finally {
-        if ($state.Success -and $state.Previous -and [IO.Directory]::Exists($state.Previous)) {
+        if ($state.Success -and -not $failure -and $state.Previous -and [IO.Directory]::Exists($state.Previous)) {
             $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Previous + '.'
         }
+        if ($state.Private) { $cleanup += @(Invoke-InstallerCleanup) }
+        if ($state.Removing) { $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Removing + '.' }
         if ($state.Staging -and [IO.Directory]::Exists($state.Staging)) {
             try { [IO.Directory]::Delete($state.Staging, $true) }
             catch { $cleanup += 'opencode-mcp: Cleanup failed; retained owned directory: ' + $state.Staging + '.' }
         }
-        if ($state.Private) { $cleanup += @(Invoke-InstallerCleanup) }
     }
     if ($cleanup.Count -gt 0 -and $code -eq 0) { $code = 1 }
     if ($code -ne 0) {
@@ -355,4 +379,4 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
     if ($state.PathMessage) { Write-InstallerMessage $state.PathMessage }
     if ($FileInvocation) { exit 0 }
 }
-Invoke-OpenCodeMcpInstaller -Options $PSBoundParameters -FileInvocation ($MyInvocation.MyCommand.CommandType -eq 'ExternalScript')
+Invoke-OpenCodeMcpInstaller @args
