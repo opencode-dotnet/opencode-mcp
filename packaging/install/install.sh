@@ -171,18 +171,19 @@ write_path() {
     fi
     { printf '%s\n%s\n' "$path_file" "$path_kind"; cat "$work/block"; } > "$work/path.record" || failed
     operation mkdir -p "$(dirname "$path_file")"
-    path_temp=$(mktemp "$work/path-XXXXXX") || failed
+    path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX") || failed
     if [ -f "$path_file" ]; then operation cp -p "$path_file" "$path_temp"; fi
     if [ -s "$path_temp" ] && [ -n "$(tail -c 1 "$path_temp")" ]; then printf '\n' >> "$path_temp" || failed; fi
     cat "$work/block" >> "$path_temp" || failed
+    path_written=1
     operation mv -f "$path_temp" "$path_file"
-    path_temp=; path_written=1
+    path_temp=
 }
 remove_path() {
     [ "$path_owned" = 1 ] || return 0
     if [ "$path_kind" = fish ]; then operation rm "$path_file"
     else
-        path_temp=$(mktemp "$work/path-XXXXXX") || failed
+        path_temp=$(mktemp "$(dirname "$path_file")/.opencode-mcp-XXXXXX") || failed
         operation cp -p "$path_file" "$path_temp"
         { dd if="$path_file" bs=1 count="$path_start" 2>/dev/null
           dd if="$path_file" bs=1 skip="$((path_start + path_size))" 2>/dev/null
@@ -192,52 +193,91 @@ remove_path() {
         fi
     fi
 }
+path_block_present() {
+    [ -e "$path_file" ] || return 1
+    [ "$path_kind" != fish ] || return 0
+    grep -Fq -e "# >>> opencode-mcp $data >>>" "$path_file"
+}
+publish_link() {
+    mv -f "$link_temp" "$link" 2>/dev/null || failed
+    if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$1/opencode-mcp" ] || [ -e "$link/$(basename "$link_temp")" ] || [ -L "$link/$(basename "$link_temp")" ]; then
+        nested=$link/$(basename "$link_temp")
+        if [ -L "$nested" ] && [ "$(readlink "$nested")" = "$1/opencode-mcp" ]; then rm -f "$nested" 2>/dev/null || failed; fi
+        refuse "Install collision: $link."
+    fi
+    link_temp=
+}
 finish() {
     result=$?
+    trap '' INT HUP TERM
     trap - 0
     cleanup_error=0
     if [ "$result" -ne 0 ] && [ "$phase" = cleanup ]; then cleanup_error=1; fi
-    if [ "$result" -ne 0 ] && [ "$uninstall_link_removed" = 1 ]; then
-        ln -s "$payload/opencode-mcp" "$link" 2>/dev/null || cleanup_error=1
+    if [ "$result" -ne 0 ] && [ "$uninstall" = 1 ] && [ "$phase" != cleanup ] && [ ! -e "$link" ] && [ ! -L "$link" ]; then
+        if [ "$path_owned" = 0 ] || path_block_present; then
+            ln -s "$payload/opencode-mcp" "$link" 2>/dev/null || cleanup_error=1
+        else
+            block_status=$?
+            if [ "$block_status" = 1 ]; then rm -f "$data/path.record" || cleanup_error=1
+            else cleanup_error=1
+            fi
+        fi
     fi
-    if [ "$result" -ne 0 ] && [ "$activated" = 1 ]; then
-        if [ "$owned" = 1 ]; then
+    if [ "$result" -ne 0 ] && [ "$phase" != cleanup ] && [ "$activated" = 1 ]; then
+        if [ "$owned" = 1 ] && ! { [ -L "$link" ] && [ "$(readlink "$link")" = "$payload/opencode-mcp" ]; }; then
             rollback_link=$install/.opencode-mcp-$$
             if ln -s "$payload/opencode-mcp" "$rollback_link" 2>/dev/null; then
                 link_temp=$rollback_link
                 if { [ ! -e "$link" ] && [ ! -L "$link" ]; } || { [ -L "$link" ] && [ ! -d "$link" ] && [ "$(readlink "$link")" = "$final/opencode-mcp" ]; }; then
-                    mv -f "$link_temp" "$link" 2>/dev/null || cleanup_error=1
+                    if ! (publish_link "$payload") 2>/dev/null; then cleanup_error=1; fi
                 else cleanup_error=1; retained=$install
                 fi
             else cleanup_error=1
             fi
-        else rm -f "$link" || cleanup_error=1
+        elif [ "$owned" = 0 ] && [ -L "$link" ] && [ "$(readlink "$link")" = "$final/opencode-mcp" ]; then rm -f "$link" || cleanup_error=1
         fi
     fi
-    if [ "$result" -ne 0 ] && [ "$records_started" = 1 ]; then
+    if [ "$result" -ne 0 ] && [ "$phase" != cleanup ] && [ "$records_started" = 1 ]; then
         for record in owner current inventory; do
             if [ "$owned" = 1 ]; then mv -f "$work/old-$record" "$data/$record" 2>/dev/null || cleanup_error=1
             else rm -f "$data/$record" || cleanup_error=1
             fi
         done
     fi
-    if [ "$result" -ne 0 ] && [ "$path_written" = 1 ]; then
+    if [ "$result" -ne 0 ] && [ "$phase" != cleanup ] && [ "$path_written" = 1 ]; then
         path_owned=1
         # The record is the exact inserted block, never a whole-file restore.
-        cp "$work/path.record" "$data/path.record" 2>/dev/null || cleanup_error=1
-        if ! (path_preflight; remove_path) 2>/dev/null; then cleanup_error=1; fi
-        rm -f "$data/path.record" || cleanup_error=1
+        if [ -f "$work/path.record" ]; then cp "$work/path.record" "$data/path.record" 2>/dev/null || cleanup_error=1
+        elif [ ! -f "$data/path.record" ]; then cleanup_error=1
+        fi
+        if path_block_present; then
+            if (trap '[ -z "$path_temp" ] || rm -f "$path_temp"' 0; path_preflight; remove_path) 2>/dev/null; then rm -f "$data/path.record" || cleanup_error=1
+            else cleanup_error=1
+            fi
+        else
+            block_status=$?
+            if [ "$block_status" = 1 ]; then rm -f "$data/path.record" || cleanup_error=1
+            else cleanup_error=1
+            fi
+        fi
     fi
     [ -z "$path_temp" ] || rm -f "$path_temp" || cleanup_error=1
     [ -z "$link_temp" ] || rm -f "$link_temp" || cleanup_error=1
-    if [ "$cleanup_error" = 0 ] && [ "$result" -ne 0 ] && [ "$new_payload" = 1 ]; then rm -rf "$final" || { cleanup_error=1; retained=$final; }; fi
+    if [ "$cleanup_error" = 0 ] && [ "$result" -ne 0 ] && [ "$phase" != cleanup ] && [ "$new_payload" = 1 ]; then
+        if [ -L "$link" ] && [ "$(readlink "$link")" = "$final/opencode-mcp" ]; then cleanup_error=1
+        else rm -rf "$final" || cleanup_error=1
+        fi
+    fi
     if [ "$cleanup_error" = 0 ] && [ -n "$work" ]; then rm -rf "$work" || { cleanup_error=1; retained=$work; }; fi
     if [ "$result" -ne 0 ] && [ "$owned" = 0 ]; then
         [ ! -d "$data/versions" ] || rmdir "$data/versions" 2>/dev/null || { cleanup_error=1; retained=$data/versions; }
         [ "$data_created" = 0 ] || [ ! -d "$data" ] || rmdir "$data" 2>/dev/null || { cleanup_error=1; retained=$data; }
         [ "$bin_created" = 0 ] || [ ! -d "$install" ] || rmdir "$install" 2>/dev/null || { cleanup_error=1; retained=$install; }
     fi
-    if [ "$cleanup_error" = 1 ]; then message "Cleanup failed; retained owned directory: ${retained:-$data}." >&2; [ "$result" -ne 0 ] || result=1; fi
+    if [ "$cleanup_error" = 1 ]; then
+        if [ -d "$data" ]; then retained=$data; fi
+        message "Cleanup failed; retained owned directory: ${retained:-$data}." >&2; [ "$result" -ne 0 ] || result=1
+    fi
     exit "$result"
 }
 installer() {
@@ -305,19 +345,18 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     [ -d "$data" ] || data_created=1
     read_owner
     path_preflight
-    work=; link_temp=; path_temp=; path_written=0; activated=0; records_started=0; new_payload=0; uninstall_link_removed=0; retained=
-    trap 'exit 130' INT HUP
+    work=; link_temp=; path_temp=; path_written=0; activated=0; records_started=0; new_payload=0; retained=
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
     trap 'exit 143' TERM
     if [ "$uninstall" = 1 ]; then
         [ "$owned" = 1 ] || { message "No owned installation: $install"; return 0; }
         phase=uninstall
         trap finish 0
         operation rm "$link"
-        uninstall_link_removed=1
         phase=path
         work=$(mktemp -d "$data/staging-XXXXXX") || failed
         remove_path
-        uninstall_link_removed=0
         phase=cleanup; retained=$data
         operation rm -f "$data/path.record"
         operation rm -f "$data/owner" "$data/current" "$data/inventory"
@@ -387,8 +426,8 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
     printf '%s\n%s\n' "$version" "$rid" > "$work/current" || failed
     phase=activation
     if [ "$already" = 0 ]; then
-        operation mv "$work/payload" "$final"
         new_payload=1
+        operation mv "$work/payload" "$final"
     fi
     records_started=1
     for record in owner current inventory; do operation mv -f "$work/$record" "$data/$record"; done
@@ -400,14 +439,14 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
         if [ -e "$link" ] || [ -L "$link" ]; then
             if [ "$owned" != 1 ] || [ ! -L "$link" ] || [ -d "$link" ] || [ "$(readlink "$link")" != "$payload/opencode-mcp" ]; then refuse "Install collision: $link."; fi
         fi
-        operation mv -f "$link_temp" "$link"
-        link_temp=; activated=1
+        activated=1
+        publish_link "$final"
     fi
     write_path
     phase=activation
     if [ "$path_written" = 1 ]; then operation mv "$work/path.record" "$data/path.record"; fi
-    activated=0; records_started=0; new_payload=0; path_written=0
     phase=cleanup
+    activated=0; records_started=0; new_payload=0; path_written=0
     retained=$payload
     if [ "$owned" = 1 ] && [ "$already" = 0 ]; then operation rm -rf "$payload"; fi
     retained=$work
