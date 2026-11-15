@@ -13,6 +13,10 @@ internal sealed class PhysicalPathResolver(IFileSystem files)
         foreach (var component in path[root.Length..].Split([files.Path.DirectorySeparatorChar, files.Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
         {
             resolved = files.Path.Combine(resolved, component);
+            if (!files.File.Exists(resolved) && !files.Directory.Exists(resolved) && files.FileInfo.New(resolved).LinkTarget is null)
+            {
+                continue; // A missing component is no link, so the rest of the path stays as written.
+            }
             var target = files.Directory.ResolveLinkTarget(resolved, returnFinalTarget: true);
             if (target is not null)
             {

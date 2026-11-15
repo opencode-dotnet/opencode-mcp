@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Abstractions;
 using System.Net;
@@ -346,8 +347,17 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             {
                 if (!process.HasExited)
                 {
-                    using var current = FindProcess(process.Id);
-                    if (current.StartTime != identity)
+                    DateTime started;
+                    try
+                    {
+                        using var current = FindProcess(process.Id);
+                        started = current.StartTime;
+                    }
+                    catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception && process.HasExited)
+                    {
+                        continue; // It exited during the identity check, so there is nothing left to end.
+                    }
+                    if (started != identity)
                     {
                         throw new InvalidOperationException("An owned PID was reused; retained root: " + _root);
                     }
