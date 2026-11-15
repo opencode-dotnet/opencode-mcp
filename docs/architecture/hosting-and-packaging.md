@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-15
+Date: 2026-11-16
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release
@@ -312,7 +312,10 @@ not a second distributed product. The entry is compiled separately from the solu
   and pulls the manifest runtime image before this command; neither preparation runs inside the
   test step's budget. The proof still inspects the local image before using it.
 - `snapshot --output <directory>` records PID, process name, CPU, working set, age and command line,
-  sorted by CPU descending, in `processes.txt`; its first 25 rows also reach the job log.
+  sorted by CPU descending, in `processes.txt` and logs its first 25 rows. The process query has a
+  two-minute bound; Windows command lines use a separate 45-second CIM query before it. Missing
+  command lines have empty fields; a failed command-line query is reported as the first line of
+  the snapshot and of the log.
 - `validate --receipts <dir> [--manifest <path>]` checks the manifest's complete ordered receipt set,
   common source/SDK/version/dependency identities, successful publish and three test runs, effective
   properties, warning results, manifest runner/image identities, payload manifests, archive
