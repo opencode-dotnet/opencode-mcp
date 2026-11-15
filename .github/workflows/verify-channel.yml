@@ -204,10 +204,12 @@ jobs:
           foreach ($file in Get-ChildItem artifacts/feed -File) { Write-Output "Candidate package digest (not a remote envelope comparison): $($file.Name) $((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())" }
           foreach ($file in Get-ChildItem artifacts/release-assets -File) { Write-Output "Candidate release digest: $($file.Name) $((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())" }
           $deadline = [DateTimeOffset]::UtcNow.AddMinutes(30)
+          $present = @()
           do {
+            # The last finished scan's sets are complete; report them before starting a new scan.
+            Assert-PresenceDeadline
             $present = @()
             $missing = @()
-            Assert-PresenceDeadline
             if ($env:CHANNEL -ceq 'github-release') {
               $release = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/releases/tags/$([Uri]::EscapeDataString('v' + $env:VERSION))" 'Not Found'
               $remote = @()
