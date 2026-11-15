@@ -533,6 +533,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Always record prebuilt process snapshot
         if: always()
+        timeout-minutes: 5
         run: |
           dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'channel-snapshot')
           exit $LASTEXITCODE
