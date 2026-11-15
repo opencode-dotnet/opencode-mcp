@@ -18,14 +18,52 @@ The server's contract is to:
 - ship as a NuGet MCP tool package and as native executables for Windows, Linux, and macOS on x64
   and Arm64.
 
-No package or binary is published. See the [roadmap](docs/ROADMAP.md) for current availability and
-remaining distribution work.
+Each release is published through three channels from one verified build: NuGet MCP tool packages
+on NuGet.org and on GitHub Packages, and native archives with install scripts on GitHub Releases.
+Every channel carries the same bytes. See the [roadmap](docs/ROADMAP.md) for current availability.
+
+## Install
+
+Pick the channel that fits the machine. Replace `<version>` with the exact release version (without
+a leading `v`); every command below pins it and never resolves "latest".
+
+### NuGet tool (needs the .NET SDK)
+
+Install the command once, then start it as `opencode-mcp`:
+
+```sh
+dotnet tool install -g OpenCodeDotNet.Mcp --version <version>
+opencode-mcp --transport stdio
+```
+
+Or let an MCP client start it on demand through `dnx`, with nothing installed beforehand. `-v
+minimal` keeps acquisition messages off the protocol stream:
+
+```sh
+dotnet dnx -v minimal OpenCodeDotNet.Mcp@<version> --yes -- --transport stdio
+```
+
+The package set is one root package, `OpenCodeDotNet.Mcp`, and one native package per runtime
+(`OpenCodeDotNet.Mcp.<rid>`); the SDK selects the native package for the machine. The installed
+command runs the native executable directly; it does not need the .NET runtime to run.
+
+To use GitHub Packages instead of NuGet.org, map the `OpenCodeDotNet.Mcp` packages to the
+`https://nuget.pkg.github.com/opencode-dotnet/index.json` source in a NuGet configuration and
+authenticate to it with a GitHub token that has `read:packages`; the repository's
+[`packaging/github-packages.nuget.config`](packaging/github-packages.nuget.config) shows the source
+mapping.
+
+### Native archives (no .NET needed)
+
+Each release has one archive per runtime, `opencode-mcp-<version>-<rid>.zip` for Windows and
+`.tar.gz` for Linux and macOS, and a `SHA256SUMS` file. Download the archive for the machine,
+compare its SHA-256 with `SHA256SUMS`, extract it and run `opencode-mcp`. The install scripts below
+do the same and also place the command.
 
 ## Install scripts
 
-The scripts arrive with the first release; these URLs are not available before it. Replace
-`<version>` below with the exact release version (without the leading `v`). These pinned commands
-install that release, with no “latest” lookup:
+The scripts are assets of each release. These pinned commands install that release, with no
+“latest” lookup:
 
 ```sh
 curl -fsSL https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.sh | sh

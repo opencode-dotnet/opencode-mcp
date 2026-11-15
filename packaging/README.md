@@ -12,4 +12,16 @@ server, not OpenCode or a model provider.
 
 The native server needs no installed .NET runtime.
 
-This is a pre-release. No package or binary is published.
+This is a pre-release.
+
+Install the command for one version and start it:
+
+    dotnet tool install -g OpenCodeDotNet.Mcp --version <version>
+    opencode-mcp --transport stdio
+
+Or let an MCP client start it on demand, with nothing installed beforehand:
+
+    dotnet dnx -v minimal OpenCodeDotNet.Mcp@<version> --yes -- --transport stdio
+
+This package selects the native package for the machine's runtime; the installed command runs the
+native executable directly and does not need the .NET runtime to run.
