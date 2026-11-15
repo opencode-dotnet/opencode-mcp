@@ -8,6 +8,9 @@
 
 ### Added
 
+- Install scripts for Windows (PowerShell) and for Linux and macOS (POSIX shell) that verify the release archive before installing, and uninstall only what they installed.
+- Release assets: one native archive per runtime, both install scripts, and a `SHA256SUMS` file, all from the verified candidate build.
+- A manual release workflow that promotes one verified candidate, unchanged, to GitHub Packages, NuGet.org and a GitHub Release, and a channel verification that installs the published bytes on every supported runtime.
 - Local NuGet MCP tool packages for Windows, Linux and macOS on x64 and Arm64, built from verified native payloads.
 - A complete local package feed with MCP metadata and payload-integrity inspection.
 - Isolated local-feed acquisition through `dotnet dnx` and an owned tool-path installation, with packaged stdio and HTTP startup checks for every supported native RID.

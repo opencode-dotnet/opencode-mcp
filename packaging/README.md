@@ -12,4 +12,17 @@ server, not OpenCode or a model provider.
 
 The native server needs no installed .NET runtime.
 
-This is a pre-release. No package or binary is published.
+This is a pre-release.
+
+Install the command for one version and start it:
+
+    dotnet tool install -g OpenCodeDotNet.Mcp --version <version>
+    opencode-mcp --transport stdio
+
+Or let an MCP client start it on demand, with nothing installed beforehand:
+
+    dotnet dnx -v minimal OpenCodeDotNet.Mcp@<version> --yes -- --transport stdio
+
+Both commands need the .NET 10 SDK and a published version. Installing `OpenCodeDotNet.Mcp`
+selects the native implementation package for the machine; the installed command runs its native
+executable directly and does not need the .NET runtime to run.

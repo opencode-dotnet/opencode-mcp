@@ -18,14 +18,64 @@ The server's contract is to:
 - ship as a NuGet MCP tool package and as native executables for Windows, Linux, and macOS on x64
   and Arm64.
 
-No package or binary is published. See the [roadmap](docs/ROADMAP.md) for current availability and
-remaining distribution work.
+Each release is published through three channels from one verified build: NuGet MCP tool packages
+on NuGet.org and on GitHub Packages, and native archives with install scripts on GitHub Releases.
+All three carry the same native payloads; NuGet.org adds its repository signature to the packages.
+See the [roadmap](docs/ROADMAP.md) for current availability.
+
+## Install
+
+Pick the channel that fits the machine. Replace `<version>` with the exact release version (without
+a leading `v`); every command below pins it and never resolves "latest". The commands need a
+published version: before a release exists, its packages, archives and script URLs do not.
+
+### NuGet tool (needs the .NET 10 SDK)
+
+Install the command once, then start it as `opencode-mcp`:
+
+```sh
+dotnet tool install -g OpenCodeDotNet.Mcp --version <version>
+opencode-mcp --transport stdio
+```
+
+Or let an MCP client start it on demand through `dnx`, with nothing installed beforehand. `-v
+minimal` keeps acquisition messages off the protocol stream:
+
+```sh
+dotnet dnx -v minimal OpenCodeDotNet.Mcp@<version> --yes -- --transport stdio
+```
+
+The package set is one root package, `OpenCodeDotNet.Mcp`, and one native package per runtime
+(`OpenCodeDotNet.Mcp.<rid>`); the SDK selects the native package for the machine. The installed
+command runs the native executable directly; it does not need the .NET runtime to run.
+
+To use GitHub Packages instead of NuGet.org, copy
+[`packaging/github-packages.nuget.config`](packaging/github-packages.nuget.config), which maps the
+`OpenCodeDotNet.Mcp` packages to `https://nuget.pkg.github.com/opencode-dotnet/index.json`. Add
+credentials for its `opencode-dotnet` source: your GitHub user name and a personal access token
+(classic) with `read:packages`. GitHub Packages requires them even for public packages. Then add
+`--configfile <that file>` to the `dotnet tool install` command, or to the `dotnet dnx` command
+before `--yes` and the `--` separator.
+
+### Native archives (no .NET needed)
+
+Each release has one archive per runtime, `opencode-mcp-<version>-<rid>.zip` for Windows and
+`.tar.gz` for Linux and macOS, and a `SHA256SUMS` file. Download the archive for the machine,
+compare its SHA-256 with `SHA256SUMS`, extract it and run `opencode-mcp`. The install scripts below
+do the same and also place the command.
+
+Preview binaries are not signed with a publisher identity. The macOS command is ad hoc signed and
+not notarized. On macOS, a browser download usually carries the quarantine attribute, and `tar` can
+pass it to the extracted command. Gatekeeper then holds the command at its first launch and asks
+for confirmation. After you verify the archive and extract it, check the command with
+`xattr -l ./opencode-mcp`. If the output lists `com.apple.quarantine`, remove it before the first
+launch: `xattr -d com.apple.quarantine ./opencode-mcp`. On Windows, SmartScreen can warn about a
+downloaded archive.
 
 ## Install scripts
 
-The scripts arrive with the first release; these URLs are not available before it. Replace
-`<version>` below with the exact release version (without the leading `v`). These pinned commands
-install that release, with no “latest” lookup:
+The scripts are assets of each release. These pinned commands install that release, with no
+“latest” lookup:
 
 ```sh
 curl -fsSL https://github.com/opencode-dotnet/opencode-mcp/releases/download/v<version>/install.sh | sh
