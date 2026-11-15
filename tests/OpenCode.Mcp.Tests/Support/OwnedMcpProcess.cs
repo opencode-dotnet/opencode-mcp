@@ -420,8 +420,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         }
         catch (ArgumentException)
         {
-            // The runtime reports no running process with this id. A killed child that is still a zombie counts as
-            // exited here, while HasExited can still be false, so HasExited cannot decide this case.
+            // The lookup reports no running process. HasExited can lag while a non-child exit poll is pending.
             return;
         }
         catch (Exception error) when (error is InvalidOperationException or Win32Exception && process.HasExited)
