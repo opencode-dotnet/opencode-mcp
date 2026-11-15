@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-15
+Date: 2026-11-16
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release

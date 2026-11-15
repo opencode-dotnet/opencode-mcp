@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-15
+Date: 2026-11-16
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -244,7 +244,7 @@ Completed receipts are uploaded only after successful proof; validation
 has no `always()` override and starts only when all needed jobs succeed. Both workflows prebuild
 the file-based entry in a normal step before tests. Process snapshots run with `always()` and
 `--no-build` through the shared `snapshot` subcommand in both workflows, with five-minute bounds on
-the CI, native-build, Linux-proof and package snapshot steps. Upload errors remain
+every process-snapshot step. Upload errors remain
 blocking. The validation success and its log establish the complete-set result; no index file or
 separate job-result input stands in for that dependency graph. The native workflow must be green
 at the pull request's head before queue entry, including hosted parsing and all six RIDs.
