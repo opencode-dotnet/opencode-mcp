@@ -1210,7 +1210,7 @@ jobs:
                     $removing = @(Get-ChildItem -LiteralPath $private -Directory -Filter 'removing-*')
                     Assert-Equal $removing.Count 1 'Interrupted uninstall retains exactly one payload'
                     Assert-Equal (Get-Inventory $removing[0].FullName) (Get-Inventory $expected) 'Interrupted uninstall retains the complete payload'
-                    $options = if ($recovery -ceq 'uninstall') { $uninstall } else { @() }
+                    $options = @(if ($recovery -ceq 'uninstall') { $uninstall })
                     $lines = if ($recovery -ceq 'uninstall') { @("opencode-mcp: Uninstalled opencode-mcp: $bin") } else { @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.') }
                     Assert-Result (Invoke-Installer $options) 0 $lines
                     if ($recovery -ceq 'install') { Assert-Installed; Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin") }
