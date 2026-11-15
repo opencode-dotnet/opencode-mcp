@@ -22,9 +22,9 @@ internal sealed class PackageChannelFixture(IFileSystem files, IReadOnlyDictiona
             throw new InvalidOperationException(string.Join('\n', errors));
         }
         var channel = inputs["OPENCODE_MCP_TEST_CHANNEL"];
-        if (channel is not ("github-packages" or "nuget"))
+        if (channel is not ("github-packages" or "nuget" or "candidate"))
         {
-            errors.Add("OPENCODE_MCP_TEST_CHANNEL must be github-packages or nuget: " + channel);
+            errors.Add("OPENCODE_MCP_TEST_CHANNEL must be github-packages, nuget or candidate: " + channel);
         }
         var path = files.Path.GetFullPath(inputs["OPENCODE_MCP_TEST_CHANNEL_CONFIG"] ?? throw new InvalidOperationException(), ReferenceFeed.RepositoryRoot);
         if (!files.File.Exists(path))
@@ -42,19 +42,25 @@ internal sealed class PackageChannelFixture(IFileSystem files, IReadOnlyDictiona
         {
             throw new InvalidOperationException(string.Join('\n', errors));
         }
-        await RequireConfigurationAsync(path, channel == "nuget" ? "nuget-org" : "github-packages", token);
+        await RequireConfigurationAsync(path, channel == "nuget" ? "nuget-org" : "github-packages", channel == "candidate" ? ReferenceFeed.Resolve() : null, token);
         ReferenceFeed.Resolve();
         return path;
     }
 
-    private async Task RequireConfigurationAsync(string path, string basename, CancellationToken token)
+    private async Task RequireConfigurationAsync(string path, string basename, string? candidateFeed, CancellationToken token)
     {
         await using var selectedStream = files.File.OpenRead(path);
         var selected = await XDocument.LoadAsync(selectedStream, LoadOptions.None, token);
         await using var expectedStream = files.File.OpenRead(files.Path.Combine(ReferenceFeed.RepositoryRoot, "packaging", basename + ".nuget.config"));
         var expected = await XDocument.LoadAsync(expectedStream, LoadOptions.None, token);
         var credentials = selected.Root?.Elements("packageSourceCredentials").ToArray() ?? [];
-        if (basename == "github-packages" && credentials is [var credential] && HasExpectedCredentials(credential))
+        if (candidateFeed is not null)
+        {
+            // The candidate channel is the GitHub Packages mapping with the product source on the candidate's own feed.
+            expected.Descendants("packageSources").Elements("add").Single(static source => (string?)source.Attribute("key") == "opencode-dotnet")
+                .SetAttributeValue("value", candidateFeed);
+        }
+        else if (basename == "github-packages" && credentials is [var credential] && HasExpectedCredentials(credential))
         {
             credential.Remove();
         }

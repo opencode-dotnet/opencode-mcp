@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-14
+Date: 2026-11-15
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in
@@ -220,8 +220,10 @@ cannot own its server fails.
   a mutant of an isolation input runs only against that state, never a developer profile.
 - **Remote acquisition preserves the local boundary.** It uses the same owned-process environment,
   private SDK and ambient-configuration refusal. The explicitly selected channel configuration is
-  copied into owned storage; the candidate feed supplies comparison evidence only and is never an
-  acquisition source. Missing remote inputs fail, never default to local acquisition or skip.
+  copied into owned storage. For a published channel, the candidate feed supplies comparison evidence
+  only and is never an acquisition source. The one exception is the `candidate` channel of the hosted
+  consumer legs: its configuration is the GitHub Packages mapping with the product source on that
+  feed and no credentials, so the same acquisition paths run before publication. Missing remote inputs fail, never default to local acquisition or skip.
   The owned configuration gives each product package a single eligible source through exclusive
   package source mapping, and with the owned cold caches that binds an acquisition to the channel
   under test.

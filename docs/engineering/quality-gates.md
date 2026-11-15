@@ -180,7 +180,9 @@ of their own, never beside the managed pass:
   stay in the managed pass. The managed pass excludes that category with
   `--treenode-filter "/*/*/*/*[Category!=Package]"`; the local package pass selects `PackageContentsTests`
   and `PackageAcquisitionTests` on the owning product-test project against the complete feed produced
-  after the native pass. Remote `ChannelAcquisitionTests` run only in the separate channel pass.
+  after the native pass. `ChannelAcquisitionTests` run in the hosted consumer legs against the candidate
+  feed (channel `candidate`) and in the separate channel pass against a published channel, never in the
+  local package pass.
 
 `../architecture/hosting-and-packaging.md` owns the native and package contract;
 `../ROADMAP.md` records which of these passes exist today.
@@ -310,8 +312,12 @@ development evidence; they are no hosted, six-RID, final-candidate or publicatio
 The `matrix` subcommand projects `consumer-matrix` from every manifest row in manifest order, with
 only `rid` and `runner`; no second RID list is maintained. After `packages` succeeds, each consumer
 leg runs on its matching RID host, downloads its own workflow run's complete `native-package-feed`
-to `artifacts/feed`, and runs `/*/*/(PackageContentsTests|PackageAcquisitionTests)/*` with `OPENCODE_MCP_TEST_FEED` set to that
-directory and `OPENCODE_MCP_TEST_RID` set to its matrix RID. A failed test after a successful build
+to `artifacts/feed`, and runs `/*/*/(PackageContentsTests|PackageAcquisitionTests|ChannelAcquisitionTests)/*` with
+`OPENCODE_MCP_TEST_FEED` set to that directory and `OPENCODE_MCP_TEST_RID` set to its matrix RID. Before the tests, the leg
+copies `packaging/github-packages.nuget.config` into owned runner storage, sets its `opencode-dotnet` source to the
+full feed path, and selects it with `OPENCODE_MCP_TEST_CHANNEL=candidate` and `OPENCODE_MCP_TEST_CHANNEL_CONFIG`. So the
+verify-channel consumer matrix (cold DNX and global-tool acquisition, stdio and HTTP) passes on every RID before
+any publication, and `release.yml` promotes only a candidate whose consumer legs passed. A failed test after a successful build
 gets the same class filter's test listing under a five-minute guard unless cancelled, never a rerun.
 Each leg always records the prebuilt tool's post-test process snapshot and uploads
 `native-process-snapshot-consumer-<RID>` and `native-package-test-results-consumer-<RID>`, with
@@ -367,10 +373,11 @@ hashes against both the published checksum file and independent candidate receip
 
 The manual `verify-channel.yml` validates the Native candidate, waits for exact channel presence,
 and selects only `ChannelAcquisitionTests` for feeds or `ExecutableTests` for release archives.
-Remote feed tests carry `Category("Package")` but never run in the local package pass or local check.
+`ChannelAcquisitionTests` carry `Category("Package")` but never run in the local package pass or local check.
 They require explicit channel, owned configuration, candidate reference feed and matching RID inputs;
-missing inputs fail rather than skip. The reference feed supplies payload comparison evidence, not
-an acquisition source. GitHub Packages metadata and installs use the job's `GITHUB_TOKEN` with
+missing inputs fail rather than skip. For a published channel, the reference feed supplies payload comparison
+evidence, not an acquisition source; only the consumer legs' `candidate` channel acquires from it, through the
+GitHub Packages mapping with the product source on that feed and no credentials. GitHub Packages metadata and installs use the job's `GITHUB_TOKEN` with
 `packages: read`; every leg requires all seven packages to be public as seen by this repository's
 Actions access. Metadata failures fail closed. A successful aggregate retains manifest-ordered,
 nonzero test totals and result-artifact links in `channel-verification` for promotion.

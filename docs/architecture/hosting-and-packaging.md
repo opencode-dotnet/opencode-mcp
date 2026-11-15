@@ -1,6 +1,6 @@
 # Hosting and Packaging Architecture
 
-Date: 2026-11-14
+Date: 2026-11-15
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, the Aspire development graph, Native AOT, NuGet packaging, installation and release
@@ -549,7 +549,10 @@ or packaged-startup claim.
   required even for public GitHub NuGet packages. Verification uses the job's `GITHUB_TOKEN` and
   additionally requires public visibility for all seven packages, as seen by this repository's
   Actions access; a failing metadata request fails closed. NuGet.org acquisition uses
-  `packaging/nuget-org.nuget.config`. Neither configuration acquires from the candidate reference feed.
+  `packaging/nuget-org.nuget.config`. Neither published-channel configuration acquires from the candidate
+  reference feed. Before publication, each hosted consumer leg acquires from its own run's feed through a
+  copy of `packaging/github-packages.nuget.config` whose `opencode-dotnet` source is that feed (channel
+  `candidate`, no credentials); the committed templates stay unchanged.
   On every OS, verification writes GitHub credentials directly into the owned configuration copy
   with the XML API, taking `github.actor` and `GITHUB_TOKEN` only from environment variables:
   `packageSourceCredentials` contains only `opencode-dotnet`, with exactly `Username` and

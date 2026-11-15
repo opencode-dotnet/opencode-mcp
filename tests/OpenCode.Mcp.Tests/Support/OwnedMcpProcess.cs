@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Abstractions;
 using System.Net;
@@ -57,6 +58,9 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
 
     /// <summary>Gets the child's recorded protocol observations.</summary>
     public WireTranscript Transcript { get; } = new();
+
+    /// <summary>Finds a running process by id; tests replace it to reach an exit between the check and the lookup.</summary>
+    internal Func<int, Process> FindProcess { get; init; } = Process.GetProcessById;
 
     internal RecordingDuplexStream StandardInput => _input ?? throw new InvalidOperationException("The child has not started.");
     internal bool HasExited => _process.HasExited;
@@ -341,15 +345,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             }
             foreach (var (process, identity) in _ownedProcesses)
             {
-                if (!process.HasExited)
-                {
-                    using var current = Process.GetProcessById(process.Id);
-                    if (current.StartTime != identity)
-                    {
-                        throw new InvalidOperationException("An owned PID was reused; retained root: " + _root);
-                    }
-                    process.Kill();
-                }
+                EndOwnedProcess(process, identity);
             }
             await Task.WhenAll(_ownedExits).WaitAsync(guard.Token);
             await Task.WhenAll(_drain, DrainOutput()).WaitAsync(guard.Token);
@@ -408,6 +404,34 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         return ObserveOwnedExecutables().Values.SingleOrDefault(path => string.Equals(path, expectedExecutable,
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             ?? throw new InvalidOperationException("The packaged native entry is not running: " + expectedExecutable);
+    }
+
+    private void EndOwnedProcess(Process process, DateTime identity)
+    {
+        if (process.HasExited)
+        {
+            return;
+        }
+        DateTime started;
+        try
+        {
+            using var current = FindProcess(process.Id);
+            started = current.StartTime;
+        }
+        catch (ArgumentException)
+        {
+            // The lookup reports no running process. HasExited can lag while a non-child exit poll is pending.
+            return;
+        }
+        catch (Exception error) when (error is InvalidOperationException or Win32Exception && process.HasExited)
+        {
+            return; // It exited after the lookup, before its start time was read.
+        }
+        if (started != identity)
+        {
+            throw new InvalidOperationException("An owned PID was reused; retained root: " + _root);
+        }
+        process.Kill();
     }
 
     private Exception? CaptureOwnedProcessFailure()
