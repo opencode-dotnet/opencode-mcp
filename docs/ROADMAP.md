@@ -1,6 +1,6 @@
 # Roadmap
 
-Date: 2026-11-10
+Date: 2026-11-15
 
 Operational state: what exists today, what is queued next, what is still open, and what is known to
 be incomplete. This file is a summary and shrinks as work lands. `../AGENTS.md` routes to the
@@ -9,7 +9,14 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 
 ## Status
 
-**Pre-release bootstrap. Packages can be acquired from the complete local feed; no package or binary is published.**
+**Preview. `0.1.0-preview.2` is published to NuGet.org, GitHub Packages and GitHub Releases.**
+
+The manual release workflow publishes one verified build, unchanged, to the three channels. Each
+channel was verified after publication by installing from it on the six hosted RIDs. Before
+publication, every `Native` run acquires its candidate from its own package feed on the six RIDs
+through the same paths (`engineering/quality-gates.md`).
+`0.1.0-preview.1` exists only on GitHub Packages and did not pass that verification; it is not
+supported.
 
 The managed server, transports, connectivity probe and one-resource Aspire AppHost are implemented.
 Native AOT payloads for the six RIDs build and pass their checks in the hosted native workflow,
@@ -36,21 +43,27 @@ including the Linux clean-container proof. Verification evidence belongs in pull
 8. **Packages** - the NuGet MCP tool package set built from those payloads, a complete local feed,
    and the first `CHANGELOG.md` entry; implemented, built and inspected in the hosted native
    workflow.
-9. **Acquisition** - cold DNX and owned tool-path acquisition and packaged startup are verified on the
-   six hosted RIDs, and a package candidate is verified from the approved commit `657f9b3`.
+9. **Acquisition** - cold DNX, owned tool-path and global-tool acquisition and packaged startup, over
+   stdio and HTTP, are verified on the six hosted RIDs against each candidate's own feed before
+   publication.
+10. **Distribution** - release assets with the PowerShell and shell install scripts, the manual
+    release workflow that publishes one verified candidate to GitHub Packages, NuGet.org and a
+    GitHub Release, and channel verification of the published bytes on the six hosted RIDs;
+    implemented, first released as `0.1.0-preview.2`.
 
 ## Later
 
-- **Installers** - PowerShell and shell installers, WinGet, Homebrew, deb and rpm packages, a
-  Windows MSI, and a macOS pkg. They need their own approved plan, including the MSI tool and its
-  terms, before authoring starts.
-- **Release** - publication, signing and notarization, registry identity, and package-manager
+- **Installers** - the PowerShell and shell install scripts ship with each release. WinGet,
+  Homebrew, deb and rpm packages, a Windows MSI, and a macOS pkg need their own approved plan,
+  including the MSI tool and its terms, before authoring starts.
+- **Signing** - code signing and macOS notarization, registry identity, and package-manager
   submissions, each separately authorized.
 - **Product tools** - MCP tools that operate on OpenCode through the published OpenCode .NET SDK,
   after the bootstrap.
 
 ## Known Gaps
 
-- **No installer support is verified.** The verified package candidate belongs to commit `657f9b3`; a
-  source or build-input change needs a new candidate.
+- **Preview binaries are not signed.** On macOS, Gatekeeper can hold a command extracted from a
+  browser download until its quarantine attribute is removed. Windows SmartScreen can warn. The
+  README says how to continue after you verify the download.
 - **AppHost cancellation coverage is incomplete.** Cancellation during running startup is not covered.
