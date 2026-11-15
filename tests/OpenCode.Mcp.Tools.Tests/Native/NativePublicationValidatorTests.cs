@@ -103,7 +103,7 @@ public sealed class NativePublicationValidatorTests
         var scenario = await NativePublicationScenario.CreateAsync(token);
         await scenario.ChangeArchiveAndChecksumsAsync(token);
         await AssertRefusalAsync(scenario, ["linux-x64: Release archive digest differs from receipt.",
-            "SHA256SUMS differs from the receipt-ordered release checksums."], token);
+            "SHA256SUMS differs from the ordered release checksums."], token);
     }
 
     [Test]
@@ -114,11 +114,63 @@ public sealed class NativePublicationValidatorTests
     [Arguments("CRLF")]
     [Arguments("self")]
     [Arguments("extra")]
+    [Arguments("script order")]
+    [Arguments("script digest")]
     public async Task ValidateAsync_Should_Require_Receipt_Ordered_Checksum_Bytes(string fault, CancellationToken token)
     {
         var scenario = await NativePublicationScenario.CreateAsync(token);
         await scenario.RewriteChecksumsAsync(fault, token);
-        await AssertRefusalAsync(scenario, ["SHA256SUMS differs from the receipt-ordered release checksums."], token);
+        await AssertRefusalAsync(scenario, ["SHA256SUMS differs from the ordered release checksums."], token);
+    }
+
+    [Test]
+    public async Task ValidateAsync_Should_Require_Both_Release_Installers(CancellationToken token)
+    {
+        var scenario = await NativePublicationScenario.CreateAsync(token);
+        scenario.Files.File.Delete(scenario.Files.Path.Combine(scenario.Request.Assets, "install.ps1"));
+        scenario.Files.File.Delete(scenario.Files.Path.Combine(scenario.Request.Assets, "install.sh"));
+        await AssertRefusalAsync(scenario, ["Missing release asset: install.sh", "Missing release asset: install.ps1"], token);
+    }
+
+    [Test]
+    [Arguments("install.sh")]
+    [Arguments("install.ps1")]
+    public async Task ValidateAsync_Should_Require_Committed_Installer_Bytes(string name, CancellationToken token)
+    {
+        var scenario = await NativePublicationScenario.CreateAsync(token);
+        var path = scenario.Files.Path.Combine(scenario.Request.Assets, name);
+        var changed = await scenario.Files.File.ReadAllTextAsync(path, token) + "# altered\n";
+        await scenario.Files.File.WriteAllTextAsync(path, changed, token);
+        var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(await scenario.Files.File.ReadAllBytesAsync(path, token)));
+        var text = await scenario.Files.File.ReadAllTextAsync(scenario.Checksums, token);
+        await scenario.Files.File.WriteAllBytesAsync(scenario.Checksums, System.Text.Encoding.UTF8.GetBytes(
+            text.Replace(scenario.Candidate.ScriptDigest(name), digest, StringComparison.Ordinal)), token);
+        await AssertRefusalAsync(scenario, [name + ": Release script differs from committed installer.",
+            "SHA256SUMS differs from the ordered release checksums."], token);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ValidateAsync_Should_Require_Committed_Default_Versions(bool missing, CancellationToken token)
+    {
+        var scenario = await NativePublicationScenario.CreateAsync(token);
+        foreach (var name in new[] { "install.ps1", "install.sh" })
+        {
+            var path = scenario.Files.Path.Combine(scenario.Candidate.Installers, name);
+            if (missing)
+            {
+                scenario.Files.File.Delete(path);
+            }
+            else
+            {
+                await scenario.Files.File.WriteAllTextAsync(path, (await scenario.Files.File.ReadAllTextAsync(path, token))
+                    .Replace(scenario.Request.Version, "different", StringComparison.Ordinal), token);
+            }
+        }
+        await AssertRefusalAsync(scenario, missing ? ["Missing installer script: install.sh.", "Missing installer script: install.ps1."]
+            : ["Installer default version must be " + scenario.Request.Version + ": install.sh.",
+                "Installer default version must be " + scenario.Request.Version + ": install.ps1."], token);
     }
 
     private static async Task AssertRefusalAsync(NativePublicationScenario scenario, IReadOnlyList<string> expected, CancellationToken token)

@@ -12,7 +12,7 @@ internal sealed class NativePublicationScenario(NativeReleaseAssetsScenario asse
     public IFileSystem Files => Candidate.Files;
     public string Feed => Candidate.Builder.Feed;
     public string Commit => Candidate.Builder.Receipt.SourceCommit;
-    public NativePublicationRequest Request => new(Candidate.Manifest, Candidate.Receipts, Feed, Candidate.Output, Candidate.Version, Commit);
+    public NativePublicationRequest Request => new(Candidate.Manifest, Candidate.Receipts, Feed, Candidate.Output, Candidate.Version, Commit, Candidate.Installers);
     public string Checksums => Files.Path.Combine(Candidate.Output, "SHA256SUMS");
 
     public static async Task<NativePublicationScenario> CreateAsync(CancellationToken token)
@@ -41,6 +41,8 @@ internal sealed class NativePublicationScenario(NativeReleaseAssetsScenario asse
         text = fault switch
         {
             "order" => string.Join('\n', lines.Reverse()) + "\n",
+            "script order" => string.Join('\n', lines[..^2].Concat([lines[^1], lines[^2]])) + "\n",
+            "script digest" => text.Replace(Candidate.ScriptDigest("install.sh"), new string('0', 64), StringComparison.Ordinal),
             "digest" => new string('0', 64) + text[64..],
             "filename" => text.Replace("-win-x64.zip", "-wrong.zip", StringComparison.Ordinal),
             "BOM" => "\uFEFF" + text,

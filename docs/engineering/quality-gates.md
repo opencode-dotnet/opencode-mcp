@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-14
+Date: 2026-11-15
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -319,11 +319,27 @@ retention governed by the native artifact rule above and missing files treated a
 results come only from `artifacts/test-results/package/**`; owned homes, caches, private SDK copies
 and the feed are not uploaded by consumers.
 
-Release-asset acceptance requires exactly six version-named archives and `SHA256SUMS`. Each archive
-is byte-identical to its staged input and matches its receipt digest; checksum lines follow manifest
-order. The pull request's hosted `Native` run proves assembly and upload, not publication, installer
+Release-asset acceptance requires exactly six version-named archives, `install.sh`, `install.ps1`
+and `SHA256SUMS`. Archives are byte-identical to staged inputs and match receipt digests; scripts
+are unchanged committed bytes with matching default versions. Eight checksum lines follow manifest
+archive order, then shell and PowerShell scripts. The pull request's hosted `Native` run proves assembly and upload, not publication, installer
 behaviour or a live-channel download. Dispatch retention is confirmed on an authorized manual
 candidate run.
+
+### Installer pass
+
+Installer acceptance is a separate hosted pass over every manifest RID. It consumes that Native run's
+release-assets artifact through the installers' local-source option, checks whole-payload equality,
+runs the existing executable suite against the installed native command, and proves owned uninstall
+and PATH reversal. Windows additionally exercises PowerShell 5.1 and 7.
+
+Lifecycle tests always select an owned installation directory and never run on developer
+workstations. Pinned ShellCheck and PSScriptAnalyzer are CI-only prerequisites; linter findings and
+missing prerequisites fail acceptance. Installer and linter jobs must both succeed at the reviewed
+head before queue entry; they add no new required GitHub check and do not weaken `CI result`.
+The [install-script contract](../architecture/hosting-and-packaging.md#install-scripts) owns options,
+layout, messages and version identity. Existing test-step/listing guards, Native retention and
+process ownership rules remain in force.
 
 ### Publication pass
 
@@ -360,6 +376,18 @@ Actions access. Metadata failures fail closed. A successful aggregate retains ma
 nonzero test totals and result-artifact links in `channel-verification` for promotion.
 Only a complete run or a full re-run produces `channel-verification`; a re-run of failed jobs that
 mixes retained leg artifacts from different attempts is refused.
+
+Release-channel acceptance downloads each form's published script once and verifies its SHA-256
+against the candidate and published checksum line before executing that same copy: Unix feeds the
+verified file through `cat "$VERIFIED_INSTALLER" | sh` or `cat "$VERIFIED_INSTALLER" | sh -s -- --install-dir ... --data-dir ...`;
+Windows hashes `[Text.Encoding]::UTF8.GetBytes($text)` from the one `irm` result (the published script
+is ASCII without a BOM), then runs `$text | iex` or `& ([scriptblock]::Create($text)) -InstallDir ...`.
+Unix uses owned XDG or explicit installation/data roots under `RUNNER_TEMP`; the option-bearing form
+uses different owned XDG paths and asserts they remain absent. Windows uses an owned explicit root
+or the runner-default `%LOCALAPPDATA%\Programs\opencode-mcp` for the no-option form (absent before
+and removed in `finally`), without PATH consent. Each install runs `ExecutableTests`
+against the installed command and proves exact success output and owned uninstall/removal; candidate-local
+installer acceptance does not establish live publication or live download availability.
 
 Secret-bearing channel jobs retain the existing test guards but upload only selected
 credential-redacted TRX and process snapshots. Credential files, acquisition stores and memory dumps

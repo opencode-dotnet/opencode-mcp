@@ -75,8 +75,17 @@ internal sealed class NativePublicationValidator(IFileSystem files, IUnixFileMod
 
     private async Task<IReadOnlyList<string>> ValidateAssetsAsync(NativePublicationRequest request, NativeReceiptLocation[] ordered, CancellationToken token)
     {
+        IReadOnlyList<NativeInstallerAsset> installers;
+        try
+        {
+            installers = await new NativeInstallerAssets(files).ReadAsync(request.Installers, request.Version, token).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException error)
+        {
+            return error.Message.Split('\n');
+        }
         var names = ordered.Select(location => "opencode-mcp-" + request.Version + "-" + location.Receipt.Rid + new NativeRid(location.Receipt.Rid).ArchiveExtension).ToArray();
-        var diagnostics = new List<string>(AssetSetDiagnostics(request.Assets, [.. names, "SHA256SUMS"]));
+        var diagnostics = new List<string>(AssetSetDiagnostics(request.Assets, [.. names, .. installers.Select(static installer => installer.Name), "SHA256SUMS"]));
         var store = new NativeEvidenceStore(files);
         var checksums = new StringBuilder();
         for (var index = 0; index < ordered.Length; index++)
@@ -89,10 +98,19 @@ internal sealed class NativePublicationValidator(IFileSystem files, IUnixFileMod
             }
             checksums.Append(receipt.ArchiveSha256).Append("  ").Append(names[index]).Append('\n');
         }
+        foreach (var installer in installers)
+        {
+            var path = files.Path.Combine(request.Assets, installer.Name);
+            if (files.File.Exists(path) && !(await files.File.ReadAllBytesAsync(path, token).ConfigureAwait(false)).SequenceEqual(installer.Bytes))
+            {
+                diagnostics.Add(installer.Name + ": Release script differs from committed installer.");
+            }
+            checksums.Append(installer.Sha256).Append("  ").Append(installer.Name).Append('\n');
+        }
         var checksumPath = files.Path.Combine(request.Assets, "SHA256SUMS");
         if (files.File.Exists(checksumPath) && !(await files.File.ReadAllBytesAsync(checksumPath, token).ConfigureAwait(false)).SequenceEqual(Encoding.UTF8.GetBytes(checksums.ToString())))
         {
-            diagnostics.Add("SHA256SUMS differs from the receipt-ordered release checksums.");
+            diagnostics.Add("SHA256SUMS differs from the ordered release checksums.");
         }
         return diagnostics.AsReadOnly();
     }

@@ -199,7 +199,7 @@ jobs:
           }
           $manifest = Get-Content packaging/native-manifest.json -Raw | ConvertFrom-Json
           $ids = @($manifest.runtimes | ForEach-Object { "OpenCodeDotNet.Mcp.$($_.rid)" }) + @('OpenCodeDotNet.Mcp')
-          $expected = @($manifest.runtimes | ForEach-Object { "opencode-mcp-$env:VERSION-$($_.rid)" + $(if ($_.rid.StartsWith('win-')) { '.zip' } else { '.tar.gz' }) }) + @('SHA256SUMS')
+          $expected = @($manifest.runtimes | ForEach-Object { "opencode-mcp-$env:VERSION-$($_.rid)" + $(if ($_.rid.StartsWith('win-')) { '.zip' } else { '.tar.gz' }) }) + @('install.sh', 'install.ps1', 'SHA256SUMS')
           $entries = if ($env:CHANNEL -ceq 'github-release') { $expected } else { $ids }
           foreach ($file in Get-ChildItem artifacts/feed -File) { Write-Output "Candidate package digest (not a remote envelope comparison): $($file.Name) $((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())" }
           foreach ($file in Get-ChildItem artifacts/release-assets -File) { Write-Output "Candidate release digest: $($file.Name) $((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())" }
@@ -398,8 +398,127 @@ jobs:
           if (-not $IsWindows) { $env:TMPDIR = $env:RUNNER_TEMP }
           dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter '/*/*/ExecutableTests/*' --report-trx --results-directory artifacts/test-results/channel/container --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
           exit $LASTEXITCODE
+      - name: Prove published no-option installer
+        id: installer-default
+        if: env.CHANNEL == 'github-release'
+        timeout-minutes: 35
+        env:
+          INSTALLER_FORM: default
+          TUNIT_DISABLE_GITHUB_REPORTER: 'true'
+        run: &installer-body |
+          $ErrorActionPreference = 'Stop'
+          function Assert-InstallerOutput($actual, $expected) {
+            $actual = @($actual)
+            $expected = @($expected)
+            if ($actual.Count -ne $expected.Count) { throw "Unexpected installer output: $($actual -join '\n')" }
+            for ($i = 0; $i -lt $expected.Count; $i++) {
+              if ($actual[$i] -cne $expected[$i]) { throw "Unexpected installer output: $($actual -join '\n')" }
+            }
+          }
+          $owned = Join-Path $env:RELEASE_ROOT ('installer-' + $env:INSTALLER_FORM)
+          [void](New-Item -ItemType Directory -Path $owned)
+          $name = if ($IsWindows) { 'install.ps1' } else { 'install.sh' }
+          $script = Join-Path $owned $name
+          $env:INSTALLER_URL = "https://github.com/$env:REPOSITORY/releases/download/v$env:VERSION/$name"
+          if ($IsWindows) {
+            $text = irm $env:INSTALLER_URL
+            # Hash exactly the UTF-8 text fed to iex/scriptblock; the published script is ASCII without a BOM.
+            $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant()
+          } else {
+            Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $script
+            $digest = (Get-FileHash -LiteralPath $script -Algorithm SHA256).Hash.ToLowerInvariant()
+            $env:VERIFIED_INSTALLER = $script
+          }
+          $candidate = (Get-FileHash -LiteralPath (Join-Path 'artifacts/release-assets' $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          $lines = @(Get-Content -LiteralPath (Join-Path $env:RELEASE_ROOT 'SHA256SUMS') | Where-Object { $_.EndsWith("  $name", [StringComparison]::Ordinal) })
+          if ($digest -cne $candidate -or $lines.Count -ne 1 -or $lines[0] -cne "$digest  $name") { throw 'Published installer differs from candidate or published checksum.' }
+          $default = $env:INSTALLER_FORM -ceq 'default'
+          $install = Join-Path $owned 'bin'
+          $data = Join-Path $owned 'data/opencode-mcp'
+          if ($IsWindows) {
+            if ($default) { $install = Join-Path $env:LOCALAPPDATA 'Programs/opencode-mcp' }
+            $command = Join-Path $install 'current/opencode-mcp.exe'
+          } else {
+            $env:TMPDIR = $env:RUNNER_TEMP
+            $env:XDG_BIN_HOME = $install
+            $env:XDG_DATA_HOME = Join-Path $owned 'data'
+            if (-not $default) {
+              $env:XDG_BIN_HOME = Join-Path $owned 'xdg-bin'
+              $env:XDG_DATA_HOME = Join-Path $owned 'xdg-data'
+            }
+            $env:INSTALLER_BIN = $install
+            $env:INSTALLER_DATA = $data
+            $command = Join-Path $install 'opencode-mcp'
+          }
+          if (Test-Path -LiteralPath $install) { throw "Installer destination must be absent: $install" }
+          $installed = $false
+          $failure = $null
+          try {
+            if ($IsWindows) {
+              # Runner-default pwsh is sufficient here; Native PR legs also cover Windows PowerShell 5.1.
+              if ($default) { $output = @($text | iex) } else {
+                $output = @(& ([scriptblock]::Create($text)) -InstallDir $install)
+              }
+            } else {
+              $pipeline = if ($default) { 'cat "$VERIFIED_INSTALLER" | sh' } else {
+                'cat "$VERIFIED_INSTALLER" | sh -s -- --install-dir "$INSTALLER_BIN" --data-dir "$INSTALLER_DATA"'
+              }
+              $output = @(bash -o pipefail -c $pipeline)
+              if ($LASTEXITCODE -ne 0) { throw 'Published installer pipe failed.' }
+            }
+            $installed = $true
+            Assert-InstallerOutput $output @("opencode-mcp: Installed $env:VERSION ($env:RID): $command", 'opencode-mcp: PATH unchanged.')
+            if (-not (Test-Path -LiteralPath $command -PathType Leaf)) { throw "Installed command is missing: $command" }
+            if (-not $IsWindows -and -not $default) {
+              if (-not (Test-Path -LiteralPath $data -PathType Container)) { throw "Installer data is missing: $data" }
+              foreach ($path in @($env:XDG_BIN_HOME, $env:XDG_DATA_HOME)) {
+                if (Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue) { throw "Installer ignored explicit options: $path" }
+              }
+            }
+            $env:OPENCODE_MCP_TEST_EXECUTABLE = $command
+            $env:OPENCODE_MCP_TEST_EXPECT_NATIVE = 'true'
+            $results = "artifacts/test-results/channel/installer-$env:INSTALLER_FORM"
+            dotnet test --project tests/OpenCode.Mcp.Tests/OpenCode.Mcp.Tests.csproj -c Release --no-build --treenode-filter '/*/*/ExecutableTests/*' --report-trx --results-directory $results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
+            if ($LASTEXITCODE -ne 0) { throw 'Installed-command ExecutableTests failed.' }
+          } catch {
+            $failure = $_
+            throw
+          } finally {
+            try {
+              try {
+                if ($IsWindows) {
+                  if ($default) { $output = @(& ([scriptblock]::Create($text)) -Uninstall) } else {
+                    $output = @(& ([scriptblock]::Create($text)) -Uninstall -InstallDir $install)
+                  }
+                } else {
+                  $options = @('--uninstall')
+                  if (-not $default) { $options += @('--install-dir', $install, '--data-dir', $data) }
+                  $output = @(sh $script @options)
+                  if ($LASTEXITCODE -ne 0) { throw 'Published installer uninstall failed.' }
+                }
+                if ($installed) { Assert-InstallerOutput $output @("opencode-mcp: Uninstalled opencode-mcp: $install") }
+              } finally {
+                if (Get-Item -LiteralPath $install -Force -ErrorAction SilentlyContinue) { throw "Installer destination remains: $install" }
+                if (-not $IsWindows -and (Get-Item -LiteralPath $data -Force -ErrorAction SilentlyContinue)) { throw "Installer data remains: $data" }
+              }
+            } catch {
+              if ($failure) {
+                Write-Warning "Installer cleanup also failed: $($_.Exception.Message)"
+                throw $failure
+              }
+              throw
+            }
+          }
+      - name: Prove published option-bearing installer
+        id: installer-options
+        if: env.CHANNEL == 'github-release'
+        timeout-minutes: 35
+        env:
+          INSTALLER_FORM: options
+          TUNIT_DISABLE_GITHUB_REPORTER: 'true'
+        run: *installer-body
       - name: List selected tests after failure without rerunning
-        if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && (steps.test.outcome == 'failure' || steps.container.outcome == 'failure') }}
+        if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && (steps.test.outcome == 'failure' || steps.container.outcome == 'failure' || steps.installer-default.outcome == 'failure' || steps.installer-options.outcome == 'failure') }}
         timeout-minutes: 5
         env:
           TUNIT_DISABLE_GITHUB_REPORTER: 'true'
@@ -512,7 +631,8 @@ jobs:
             if ($artifacts.Count -ne 1) { throw "Expected one retained artifact: $name" }
             $root = Join-Path $env:RUNNER_TEMP "leg-results/$name"
             $files = @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.trx' -File)
-            $expectedReports = if ($env:CHANNEL -ceq 'github-release' -and $leg.rid.StartsWith('linux-')) { 2 } else { 1 }
+            # Installer ExecutableTests join the same retained results and integer totals; the contract shape is unchanged.
+            $expectedReports = if ($env:CHANNEL -ceq 'github-release') { if ($leg.rid.StartsWith('linux-')) { 4 } else { 3 } } else { 1 }
             if ($files.Count -ne $expectedReports) { throw "Missing or unexpected test reports: $name" }
             $totals = [ordered]@{ total = 0; passed = 0; failed = 0; skipped = 0 }
             foreach ($file in $files) {
