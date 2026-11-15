@@ -169,7 +169,7 @@ public sealed class OwnedMcpProcessTests
                 lookups.Add(id);
                 var found = window == "identity" ? Process.GetProcessById(id) : null; // Exit after the lookup, before its start time is read.
                 child.Kill(); // Or between the owner's exit check and its lookup.
-                if (!exited.Wait(TimeSpan.FromSeconds(15)))
+                if (!exited.Wait(TimeSpan.FromSeconds(15), token))
                 {
                     throw new InvalidOperationException("The owned child did not exit after its kill.");
                 }
