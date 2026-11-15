@@ -1,5 +1,7 @@
 # OpenCode MCP
 
+[![NuGet](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Fpackages%2Fnuget%2FOpenCodeDotNet.Mcp%3Fprerelease%3Dtrue)](https://www.nuget.org/packages/OpenCodeDotNet.Mcp) [![GitHub Packages](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Fpackages%2Fgithub%2Fopencode-dotnet%2FOpenCodeDotNet.Mcp%3Fprerelease%3Dtrue)](https://github.com/opencode-dotnet/opencode-mcp/pkgs/nuget/OpenCodeDotNet.Mcp) [![CI](https://github.com/opencode-dotnet/opencode-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/opencode-dotnet/opencode-mcp/actions/workflows/ci.yml) [![Linux Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Flinux%2Fopencode-dotnet%2Fopencode-mcp%2Fmaster)](https://api.localstackfor.net/redirect/test-results/linux/opencode-dotnet/opencode-mcp/master) [![Windows Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fwindows%2Fopencode-dotnet%2Fopencode-mcp%2Fmaster)](https://api.localstackfor.net/redirect/test-results/windows/opencode-dotnet/opencode-mcp/master) [![macOS Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fmacos%2Fopencode-dotnet%2Fopencode-mcp%2Fmaster)](https://api.localstackfor.net/redirect/test-results/macos/opencode-dotnet/opencode-mcp/master)
+
 > **Unofficial.** This project is not affiliated with or endorsed by the
 > [opencode](https://opencode.ai) team.
 
@@ -261,6 +263,19 @@ See [Contributing](.github/CONTRIBUTING.md) for issues, review and pull requests
 check managed Release builds and all test modules on Windows, Linux and macOS; these checks do
 not prove native or package support. [Quality gates](docs/engineering/quality-gates.md#continuous-integration)
 own the CI contract, and the roadmap records hosted verification and protection status.
+
+## Status
+
+| Category | Platform | Status |
+|----------|----------|--------|
+| Build | Windows, Linux, macOS | [![CI](https://github.com/opencode-dotnet/opencode-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/opencode-dotnet/opencode-mcp/actions/workflows/ci.yml) |
+| Tests | Linux | [![Linux Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Flinux%2Fopencode-dotnet%2Fopencode-mcp%2Fmaster)](https://api.localstackfor.net/redirect/test-results/linux/opencode-dotnet/opencode-mcp/master) |
+| Tests | Windows | [![Windows Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fwindows%2Fopencode-dotnet%2Fopencode-mcp%2Fmaster)](https://api.localstackfor.net/redirect/test-results/windows/opencode-dotnet/opencode-mcp/master) |
+| Tests | macOS | [![macOS Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fmacos%2Fopencode-dotnet%2Fopencode-mcp%2Fmaster)](https://api.localstackfor.net/redirect/test-results/macos/opencode-dotnet/opencode-mcp/master) |
+
+| Package | NuGet.org | GitHub Packages |
+|---------|-----------|-----------------|
+| `OpenCodeDotNet.Mcp` | [![NuGet](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Fpackages%2Fnuget%2FOpenCodeDotNet.Mcp%3Fprerelease%3Dtrue)](https://www.nuget.org/packages/OpenCodeDotNet.Mcp) | [![GitHub Packages](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Fpackages%2Fgithub%2Fopencode-dotnet%2FOpenCodeDotNet.Mcp%3Fprerelease%3Dtrue)](https://github.com/opencode-dotnet/opencode-mcp/pkgs/nuget/OpenCodeDotNet.Mcp) |
 
 ## License
 
