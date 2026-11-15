@@ -532,8 +532,9 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   Upload failures remain blocking and never turn a failed test green.
 - **Test report and badge.** Each build/test leg publishes its TRX files as a check run; a report
   failure fails the leg, except on a fork pull request. On a master push only, the leg then posts its
-  passed, failed and skipped counts to BadgeSmith, signed with the `TESTDATASECRET` secret. Those two
-  posting steps are the only `continue-on-error` steps: a badge never fails or passes CI.
+  passed, failed and skipped counts to BadgeSmith, signed with the `TESTDATASECRET` secret. The two
+  badge steps are the only steps with an unconditional `continue-on-error`; the report tolerates a
+  failure only on a fork pull request. A badge never fails or passes CI.
 - **Actions.** First-party actions are referenced by major version tag (`actions/checkout@v7`,
   `actions/setup-dotnet@v6`, `actions/upload-artifact@v7`); a major tag is not an immutable SHA pin.
   The test reporter is pinned by commit SHA, and the BadgeSmith action is checked out at the commit
