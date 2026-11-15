@@ -377,11 +377,15 @@ nonzero test totals and result-artifact links in `channel-verification` for prom
 Only a complete run or a full re-run produces `channel-verification`; a re-run of failed jobs that
 mixes retained leg artifacts from different attempts is refused.
 
-Release-channel acceptance additionally verifies published script digests against the candidate and
-published checksums, then proves Unix no-option and option-bearing `curl | sh` forms in owned XDG or
-explicit installation/data roots under `RUNNER_TEMP`, and Windows scriptblock installation in an
-owned root plus no-option `irm | iex` in the runner-default `%LOCALAPPDATA%\Programs\opencode-mcp`
-(absent before and removed in `finally`), without PATH consent. Each install runs `ExecutableTests`
+Release-channel acceptance downloads each form's published script once and verifies its SHA-256
+against the candidate and published checksum line before executing that same copy: Unix feeds the
+verified file through `cat "$VERIFIED_INSTALLER" | sh` or `cat "$VERIFIED_INSTALLER" | sh -s -- --install-dir ... --data-dir ...`;
+Windows hashes `[Text.Encoding]::UTF8.GetBytes($text)` from the one `irm` result (the published script
+is ASCII without a BOM), then runs `$text | iex` or `& ([scriptblock]::Create($text)) -InstallDir ...`.
+Unix uses owned XDG or explicit installation/data roots under `RUNNER_TEMP`; the option-bearing form
+uses different owned XDG paths and asserts they remain absent. Windows uses an owned explicit root
+or the runner-default `%LOCALAPPDATA%\Programs\opencode-mcp` for the no-option form (absent before
+and removed in `finally`), without PATH consent. Each install runs `ExecutableTests`
 against the installed command and proves exact success output and owned uninstall/removal; candidate-local
 installer acceptance does not establish live publication or live download availability.
 
