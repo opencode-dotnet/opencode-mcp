@@ -373,7 +373,7 @@ hashes against both the published checksum file and independent candidate receip
 
 The manual `verify-channel.yml` validates the Native candidate, waits for exact channel presence,
 and selects only `ChannelAcquisitionTests` for feeds or `ExecutableTests` for release archives.
-Feed acquisition tests carry `Category("Package")` but never run in the local package pass or local check.
+`ChannelAcquisitionTests` carry `Category("Package")` but never run in the local package pass or local check.
 They require explicit channel, owned configuration, candidate reference feed and matching RID inputs;
 missing inputs fail rather than skip. For a published channel, the reference feed supplies payload comparison
 evidence, not an acquisition source; only the consumer legs' `candidate` channel acquires from it, through the

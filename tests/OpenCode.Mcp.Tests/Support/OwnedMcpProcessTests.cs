@@ -162,20 +162,8 @@ public sealed class OwnedMcpProcessTests
         Task? rootExit = null;
         using var guard = CancellationTokenSource.CreateLinkedTokenSource(token);
         guard.CancelAfter(TimeSpan.FromSeconds(45)); // Bounds only the disposal wait; the completed disposal remains the oracle.
-        var owner = new OwnedMcpProcess(_files)
-        {
-            FindProcess = id =>
-            {
-                lookups.Add(id);
-                var found = window == "identity" ? Process.GetProcessById(id) : null; // Exit after the lookup, before its start time is read.
-                child.Kill(); // Or between the owner's exit check and its lookup.
-                if (!exited.Wait(TimeSpan.FromSeconds(15), token))
-                {
-                    throw new InvalidOperationException("The owned child did not exit after its kill.");
-                }
-                return found ?? Process.GetProcessById(id);
-            },
-        };
+        var owner = new OwnedMcpProcess(_files) { FindProcess = ExitInsideTheIdentityCheck(child, exited, window, lookups, token) };
+        var completed = false;
         try
         {
             foreach (var entry in owner.CreateEnvironment(launch))
@@ -193,9 +181,11 @@ public sealed class OwnedMcpProcessTests
             await Assert.That(child.HasExited).IsFalse();
             await owner.DisposeAsync().AsTask().WaitAsync(guard.Token);
             await Assert.That(lookups).IsEquivalentTo([child.Id], CollectionOrdering.Matching);
+            await Assert.That(exited.IsSet).IsTrue(); // The exit happened inside the injected window.
             await Assert.That(child.HasExited).IsTrue();
             await Assert.That(root.HasExited).IsTrue();
             await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsFalse();
+            completed = true;
         }
         finally
         {
@@ -214,14 +204,38 @@ public sealed class OwnedMcpProcessTests
             }
             finally
             {
-                root?.Dispose();
-                if (_files.Directory.Exists(launch.OwnedRoot))
+                try
                 {
-                    _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+                    await owner.DisposeAsync(); // Joins the owner's disposal on every path, after the independent backstop.
+                }
+                catch (Exception disposal) when (!completed)
+                {
+                    TestContext.Current?.Output.WriteLine("Owner disposal after an earlier failure: " + disposal.Message); // The earlier failure stays the reported one.
+                }
+                finally
+                {
+                    root?.Dispose();
+                    if (_files.Directory.Exists(launch.OwnedRoot))
+                    {
+                        _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+                    }
                 }
             }
         }
     }
+
+    /// <summary>A lookup that kills and reaps the child inside the owner's identity check: before the lookup, or after it and before the start-time read.</summary>
+    private static Func<int, Process> ExitInsideTheIdentityCheck(Process child, ManualResetEventSlim exited, string window, List<int> lookups, CancellationToken token) => id =>
+    {
+        lookups.Add(id);
+        var found = window == "identity" ? Process.GetProcessById(id) : null;
+        child.Kill();
+        if (!exited.Wait(TimeSpan.FromSeconds(15), token))
+        {
+            throw new TimeoutException("The owned child did not exit after its kill."); // Outside the cleanup filter, so it is never taken for an owned exit.
+        }
+        return found ?? Process.GetProcessById(id);
+    };
 
     [Test]
     public async Task StartAsync_Should_Retain_Complete_Redacted_Acquisition_Diagnostics(CancellationToken token)
