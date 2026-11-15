@@ -859,8 +859,9 @@ public sealed class OwnedMcpProcessTests
 
     private Process CreateOwnedChild(ProcessLaunch launch)
     {
-        var path = _files.Path.Combine(launch.OwnedRoot, OperatingSystem.IsWindows() ? "owned-child.exe" : "owned-child");
         var source = OperatingSystem.IsWindows() ? launch.FileName : "/bin/cat";
+        // A multi-call binary (uutils coreutils, BusyBox) picks its utility from argv[0], so the copy keeps the utility's name.
+        var path = _files.Path.Combine(launch.OwnedRoot, OperatingSystem.IsWindows() ? "owned-child.exe" : _files.Path.GetFileName(source));
         _files.File.Copy(source, path);
         if (!OperatingSystem.IsWindows())
         {
