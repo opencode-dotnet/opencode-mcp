@@ -712,8 +712,8 @@ No owned installation means no change. On Windows, a running `opencode-mcp` comm
 executable is the installed command) is refused at once, without process termination, retry or elevation.
 On Windows only, a sharing violation on the installed command or on a directory the installer itself
 created or owns, with no such process running, is retried because on-access scanners briefly hold
-newly written executables. Forward steps share one retry budget of at most 30 seconds; rollback
-and cleanup get one more budget of at most 30 seconds. Access-check sharing violations rescan
+newly written executables. Forward steps share one retry budget of at most 30 seconds; install
+rollback and cleanup get one more budget of at most 30 seconds. Access-check sharing violations rescan
 running commands before retrying; an observed command is refused at once. `-Verbose` shows the
 underlying cause of a failure; default output is unchanged. Scripts configure no MCP client, start no daemon and
 install no prerequisite.

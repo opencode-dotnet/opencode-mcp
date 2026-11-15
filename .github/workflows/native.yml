@@ -1236,6 +1236,51 @@ jobs:
                   Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                 }
               } }
+              $recoveryPath = if ([string]::IsNullOrEmpty($before)) { Join-Path $bin 'current' } else { $before + ';' + (Join-Path $bin 'current') }
+              function New-DeletedPayloadWithPath {
+                Assert-Result (Invoke-Installer $addPath) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH updated for future login sessions.')
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                [IO.Directory]::Move((Join-Path $bin 'current'), $removing)
+                [IO.Directory]::Delete($removing, $true)
+                Assert-Equal (Test-Path -LiteralPath (Join-Path $bin 'current')) $false 'Completed payload removal leaves no current directory'
+                Assert-Equal (Get-RawPath) $recoveryPath 'Interruption retains the owned PATH entry'
+              }
+              if ($windows) { Invoke-Case Recover_Deleted_Payload_Adds_Path {
+                New-DeletedPayloadWithPath
+                Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                Assert-Equal (Get-RawPath) $recoveryPath 'Fresh install adds PATH after recovery removes its old entry'
+                Assert-Installed
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Equal (Get-RawPath) $before 'Fresh installation owns and reverses its PATH entry'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+              } }
+              if ($windows) { Invoke-Case Recover_Deleted_Payload_Uninstalls_Path {
+                New-DeletedPayloadWithPath
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: No owned installation: $bin")
+                Assert-Equal (Get-RawPath) $before 'Completed-removal recovery reverses the original owned PATH entry'
+                Assert-Equal (Test-Path -LiteralPath $private) $false 'Completed-removal recovery deletes owned records'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+              } }
+              if ($windows) { Invoke-Case Recover_Refuses_Partial_Removing_Payload {
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                $current = Join-Path $bin 'current'
+                $license = [IO.File]::ReadAllBytes((Join-Path $current 'LICENSE'))
+                [IO.Directory]::Move($current, $removing)
+                [IO.File]::Delete((Join-Path $removing 'LICENSE'))
+                $retained = Get-Inventory $private
+                $directories = @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object)
+                try {
+                  Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$(Split-Path $removing -Leaf).")
+                  Assert-Equal (Test-Path -LiteralPath $current) $false 'Partial payload is never published as current'
+                  Assert-Equal (Get-Item -LiteralPath $removing).Name (Split-Path $removing -Leaf) 'Partial payload stays in its named removing directory'
+                  Assert-Equal (Get-Inventory $private) $retained 'Refusal preserves partial payload and ownership record bytes'
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object) $directories 'Refusal preserves every retained directory'
+                } finally {
+                  $payload = if (Test-Path -LiteralPath $removing) { $removing } else { $current }
+                  [IO.File]::WriteAllBytes((Join-Path $payload 'LICENSE'), $license)
+                  if ($payload -ceq $removing) { [IO.Directory]::Move($removing, $current) }
+                }
+              } }
               if ($windows) { Invoke-Case Recover_Removes_Only_Owned_Leftovers {
                 foreach ($prefix in @('previous','staging','temporary')) {
                   $leftover = Join-Path $private ($prefix + '-' + [guid]::NewGuid().ToString('N'))

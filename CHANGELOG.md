@@ -5,7 +5,7 @@
 ### Fixed
 
 - Windows installation recovers interrupted uninstalls and removes verified leftover staging, previous and temporary directories on the next run.
-- Windows rollback and cleanup get a fresh sharing-violation retry budget, and command access checks detect a command that starts during the check.
+- Windows install rollback and cleanup get a fresh sharing-violation retry budget, and command access checks detect a command that starts during the check.
 - Windows installation checks platform support and prerequisites before resolving installation and asset paths.
 
 ## [0.1.0-preview.2] - 2026-11-15
