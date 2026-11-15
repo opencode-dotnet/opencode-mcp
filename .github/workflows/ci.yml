@@ -264,7 +264,7 @@ jobs:
           repository: localstack-dotnet/badge-smith
           # The commit the live api.localstackfor.net deployment runs, so the signing tool and the
           # server stay in step.
-          ref: d778400bd16cee44994f1c9bb68121e6a54d66cf
+          ref: bc7ed07860ec4b0e702add6370c2636daccb2adf
           path: .badge-smith
           persist-credentials: false
 
