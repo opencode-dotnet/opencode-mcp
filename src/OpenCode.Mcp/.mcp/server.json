@@ -2,9 +2,9 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.opencode-dotnet/opencode-mcp",
   "description": "Local OpenCode MCP bootstrap preview with a harmless connectivity tool.",
-  "version": "0.1.0-preview.1",
+  "version": "0.1.0-preview.2",
   "packages": [{
-    "registryType": "nuget", "identifier": "OpenCodeDotNet.Mcp", "version": "0.1.0-preview.1",
+    "registryType": "nuget", "identifier": "OpenCodeDotNet.Mcp", "version": "0.1.0-preview.2",
     "registryBaseUrl": "https://api.nuget.org/v3/index.json", "runtimeHint": "dnx",
     "runtimeArguments": [{ "type": "named", "name": "-v", "value": "minimal" }],
     "transport": { "type": "stdio" },

@@ -290,7 +290,7 @@ finish() {
     exit "$result"
 }
 installer() {
-OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
+OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.2'
     version=$OPENCODE_MCP_RELEASE_VERSION
     install=${XDG_BIN_HOME:-$HOME/.local/bin}
     case $install in /*) ;; *) install=$HOME/.local/bin ;; esac

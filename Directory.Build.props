@@ -11,7 +11,7 @@
     <!-- The single version owner: the product, package and payload versions are checked
          projections of it, and nothing else declares Version or PackageVersion. -->
     <VersionPrefix>0.1.0</VersionPrefix>
-    <VersionSuffix>preview.1</VersionSuffix>
+    <VersionSuffix>preview.2</VersionSuffix>
     <Authors>Deniz İrgin</Authors>
     <Company>Deniz İrgin</Company>
     <Copyright>Copyright (c) 2026 Deniz İrgin</Copyright>
