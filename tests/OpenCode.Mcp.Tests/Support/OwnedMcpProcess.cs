@@ -418,9 +418,15 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             using var current = FindProcess(process.Id);
             started = current.StartTime;
         }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception && process.HasExited)
+        catch (ArgumentException)
         {
-            return; // It exited during the identity check, so there is nothing left to end.
+            // The runtime reports no running process with this id. A killed child that is still a zombie counts as
+            // exited here, while HasExited can still be false, so HasExited cannot decide this case.
+            return;
+        }
+        catch (Exception error) when (error is InvalidOperationException or Win32Exception && process.HasExited)
+        {
+            return; // It exited after the lookup, before its start time was read.
         }
         if (started != identity)
         {
