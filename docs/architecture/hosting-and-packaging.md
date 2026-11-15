@@ -669,7 +669,10 @@ the records and delete the previous payload.
 A running command can make the first rename fail with `Installation failed during activation.`;
 nothing is stopped and the old installation remains intact. Individual activation surfaces are
 replaced atomically; this is not a crash-atomic transaction across filesystem state and user PATH.
-An operation failure precedes any cleanup failure, which names retained owned storage.
+An operation failure precedes any cleanup failure, which names retained owned storage. The next
+Windows run removes retained direct `.opencode-mcp` directories named `staging-`, `previous-` or
+`temporary-` followed by 32 lowercase hexadecimal characters, after verifying the current payload
+and intact ownership records; other unexpected entries are refused.
 
 A same-version, byte-identical installation is idempotent. Explicit versions select that exact
 release, including prerelease/build metadata, without an automatic newest lookup or downgrade
@@ -702,11 +705,16 @@ are refused without destructive repair or adoption. Uninstall preflights ownersh
 PATH reversal, removes only recorded state, and removes installer-created directories only when
 empty. Pre-existing directories, unrelated files, configuration and data survive. Unix ownership
 comes from the data directory; an explicit installation directory must contain the recorded link.
+On Windows, an owner record with no current payload permits recovery of exactly one
+`removing-<32 lowercase hexadecimal characters>` directory, or completion of record/PATH removal
+when the payload was already deleted; the owner record is removed last during uninstall.
 No owned installation means no change. On Windows, a running `opencode-mcp` command (a process whose
 executable is the installed command) is refused at once, without process termination, retry or elevation.
 On Windows only, a sharing violation on the installed command or on a directory the installer itself
-created or owns, with no such process running, is retried for at most 30 seconds, because on-access
-scanners briefly hold newly written executables; it then fails as before. `-Verbose` shows the
+created or owns, with no such process running, is retried because on-access scanners briefly hold
+newly written executables. Forward steps share one retry budget of at most 30 seconds; rollback
+and cleanup get one more budget of at most 30 seconds. Access-check sharing violations rescan
+running commands before retrying; an observed command is refused at once. `-Verbose` shows the
 underlying cause of a failure; default output is unchanged. Scripts configure no MCP client, start no daemon and
 install no prerequisite.
 
