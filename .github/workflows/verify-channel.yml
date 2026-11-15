@@ -183,6 +183,7 @@ jobs:
           }
           function Assert-PresenceDeadline([switch]$Partial) {
             if ([DateTimeOffset]::UtcNow -ge $deadline) {
+              if (-not $Partial -and -not $scanned) { throw 'Presence bound reached before any scan finished; no present/missing sets were observed, and candidate digests are above.' }
               Write-PresenceReport
               if ($Partial) { throw 'Presence bound reached during a scan; the present/missing sets above are partial, and candidate digests are above.' }
               throw 'Presence bound reached; complete present/missing sets and candidate digests are above.'
@@ -205,6 +206,7 @@ jobs:
           foreach ($file in Get-ChildItem artifacts/release-assets -File) { Write-Output "Candidate release digest: $($file.Name) $((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())" }
           $deadline = [DateTimeOffset]::UtcNow.AddMinutes(30)
           $present = @()
+          $scanned = $false
           do {
             # The last finished scan's sets are complete; report them before starting a new scan.
             Assert-PresenceDeadline
@@ -215,6 +217,7 @@ jobs:
               $remote = @()
               if ($null -ne $release) {
                 if ($release.draft -ne $false -or $release.tag_name -cne "v$env:VERSION") { throw 'Release is not the expected published identity.' }
+                Assert-PresenceDeadline -Partial
                 $tag = Read-GitHub "https://api.github.com/repos/$env:REPOSITORY/git/ref/tags/$([Uri]::EscapeDataString('v' + $env:VERSION))" 'Not Found'
                 if ($null -eq $tag) { throw 'Published release tag is missing.' }
                 $object = $tag.object
@@ -240,6 +243,7 @@ jobs:
               foreach ($id in $ids) { if (Test-Package $id) { $present += $id } else { $missing += $id } }
             }
             $missing = @($entries | Where-Object { $present -cnotcontains $_ })
+            $scanned = $true
             Write-PresenceReport
             if ($missing.Count -eq 0) { break }
             Assert-PresenceDeadline
