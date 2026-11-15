@@ -345,24 +345,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             }
             foreach (var (process, identity) in _ownedProcesses)
             {
-                if (!process.HasExited)
-                {
-                    DateTime started;
-                    try
-                    {
-                        using var current = FindProcess(process.Id);
-                        started = current.StartTime;
-                    }
-                    catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception && process.HasExited)
-                    {
-                        continue; // It exited during the identity check, so there is nothing left to end.
-                    }
-                    if (started != identity)
-                    {
-                        throw new InvalidOperationException("An owned PID was reused; retained root: " + _root);
-                    }
-                    process.Kill();
-                }
+                EndOwnedProcess(process, identity);
             }
             await Task.WhenAll(_ownedExits).WaitAsync(guard.Token);
             await Task.WhenAll(_drain, DrainOutput()).WaitAsync(guard.Token);
@@ -421,6 +404,29 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
         return ObserveOwnedExecutables().Values.SingleOrDefault(path => string.Equals(path, expectedExecutable,
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             ?? throw new InvalidOperationException("The packaged native entry is not running: " + expectedExecutable);
+    }
+
+    private void EndOwnedProcess(Process process, DateTime identity)
+    {
+        if (process.HasExited)
+        {
+            return;
+        }
+        DateTime started;
+        try
+        {
+            using var current = FindProcess(process.Id);
+            started = current.StartTime;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or Win32Exception && process.HasExited)
+        {
+            return; // It exited during the identity check, so there is nothing left to end.
+        }
+        if (started != identity)
+        {
+            throw new InvalidOperationException("An owned PID was reused; retained root: " + _root);
+        }
+        process.Kill();
     }
 
     private Exception? CaptureOwnedProcessFailure()
