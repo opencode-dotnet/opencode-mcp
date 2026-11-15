@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-14
+Date: 2026-11-15
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -377,8 +377,12 @@ nonzero test totals and result-artifact links in `channel-verification` for prom
 Only a complete run or a full re-run produces `channel-verification`; a re-run of failed jobs that
 mixes retained leg artifacts from different attempts is refused.
 
-Release-channel acceptance additionally executes the published installer bytes against the
-version-pinned HTTPS release source, after comparing script digests with the candidate. Candidate-local
+Release-channel acceptance additionally verifies published script digests against the candidate and
+published checksums, then proves Unix no-option and option-bearing `curl | sh` forms in owned XDG or
+explicit installation/data roots under `RUNNER_TEMP`, and Windows scriptblock installation in an
+owned root plus no-option `irm | iex` in the runner-default `%LOCALAPPDATA%\Programs\opencode-mcp`
+(absent before and removed in `finally`), without PATH consent. Each install runs `ExecutableTests`
+against the installed command and proves exact success output and owned uninstall/removal; candidate-local
 installer acceptance does not establish live publication or live download availability.
 
 Secret-bearing channel jobs retain the existing test guards but upload only selected
