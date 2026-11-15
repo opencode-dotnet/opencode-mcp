@@ -39,7 +39,7 @@ function Get-InstallerPath($Value, $Option) {
     }
     catch { Write-InstallerFailure $_; $state.Refused = $true; throw "opencode-mcp: Install collision: $Value." }
 }
-function Get-InstallerHash($Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-InstallerHash($Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
 function Get-InstallerInventory($Directory) {
     $entries = @(Get-ChildItem -LiteralPath $Directory -Recurse -Force | ForEach-Object {
         $relative = $_.FullName.Substring($Directory.Length + 1).Replace('\', '/')
@@ -55,9 +55,8 @@ function Get-InstallerRecord($Name) {
     if (-not [IO.File]::Exists($path) -or ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     [IO.File]::ReadAllLines($path)
 }
-function Test-InstallerPayload {
+function Test-InstallerPayload($Payload = (Join-Path $state.Install 'current')) {
     $inventory = @(Get-InstallerRecord 'inventory')
-    $payload = Join-Path $state.Install 'current'
     if (-not [IO.Directory]::Exists($payload) -or ((Get-Item -LiteralPath $payload -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { $state.Refused = $true; throw 'opencode-mcp: Installed files differ from the ownership record: current.' }
     foreach ($entry in $inventory) {
         $parts = $entry -split '  ', 2
@@ -79,6 +78,12 @@ function Test-InstallerPayload {
         throw "opencode-mcp: Installed files differ from the ownership record: $relative."
     }
 }
+function Get-InstallerSelection {
+    $selection = @(Get-InstallerRecord 'current')
+    if ($selection.Count -notin @(2,3) -or -not (Test-InstallerVersion $selection[0]) -or $selection[1] -notin @('win-x64','win-arm64') -or ($selection.Count -eq 3 -and $selection[2] -cnotmatch '\A[0-9a-f]{64}\z')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
+    $state.OldVersion = $selection[0]; $state.OldRid = $selection[1]
+    $state.OldArchiveHash = if ($selection.Count -eq 3) { $selection[2] } else { $null }
+}
 function Get-InstallerOwnership {
     if (-not (Test-Path -LiteralPath $state.Private)) {
         return
@@ -86,15 +91,50 @@ function Get-InstallerOwnership {
     if (((Get-Item -LiteralPath $state.Private -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
     $owner = @(Get-InstallerRecord 'owner')
     if ($owner.Count -ne 3 -or $owner[0] -cne 'opencode-mcp' -or -not [string]::Equals($owner[1], $state.Install, [StringComparison]::OrdinalIgnoreCase) -or $owner[2] -notin @('0','1')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
-    $selection = @(Get-InstallerRecord 'current')
-    if ($selection.Count -notin @(2,3) -or -not (Test-InstallerVersion $selection[0]) -or $selection[1] -notin @('win-x64','win-arm64') -or ($selection.Count -eq 3 -and $selection[2] -cnotmatch '\A[0-9a-f]{64}\z')) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Private)." }
-    $state.OldVersion = $selection[0]; $state.OldRid = $selection[1]
-    $state.OldArchiveHash = if ($selection.Count -eq 3) { $selection[2] } else { $null }
     $state.Created = $owner[2] -ceq '1'
+    $current = Join-Path $state.Install 'current'
+    $present = Test-Path -LiteralPath $current
+    $leftovers = @(); $removing = @()
     foreach ($entry in Get-ChildItem -LiteralPath $state.Private -Force) {
-        if ($entry.Name -cnotin @('owner','current','inventory','path.record')) { $state.Refused = $true; throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($entry.Name)." }
+        if ($entry.Name -cin @('owner','current','inventory','path.record')) { continue }
+        if ($entry.PSIsContainer -and -not ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            if ($present -and $entry.Name -cmatch '\A(staging|previous|temporary)-[0-9a-f]{32}\z') { $leftovers += $entry; continue }
+            if (-not $present -and $entry.Name -cmatch '\Aremoving-[0-9a-f]{32}\z') { $removing += $entry; continue }
+        }
+        $state.Refused = $true; throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($entry.Name)."
     }
+    if ($removing.Count -gt 1) { $state.Refused = $true; throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($removing[0].Name)." }
+    if (-not $present) {
+        if ($removing.Count -eq 1) {
+            try { Get-InstallerSelection; Test-InstallerPayload $removing[0].FullName }
+            catch {
+                if (-not $state.Refused) { throw }
+                Write-InstallerFailure $_
+                throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($removing[0].Name)."
+            }
+            Invoke-InstallerOperation { [IO.Directory]::Move($removing[0].FullName, $current) }
+        }
+        $record = @(Get-InstallerPathRecord)
+        if ($record.Count) {
+            $path = Get-InstallerUserPath
+            if (@(([string]$path.Value).Split(';') | Where-Object { [string]::Equals($_, $record[0], [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+                Invoke-InstallerOperation { [IO.File]::Delete((Join-Path $state.Private 'path.record')) }
+            }
+        }
+        if ($removing.Count -eq 0) {
+            Get-InstallerPathOwnership
+            Invoke-InstallerPathRemoval
+            $state.PathOwned = $false; $state.PathOriginallyAbsent = $null
+            Invoke-InstallerRecordRemoval
+            Invoke-InstallerOperation { [IO.Directory]::Delete($state.Private) }
+            if ($state.Created -and [IO.Directory]::GetFileSystemEntries($state.Install).Length -eq 0) { Invoke-InstallerOperation { [IO.Directory]::Delete($state.Install) } }
+            return
+        }
+    }
+    Get-InstallerSelection
     Test-InstallerPayload
+    Get-InstallerPathOwnership
+    foreach ($entry in $leftovers) { Invoke-InstallerOperation { [IO.Directory]::Delete($entry.FullName, $true) } }
     $state.Owned = $true
 }
 function Get-InstallerUserPath {
@@ -132,12 +172,18 @@ function Invoke-InstallerPathWrite($Value, $Kind) {
     } finally { $key.Dispose() }
     try { Invoke-InstallerPathBroadcast } catch { Write-InstallerFailure $_; return } # Notification is best-effort after the registry write.
 }
-function Get-InstallerPathOwnership {
-    $state.PathOwned = $false
+function Get-InstallerPathRecord {
     if (-not (Test-Path -LiteralPath (Join-Path $state.Private 'path.record'))) { return }
     $record = @(Get-InstallerRecord 'path.record')
     $token = Join-Path $state.Install 'current'
     if ($record.Count -ne 2 -or -not [string]::Equals($record[0], $token, [StringComparison]::OrdinalIgnoreCase) -or $record[1] -notin @('absent','present')) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
+    $record
+}
+function Get-InstallerPathOwnership {
+    $state.PathOwned = $false
+    $record = @(Get-InstallerPathRecord)
+    if (-not $record.Count) { return }
+    $token = $record[0]
     $current = Get-InstallerUserPath
     $tokens = @(([string]$current.Value).Split(';'))
     if (@($tokens | Where-Object { [string]::Equals($_, $token, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
@@ -176,7 +222,7 @@ function Invoke-InstallerRecordReplace($Source, $Destination) {
         else { [IO.File]::Move($Source, $Destination) }
     }
 }
-function Test-InstallerCommandAccess {
+function Test-InstallerCommandRunning {
     $unreadable = 0
     $running = @(foreach ($process in Get-Process) {
         try {
@@ -188,9 +234,17 @@ function Test-InstallerCommandAccess {
     })
     if ($unreadable -gt 0) { Write-Verbose "Executable path unavailable for $unreadable process(es); not installed-command matches." }
     if ($running.Count -gt 0) { throw 'Installed command is running.' }
+}
+function Test-InstallerCommandAccess {
+    Test-InstallerCommandRunning
     Invoke-InstallerOperation {
-        $handle = [IO.File]::Open($state.Command, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-        $handle.Dispose()
+        try {
+            $handle = [IO.File]::Open($state.Command, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $handle.Dispose()
+        } catch {
+            if ($_.Exception.GetBaseException().HResult -eq -2147024864) { Test-InstallerCommandRunning }
+            throw
+        }
     }
 }
 function Invoke-InstallerOperation([scriptblock]$Operation) {
@@ -212,6 +266,7 @@ function Invoke-InstallerOperation([scriptblock]$Operation) {
 }
 function Invoke-InstallerCleanup {
     if (-not $state.Work) { return }
+    $state.RetryDeadline = $null
     $errors = @()
     $retained = $state.Private
     $restoreRecords = $true
@@ -359,6 +414,9 @@ function Invoke-InstallerInstall {
     $state.Message = "Installed $($state.Version) ($($state.Rid)): $($state.Command)"
     $state.PathMessage = if ($state.PathChanged) { 'PATH updated for future login sessions.' } else { 'PATH unchanged.' }
 }
+function Invoke-InstallerRecordRemoval {
+    foreach ($name in @('path.record','inventory','current','owner')) { Invoke-InstallerOperation { [IO.File]::Delete((Join-Path $state.Private $name)) } }
+}
 function Invoke-InstallerUninstall {
     if (-not $state.Owned) { $state.Message = "No owned installation: $($state.Install)"; $state.Success = $true; return }
     $state.Phase = 'uninstall'
@@ -378,9 +436,8 @@ function Invoke-InstallerUninstall {
     $state.Success = $true
     $state.Phase = 'cleanup'
     $state.Retained = $state.Private
-    Invoke-InstallerOperation { [IO.File]::Delete((Join-Path $state.Private 'path.record')) }
-    foreach ($name in @('owner','current','inventory')) { Invoke-InstallerOperation { [IO.File]::Delete((Join-Path $state.Private $name)) } }
     Invoke-InstallerOperation { [IO.Directory]::Delete($removing, $true) }
+    Invoke-InstallerRecordRemoval
     $state.Retained = $state.Private
     if ([IO.Directory]::GetFileSystemEntries($state.Private).Length -eq 0) { Invoke-InstallerOperation { [IO.Directory]::Delete($state.Private) } }
     $state.Retained = $state.Install
@@ -399,13 +456,6 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.2'
         if ($Options.ContainsKey('Uninstall') -and $Options.Uninstall -and ($Options.ContainsKey('Version') -or $Options.ContainsKey('AssetDir') -or $Options.ContainsKey('AddToPath'))) { $state.Refused = $true; throw 'opencode-mcp: Uninstall accepts only the installation directory.' }
         $state.Version = if ($Options.ContainsKey('Version')) { $Options.Version } else { $OpenCodeMcpReleaseVersion }
         if (-not (Test-InstallerVersion $state.Version)) { $state.Refused = $true; throw 'opencode-mcp: Version must be an exact SemVer 2.0.0 value without a leading v.' }
-        $directory = if ($Options.ContainsKey('InstallDir')) { $Options.InstallDir } else { Join-Path $env:LOCALAPPDATA 'Programs/opencode-mcp' }
-        $state.Install = Get-InstallerPath $directory '-InstallDir'
-        $state.Private = Join-Path $state.Install '.opencode-mcp'
-        $state.Command = Join-Path $state.Install 'current/opencode-mcp.exe'
-        $state.AddPath = $Options.ContainsKey('AddToPath') -and $Options.AddToPath
-        $state.Source = if ($Options.ContainsKey('AssetDir')) { Get-InstallerPath $Options.AssetDir '-AssetDir' } else { $null }
-        if ($state.AddPath -and $state.Install.Contains(';')) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
         if ($env:OS -cne 'Windows_NT') { $state.Refused = $true; throw "opencode-mcp: Unsupported platform: $([Environment]::OSVersion.Platform)/$env:PROCESSOR_ARCHITECTURE." }
         if (-not [Environment]::Is64BitProcess) { $state.Refused = $true; throw 'opencode-mcp: A 64-bit operating system and shell process are required.' }
         $architecture = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE).PROCESSOR_ARCHITECTURE
@@ -418,8 +468,15 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.2'
             foreach ($name in @('Expand-Archive','Get-FileHash')) {
                 if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { $state.Refused = $true; throw "opencode-mcp: Required command is unavailable: $name." }
             }
-            if (-not $state.Source -and -not (Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue)) { $state.Refused = $true; throw 'opencode-mcp: Required command is unavailable: Invoke-WebRequest.' }
+            if (-not $Options.ContainsKey('AssetDir') -and -not (Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue)) { $state.Refused = $true; throw 'opencode-mcp: Required command is unavailable: Invoke-WebRequest.' }
         }
+        $directory = if ($Options.ContainsKey('InstallDir')) { $Options.InstallDir } else { Join-Path $env:LOCALAPPDATA 'Programs/opencode-mcp' }
+        $state.Install = Get-InstallerPath $directory '-InstallDir'
+        $state.Private = Join-Path $state.Install '.opencode-mcp'
+        $state.Command = Join-Path $state.Install 'current/opencode-mcp.exe'
+        $state.AddPath = $Options.ContainsKey('AddToPath') -and $Options.AddToPath
+        $state.Source = if ($Options.ContainsKey('AssetDir')) { Get-InstallerPath $Options.AssetDir '-AssetDir' } else { $null }
+        if ($state.AddPath -and $state.Install.Contains(';')) { $state.Refused = $true; throw 'opencode-mcp: PATH ownership is ambiguous: user-Path.' }
         if (Test-Path -LiteralPath $state.Install) {
             $item = Get-Item -LiteralPath $state.Install -Force
             if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $state.Refused = $true; throw "opencode-mcp: Install collision: $($state.Install)." }
@@ -429,7 +486,6 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.2'
         }
         $state.Created = -not [IO.Directory]::Exists($state.Install)
         Get-InstallerOwnership
-        Get-InstallerPathOwnership
         if ($Options.Uninstall) { Invoke-InstallerUninstall }
         else {
             if (-not $state.Owned -and (Test-Path -LiteralPath (Join-Path $state.Install 'current'))) { $state.Refused = $true; throw "opencode-mcp: Install collision: $(Join-Path $state.Install 'current')." }

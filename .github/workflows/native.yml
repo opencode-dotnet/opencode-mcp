@@ -820,6 +820,7 @@ jobs:
                 if (-not (Test-Path -LiteralPath $startup)) { [IO.File]::WriteAllText($startup, '') }
               }
               $before = Get-RawPath
+              $startupBeforeInstall = if (-not $windows) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($startup)) }
               Invoke-Case Install_Default_Version {
                 Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                 Assert-Installed
@@ -868,6 +869,7 @@ jobs:
                 Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
                 if ($windows) { Assert-Equal (Get-RawPath) $pathBefore 'Uninstall reverses later PATH consent' }
                 else { Assert-Equal ([IO.File]::ReadAllText($startup).Contains("# >>> opencode-mcp $data >>>")) $false 'Uninstall removes the later owned block' }
+                if (-not $windows) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes($startup))) $startupBeforeInstall 'PATH-only uninstall preserves exact pre-install startup bytes' }
                 Assert-Equal (Test-Path -LiteralPath (Join-Path $private 'path.record')) $false 'Uninstall removes later-consent ownership'
                 Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                 $unchanged = @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { $_.FullName } else { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks } })
@@ -912,6 +914,28 @@ jobs:
                     Assert-Result (Invoke-Installer @()) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
                     Assert-Installed
                   } finally { [IO.File]::WriteAllBytes($ownerFile, $ownerBytes) }
+                }
+              }
+              Invoke-Case Path_Only_Completion_Reports_Write_Failure {
+                $payloadBefore = Get-Inventory (Get-Payload)
+                $recordsBefore = Get-Inventory $private
+                $pathBefore = Get-RawPath
+                if ($windows) {
+                  $injected = $text.Replace('$key.SetValue(''Path'', $Value, $Kind)', 'throw ''PATH write failure.''')
+                  $lines = @('opencode-mcp: Installation failed during path.', "opencode-mcp: Cleanup failed; retained owned directory: $private.")
+                } else {
+                  $injected = $text.Replace('operation mv -f "$path_temp" "$path_file"', 'failed')
+                  $lines = @('opencode-mcp: Installation failed during path.')
+                }
+                try {
+                  Assert-Result (Invoke-Installer $addPath $assets $bin $data $injected) 1 $lines
+                  Assert-Equal (Get-Inventory (Get-Payload)) $payloadBefore 'PATH-only write failure preserves complete payload bytes'
+                  Assert-Equal (Get-Inventory $private) $recordsBefore 'PATH-only write failure preserves every ownership record byte'
+                  Assert-Equal (Test-Path -LiteralPath (Join-Path $private 'path.record')) $false 'Failed completion publishes no PATH ownership'
+                  Assert-Equal (Get-RawPath) $pathBefore 'Failed PATH write preserves the raw PATH representation'
+                  Assert-Installed
+                } finally {
+                  if ($windows) { Get-ChildItem -LiteralPath $private -Filter 'temporary-*' -Directory | Remove-Item -Recurse -Force }
                 }
               }
               Invoke-Case Upgrade_Selects_Complete_New_Payload {
@@ -1002,6 +1026,54 @@ jobs:
                   Assert-Installed
                   Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Force | ForEach-Object Name) @() 'Command scanner lock leaves no staging, temporary or previous directory'
                 }
+              } }
+              if ($windows) { Invoke-Case Cleanup_Gets_Fresh_Scanner_Budget {
+                $activationLine = (Select-String -LiteralPath $installer -Pattern '^    \$state.Phase = ''activation''$').LineNumber
+                $retryLine = (Select-String -LiteralPath $installer -Pattern '^            \$cause = \$_.Exception.GetBaseException\(\)$').LineNumber
+                $observation = @"
+          `$global:scanner = `$null; `$global:failures = 0; `$global:delays = 0
+          `$activation = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $activationLine -Action {
+            `$global:scanner = [IO.File]::Open((Join-Path `$staging 'LICENSE'), 'Open', 'Read', 'Read')
+          }
+          `$retry = Set-PSBreakpoint -Script '$($installer.Replace("'", "''"))' -Line $retryLine -Action {
+            `$global:failures++
+            if (`$global:failures -eq 1) {
+              `$state.RetryDeadline = [datetime]::MinValue
+              `$global:scanner.Dispose()
+              `$global:scanner = [IO.File]::Open((Join-Path `$state.Previous 'LICENSE'), 'Open', 'Read', 'Read')
+            }
+          }
+          function Start-Sleep { param(`$Milliseconds) `$global:delays++; `$global:scanner.Dispose() }
+          try { & '$($installer.Replace("'", "''"))' @args; `$code = `$LASTEXITCODE }
+          finally { Remove-PSBreakpoint `$activation, `$retry; if (`$global:scanner) { `$global:scanner.Dispose() } }
+          if (`$global:delays -ne 1) { throw 'Cleanup did not get exactly one scanner retry.' }
+          exit `$code
+          "@
+                Assert-Result (Invoke-Installer $upgrade $fixture $bin $data $observation) 1 @('opencode-mcp: Installation failed during activation.')
+                Assert-Installed
+                Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Force | ForEach-Object Name) @() 'Rollback and cleanup remove staging, previous and temporary storage'
+              } }
+              if ($windows) { Invoke-Case Access_Check_Rescans_Running_Command {
+                $observation = @"
+          `$global:scanner = `$null; `$global:scans = 0
+          function Get-Process {
+            `$global:scans++
+            if (`$global:scans -eq 1) {
+              `$global:scanner = [IO.File]::Open('$($command.Replace("'", "''"))', 'Open', 'ReadWrite', 'None')
+              return
+            }
+            `$process = New-Object PSObject -Property @{ Path = '$($command.Replace("'", "''"))'; Id = 1 }
+            `$process | Add-Member ScriptMethod Dispose { }
+            `$process
+          }
+          try { & '$($installer.Replace("'", "''"))' @args; `$code = `$LASTEXITCODE }
+          finally { if (`$global:scanner) { `$global:scanner.Dispose() } }
+          exit `$code
+          "@
+                $result = Invoke-Installer $upgrade $fixture $bin $data $observation
+                Assert-Result $result 1 @('opencode-mcp: Installation failed during activation.')
+                Assert-Equal @($result.Verbose | Where-Object { $_ -match ': Installed command is running\.$' }) @('VERBOSE: System.Management.Automation.RuntimeException: Installed command is running.') 'A process appearing after the first scan is refused before retry'
+                Assert-Installed
               } }
               Invoke-Case Upgrade_Preserves_Previous_On_Failure {
                 $selection = [IO.File]::ReadAllBytes((Join-Path $private 'current'))
@@ -1123,6 +1195,132 @@ jobs:
                   Assert-Equal (Get-Item -LiteralPath $unexpected).Name 'unexpected-directory' 'Unexpected directory is preserved'
                 } finally { Remove-Item -LiteralPath $unexpected }
               }
+              function New-InterruptedUninstall($Point) {
+                $ast = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
+                $body = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-InstallerUninstall' }, $true).Extent.Text
+                if (-not $body.Contains($Point)) { throw 'Uninstall interruption point is absent.' }
+                $text.Replace($body, $body.Replace($Point, ($Point + "; throw 'Uninstall interruption.'")))
+              }
+              if ($windows) { Invoke-Case Recover_Uninstall_Restores_Removing_Payload {
+                foreach ($recovery in @('uninstall','install')) {
+                  foreach ($point in @('Invoke-InstallerOperation { [IO.Directory]::Move($current, $removing) }', '    $state.Success = $true')) {
+                    Assert-Result (Invoke-Installer $addPath) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH updated for future login sessions.')
+                    $phase = if ($point.Contains('Move')) { 'uninstall' } else { 'path' }
+                    Assert-Result (Invoke-Installer $uninstall $assets $bin $data (New-InterruptedUninstall $point)) 1 @("opencode-mcp: Installation failed during $phase.")
+                    $removing = @(Get-ChildItem -LiteralPath $private -Directory -Filter 'removing-*')
+                    Assert-Equal $removing.Count 1 'Interrupted uninstall retains exactly one payload'
+                    Assert-Equal (Get-Inventory $removing[0].FullName) (Get-Inventory $expected) 'Interrupted uninstall retains the complete payload'
+                    $options = @(if ($recovery -ceq 'uninstall') { $uninstall })
+                    $lines = if ($recovery -ceq 'uninstall') { @("opencode-mcp: Uninstalled opencode-mcp: $bin") } else { @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.') }
+                    Assert-Result (Invoke-Installer $options) 0 $lines
+                    if ($recovery -ceq 'install') { Assert-Installed; Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin") }
+                    Assert-Equal (Get-RawPath) $before 'Recovered uninstall reverses only its owned PATH entry'
+                    Assert-Equal (Test-Path -LiteralPath $private) $false 'Recovered uninstall removes its owned records and storage'
+                    Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                    Assert-Installed
+                  }
+                }
+              } }
+              if ($windows) { Invoke-Case Recover_Uninstall_Completes_Deleted_Payload {
+                foreach ($deletedRecord in @('none','inventory','current')) {
+                  Assert-Result (Invoke-Installer $addPath) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH updated for future login sessions.')
+                  $point = 'Invoke-InstallerOperation { [IO.Directory]::Delete($removing, $true) }'
+                  Assert-Result (Invoke-Installer $uninstall $assets $bin $data (New-InterruptedUninstall $point)) 1 @("opencode-mcp: Cleanup failed; retained owned directory: $private.")
+                  Assert-Equal (Get-Item -LiteralPath (Join-Path $private 'owner')).Name 'owner' 'Owner survives payload deletion'
+                  Assert-Equal (Test-Path -LiteralPath (Join-Path $bin 'current')) $false 'Payload deletion completed before interruption'
+                  if ($deletedRecord -cne 'none') { Remove-Item -LiteralPath (Join-Path $private $deletedRecord) }
+                  Assert-Result (Invoke-Installer $upgrade $fixture) 0 @("opencode-mcp: Installed $alternate ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                  Assert-Installed $alternate $alternatePayload
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Force | Sort-Object Name | ForEach-Object Name) @('current','inventory','owner') 'Fresh install replaces every remaining old record without PATH ownership'
+                  Assert-Equal (Get-RawPath) $before 'Recovery preserves raw PATH after completed removal'
+                  Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                }
+              } }
+              $recoveryPath = if ([string]::IsNullOrEmpty($before)) { Join-Path $bin 'current' } else { $before + ';' + (Join-Path $bin 'current') }
+              function New-DeletedPayloadWithPath {
+                Assert-Result (Invoke-Installer $addPath) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH updated for future login sessions.')
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                [IO.Directory]::Move((Join-Path $bin 'current'), $removing)
+                [IO.Directory]::Delete($removing, $true)
+                Assert-Equal (Test-Path -LiteralPath (Join-Path $bin 'current')) $false 'Completed payload removal leaves no current directory'
+                Assert-Equal (Get-RawPath) $recoveryPath 'Interruption retains the owned PATH entry'
+              }
+              if ($windows) { Invoke-Case Recover_Deleted_Payload_Adds_Path {
+                New-DeletedPayloadWithPath
+                Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                Assert-Equal (Get-RawPath) $recoveryPath 'Fresh install adds PATH after recovery removes its old entry'
+                Assert-Installed
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                Assert-Equal (Get-RawPath) $before 'Fresh installation owns and reverses its PATH entry'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+              } }
+              if ($windows) { Invoke-Case Recover_Deleted_Payload_Uninstalls_Path {
+                New-DeletedPayloadWithPath
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: No owned installation: $bin")
+                Assert-Equal (Get-RawPath) $before 'Completed-removal recovery reverses the original owned PATH entry'
+                Assert-Equal (Test-Path -LiteralPath $private) $false 'Completed-removal recovery deletes owned records'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+              } }
+              if ($windows) { Invoke-Case Recover_Refuses_Partial_Removing_Payload {
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                $current = Join-Path $bin 'current'
+                $license = [IO.File]::ReadAllBytes((Join-Path $current 'LICENSE'))
+                [IO.Directory]::Move($current, $removing)
+                [IO.File]::Delete((Join-Path $removing 'LICENSE'))
+                $retained = Get-Inventory $private
+                $directories = @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object)
+                try {
+                  Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$(Split-Path $removing -Leaf).")
+                  Assert-Equal (Test-Path -LiteralPath $current) $false 'Partial payload is never published as current'
+                  Assert-Equal (Get-Item -LiteralPath $removing).Name (Split-Path $removing -Leaf) 'Partial payload stays in its named removing directory'
+                  Assert-Equal (Get-Inventory $private) $retained 'Refusal preserves partial payload and ownership record bytes'
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object) $directories 'Refusal preserves every retained directory'
+                } finally {
+                  $payload = if (Test-Path -LiteralPath $removing) { $removing } else { $current }
+                  [IO.File]::WriteAllBytes((Join-Path $payload 'LICENSE'), $license)
+                  if ($payload -ceq $removing) { [IO.Directory]::Move($removing, $current) }
+                }
+              } }
+              if ($windows) { Invoke-Case Recover_Reports_Removing_Payload_IO_Failure {
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                $current = Join-Path $bin 'current'
+                [IO.Directory]::Move($current, $removing)
+                $retained = Get-Inventory $private
+                $directories = @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object)
+                $held = $null
+                try {
+                  try {
+                    $held = [IO.File]::Open((Join-Path $removing 'LICENSE'), 'Open', 'Read', 'None')
+                    $result = Invoke-Installer @()
+                  } finally { if ($held) { $held.Dispose() } }
+                  Assert-Result $result 1 @('opencode-mcp: Installation failed during staging.')
+                  Assert-Equal (Test-Path -LiteralPath $current) $false 'Unreadable payload is not published as current'
+                  Assert-Equal (Get-Item -LiteralPath $removing).Name (Split-Path $removing -Leaf) 'Unreadable payload stays in its named removing directory'
+                  Assert-Equal (Get-Inventory $private) $retained 'IO failure preserves complete payload and ownership record bytes'
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object) $directories 'IO failure preserves every retained directory'
+                } finally {
+                  if (Test-Path -LiteralPath $removing) { [IO.Directory]::Move($removing, $current) }
+                }
+              } }
+              if ($windows) { Invoke-Case Recover_Removes_Only_Owned_Leftovers {
+                foreach ($prefix in @('previous','staging','temporary')) {
+                  $leftover = Join-Path $private ($prefix + '-' + [guid]::NewGuid().ToString('N'))
+                  New-Item -ItemType Directory $leftover | Out-Null
+                  [IO.File]::WriteAllText((Join-Path $leftover 'LICENSE'), 'retained owned storage')
+                  Assert-Result (Invoke-Installer @()) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                  Assert-Equal (Test-Path -LiteralPath $leftover) $false 'Next run removes named owned storage'
+                  Assert-Installed
+                }
+                foreach ($name in @('previous-notes', ('removing-' + [guid]::NewGuid().ToString('N')))) {
+                  $foreign = Join-Path $private $name
+                  New-Item -ItemType Directory $foreign | Out-Null
+                  try {
+                    Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$name.")
+                    Assert-Equal (Get-Item -LiteralPath $foreign).Name $name 'Unexpected private storage is preserved by name'
+                    Assert-Installed
+                  } finally { Remove-Item -LiteralPath $foreign }
+                }
+              } }
               Invoke-Case Uninstall_Preserves_Unrelated_State {
                 New-Item -ItemType Directory $bin -Force | Out-Null
                 [IO.File]::WriteAllText((Join-Path $bin 'unrelated'), 'unrelated unchanged')
@@ -1240,6 +1438,9 @@ jobs:
                     $env:PROCESSOR_ARCHITEW6432 = 'UNKNOWN'; $env:PROCESSOR_ARCHITECTURE = 'UNKNOWN'
                     $observation = "function Get-ItemProperty { param(`$LiteralPath, `$Name); @{ PROCESSOR_ARCHITECTURE = 'UNKNOWN' } }`n& '" + $installer.Replace("'", "''") + "' @args`nexit `$LASTEXITCODE"
                     Assert-Result (Invoke-Installer @() $assets $bin $data $observation) 2 @('opencode-mcp: Unsupported platform: Windows/UNKNOWN.')
+                    Invoke-Case Platform_Refusal_Precedes_Path_Resolution {
+                      Assert-Result (Invoke-Installer @() $assets 'MissingInstallerProvider::unresolvable' $data $observation) 2 @('opencode-mcp: Unsupported platform: Windows/UNKNOWN.')
+                    }
                     $env:PROCESSOR_ARCHITEW6432 = ''; $env:PROCESSOR_ARCHITECTURE = 'AMD64'
                     Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                     Assert-Installed
