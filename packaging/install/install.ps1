@@ -108,8 +108,9 @@ function Get-InstallerOwnership {
         if ($removing.Count -eq 1) {
             try { Get-InstallerSelection; Test-InstallerPayload $removing[0].FullName }
             catch {
+                if (-not $state.Refused) { throw }
                 Write-InstallerFailure $_
-                $state.Refused = $true; throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($removing[0].Name)."
+                throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($removing[0].Name)."
             }
             Invoke-InstallerOperation { [IO.Directory]::Move($removing[0].FullName, $current) }
         }

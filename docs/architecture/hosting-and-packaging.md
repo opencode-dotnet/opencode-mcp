@@ -706,7 +706,7 @@ PATH reversal, removes only recorded state, and removes installer-created direct
 empty. Pre-existing directories, unrelated files, configuration and data survive. Unix ownership
 comes from the data directory; an explicit installation directory must contain the recorded link.
 On Windows, an owner record with no current payload permits recovery of exactly one
-`removing-<32 lowercase hexadecimal characters>` directory, or completion of record/PATH removal
+`removing-<32 lowercase hexadecimal characters>` directory with a complete, verified payload, or completion of record/PATH removal
 when the payload was already deleted; the owner record is removed last during uninstall.
 No owned installation means no change. On Windows, a running `opencode-mcp` command (a process whose
 executable is the installed command) is refused at once, without process termination, retry or elevation.

@@ -1281,6 +1281,27 @@ jobs:
                   if ($payload -ceq $removing) { [IO.Directory]::Move($removing, $current) }
                 }
               } }
+              if ($windows) { Invoke-Case Recover_Reports_Removing_Payload_IO_Failure {
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                $current = Join-Path $bin 'current'
+                [IO.Directory]::Move($current, $removing)
+                $retained = Get-Inventory $private
+                $directories = @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object)
+                $held = $null
+                try {
+                  try {
+                    $held = [IO.File]::Open((Join-Path $removing 'LICENSE'), 'Open', 'Read', 'None')
+                    $result = Invoke-Installer @()
+                  } finally { if ($held) { $held.Dispose() } }
+                  Assert-Result $result 1 @('opencode-mcp: Installation failed during staging.')
+                  Assert-Equal (Test-Path -LiteralPath $current) $false 'Unreadable payload is not published as current'
+                  Assert-Equal (Get-Item -LiteralPath $removing).Name (Split-Path $removing -Leaf) 'Unreadable payload stays in its named removing directory'
+                  Assert-Equal (Get-Inventory $private) $retained 'IO failure preserves complete payload and ownership record bytes'
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object) $directories 'IO failure preserves every retained directory'
+                } finally {
+                  if (Test-Path -LiteralPath $removing) { [IO.Directory]::Move($removing, $current) }
+                }
+              } }
               if ($windows) { Invoke-Case Recover_Removes_Only_Owned_Leftovers {
                 foreach ($prefix in @('previous','staging','temporary')) {
                   $leftover = Join-Path $private ($prefix + '-' + [guid]::NewGuid().ToString('N'))
