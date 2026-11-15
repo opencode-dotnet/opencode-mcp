@@ -145,7 +145,9 @@ public sealed class OwnedMcpProcessTests
     }
 
     [Test]
-    public async Task DisposeAsync_Should_Skip_An_Owned_Process_That_Exits_Before_Its_Lookup(CancellationToken token)
+    [Arguments("lookup")]
+    [Arguments("identity")]
+    public async Task DisposeAsync_Should_Skip_An_Owned_Process_That_Exits_During_Its_Identity_Check(string window, CancellationToken token)
     {
         var launch = DiagnosticLaunch("set /p hold=", "read hold");
         using var child = CreateOwnedChild(launch);
@@ -162,9 +164,10 @@ public sealed class OwnedMcpProcessTests
             FindProcess = id =>
             {
                 lookups.Add(id);
-                child.Kill(); // The process exits between the owner's exit check and its lookup.
+                var found = window == "identity" ? Process.GetProcessById(id) : null; // Exit after the lookup, before its start time is read.
+                child.Kill(); // Or between the owner's exit check and its lookup.
                 child.WaitForExit();
-                return Process.GetProcessById(id);
+                return found ?? Process.GetProcessById(id);
             },
         };
         try
