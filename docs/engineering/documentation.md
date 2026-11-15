@@ -92,7 +92,7 @@ ships or a newer handoff supersedes them.
   this MCP server behaves; what a consumer needs is stated here.
 - Every opencode-dotnet repository's README shows its status through BadgeSmith
   (`api.localstackfor.net`): one test-result badge per CI operating system, and one nuget.org badge
-  and one GitHub Packages badge per published package, each with `?prerelease=true` while its feed
-  carries only prereleases. CI posts each operating system's test counts from `master` pushes
+  and one GitHub Packages badge per package a consumer installs, each with `?prerelease=true` while
+  its feed carries only prereleases. CI posts each operating system's test counts from `master` pushes
   through BadgeSmith's pinned `update-test-badge` action, and a failed post never fails CI; the
   workflow's comments own the mechanics. Each badge URL is checked live before it is committed.
