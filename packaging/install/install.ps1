@@ -39,7 +39,7 @@ function Get-InstallerPath($Value, $Option) {
     }
     catch { Write-InstallerFailure $_; $state.Refused = $true; throw "opencode-mcp: Install collision: $Value." }
 }
-function Get-InstallerHash($Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-InstallerHash($Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
 function Get-InstallerInventory($Directory) {
     $entries = @(Get-ChildItem -LiteralPath $Directory -Recurse -Force | ForEach-Object {
         $relative = $_.FullName.Substring($Directory.Length + 1).Replace('\', '/')
