@@ -515,7 +515,8 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   documentation-only change needs the changes job green and the skipped jobs skipped.
 - **Merge queue.** Everything lands on the default branch through the merge queue, which requires
   the `CI result` check (`workflow.md`).
-- **Least privilege and bounds.** The workflow has `contents: read`; a superseded pull request run
+- **Least privilege and bounds.** The workflow has `contents: read`; each build/test leg adds
+  `checks: write` for its test report, and nothing else is granted. A superseded pull request run
   is cancelled, while each default-branch push has a per-commit concurrency group so a newer commit
   does not cancel its pending or running workflow; every job has a bounded timeout. The .NET SDK is set
   up from `global.json` and each job logs the version that resolved. Steps run in `pwsh` and check
@@ -524,13 +525,19 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
 - **Artifacts.** Each build/test leg uploads `artifacts/test-results/**` with `if: always()`, an
   OS-specific artifact name and seven-day retention. This directory holds the test platform's TRX
   files, TUnit HTML and JSON reports and, on a hang, hang-dump files; all are uploaded. No redaction
-  or size-processing step is needed: the workflow uses no secret, has only `contents: read`, sets
+  or size-processing step is needed: the uploaded files hold no secret, the workflow sets
   `TUNIT_DISABLE_ARTIFACT_UPLOAD` on every test step to prevent automatic upload without disabling
   report generation, and runs on ephemeral hosted runners. The owned `ASPIRE_HOME`, real profile
   and dashboard data are never beneath this path or uploaded. Test listings stay in the job log.
-  Upload failures remain blocking and never turn a failed test green; there is no `continue-on-error`.
-- **Actions.** Actions are referenced by major version tag (`actions/checkout@v7`,
+  Upload failures remain blocking and never turn a failed test green.
+- **Test report and badge.** Each build/test leg publishes its TRX files as a check run; a report
+  failure fails the leg, except on a fork pull request. On a master push only, the leg then posts its
+  passed, failed and skipped counts to BadgeSmith, signed with the `TESTDATASECRET` secret. Those two
+  posting steps are the only `continue-on-error` steps: a badge never fails or passes CI.
+- **Actions.** First-party actions are referenced by major version tag (`actions/checkout@v7`,
   `actions/setup-dotnet@v6`, `actions/upload-artifact@v7`); a major tag is not an immutable SHA pin.
+  The test reporter is pinned by commit SHA, and the BadgeSmith action is checked out at the commit
+  the live BadgeSmith deployment runs.
 - **Dependency review.** The `dependency-review` workflow (Dependency audit, above) runs on every
   pull request with `contents: read`, using `actions/dependency-review-action@v5` without PR comments.
   `CI result` does not cover Dependency Review; the maintainer checks it before queue entry.

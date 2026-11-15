@@ -1,6 +1,6 @@
 # Documentation
 
-Date: 2026-11-06
+Date: 2026-11-15
 
 Canonical rules for documentation ownership, authority, lifecycle, references, and lossless
 maintenance.
@@ -90,6 +90,8 @@ ships or a newer handoff supersedes them.
 - Consumer documentation names OpenCode, the OpenCode .NET SDK, or the MCP C# SDK where their
   behaviour matters, but never sends a reader to their code, issues or documentation to learn how
   this MCP server behaves; what a consumer needs is stated here.
-- README status badges come from BadgeSmith: one test badge per CI operating system, and a NuGet.org
-  and a GitHub Packages badge for each published package. CI posts the test results from master
-  pushes only, fail-soft, and every badge URL is checked live before it is committed.
+- README test-result and package badges come from BadgeSmith: one test badge per CI operating
+  system, and a NuGet.org and a GitHub Packages badge for each package a consumer installs (the root
+  tool package, not the runtime-specific packages it selects). A package badge asks for
+  `?prerelease=true` on either feed while it carries only prereleases. CI posts the test results
+  from master pushes only, fail-soft, and every badge URL is checked live before it is committed.
