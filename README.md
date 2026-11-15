@@ -54,7 +54,8 @@ To use GitHub Packages instead of NuGet.org, copy
 `OpenCodeDotNet.Mcp` packages to `https://nuget.pkg.github.com/opencode-dotnet/index.json`. Add
 credentials for its `opencode-dotnet` source: your GitHub user name and a personal access token
 (classic) with `read:packages`. GitHub Packages requires them even for public packages. Then add
-`--configfile <that file>` to either command above.
+`--configfile <that file>` to the `dotnet tool install` command, or to the `dotnet dnx` command
+before `--yes` and the `--` separator.
 
 ### Native archives (no .NET needed)
 
@@ -64,11 +65,12 @@ compare its SHA-256 with `SHA256SUMS`, extract it and run `opencode-mcp`. The in
 do the same and also place the command.
 
 Preview binaries are not signed with a publisher identity. The macOS command is ad hoc signed and
-not notarized. On macOS, an archive that a browser downloads carries the quarantine attribute, and
-the extracted command keeps it, also when `tar` extracts it. Gatekeeper then blocks the command and
-shows a prompt. After you verify the download, remove the attribute from the extracted command
-before you run it: `xattr -d com.apple.quarantine ./opencode-mcp`. A download with `curl` has no
-quarantine attribute. On Windows, SmartScreen can warn about a downloaded archive.
+not notarized. On macOS, a browser download usually carries the quarantine attribute, and `tar` can
+pass it to the extracted command. Gatekeeper then holds the command at its first launch and asks
+for confirmation. After you verify the archive and extract it, check the command with
+`xattr -l ./opencode-mcp`. If the output lists `com.apple.quarantine`, remove it before the first
+launch: `xattr -d com.apple.quarantine ./opencode-mcp`. On Windows, SmartScreen can warn about a
+downloaded archive.
 
 ## Install scripts
 
