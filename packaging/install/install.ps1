@@ -388,7 +388,7 @@ function Invoke-InstallerUninstall {
     $state.Success = $true
     $state.Message = "Uninstalled opencode-mcp: $($state.Install)"
 }
-$OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
+$OpenCodeMcpReleaseVersion = '0.1.0-preview.2'
     $state = @{
         Phase = 'staging'; Success = $false; Owned = $false; Created = $false; Refused = $false
         Activated = $false; RecordsStarted = $false; Previous = $null; Work = $null; Staging = $null
