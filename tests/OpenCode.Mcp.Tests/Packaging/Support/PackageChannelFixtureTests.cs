@@ -14,6 +14,9 @@ public sealed class PackageChannelFixtureTests
     [Arguments("github-packages", "source")]
     [Arguments("nuget", "source")]
     [Arguments("nuget", "extra")]
+    [Arguments("candidate", "none")]
+    [Arguments("candidate", "fallback")]
+    [Arguments("candidate", "source")]
     public async Task Resolve_Should_Map_Product_Packages_Only_To_GitHub(string channel, string fault, CancellationToken token)
     {
         var files = new MockFileSystem();
@@ -38,7 +41,7 @@ public sealed class PackageChannelFixtureTests
     }
 
     [Test]
-    [Arguments("channel", "OPENCODE_MCP_TEST_CHANNEL must be github-packages or nuget: unknown")]
+    [Arguments("channel", "OPENCODE_MCP_TEST_CHANNEL must be github-packages, nuget or candidate: unknown")]
     [Arguments("config", "OPENCODE_MCP_TEST_CHANNEL_CONFIG file does not exist.")]
     [Arguments("rid", "OPENCODE_MCP_TEST_RID is not in the native manifest: unknown")]
     public async Task Resolve_Should_Refuse_Unknown_Inputs(string fault, string message, CancellationToken token)
@@ -68,6 +71,7 @@ public sealed class PackageChannelFixtureTests
     [Arguments("github-packages", "credential-duplicate")]
     [Arguments("github-packages", "credential-text")]
     [Arguments("nuget", "credentials")]
+    [Arguments("candidate", "credentials")]
     public async Task Resolve_Should_Refuse_Credentials_Outside_The_Exact_GitHub_Shape(string channel, string fault, CancellationToken token)
     {
         var files = new MockFileSystem();
@@ -86,7 +90,7 @@ public sealed class PackageChannelFixtureTests
         files.Directory.CreateDirectory(feed);
         var sources = new XElement("packageSources", new XElement("clear"));
         var document = new XDocument(new XElement("configuration", sources));
-        if (channel == "github-packages")
+        if (channel is "github-packages" or "candidate")
         {
             sources.Add(new XElement("add", new XAttribute("key", "opencode-dotnet"), new XAttribute("value", "https://nuget.pkg.github.com/opencode-dotnet/index.json")));
             document.Root?.Add(new XElement("packageSourceMapping", new XElement("packageSource", new XAttribute("key", "opencode-dotnet"),
@@ -95,9 +99,13 @@ public sealed class PackageChannelFixtureTests
         }
         sources.Add(new XElement("add", new XAttribute("key", "nuget.org"), new XAttribute("value", "https://api.nuget.org/v3/index.json")));
         await files.File.WriteAllTextAsync(files.Path.Combine(repository, "packaging", channel == "nuget" ? "nuget-org.nuget.config" : "github-packages.nuget.config"), document.ToString(), token);
-        if (fault == "source")
+        if (channel == "candidate")
         {
             sources.Elements("add").First().SetAttributeValue("value", feed);
+        }
+        if (fault == "source")
+        {
+            sources.Elements("add").First().SetAttributeValue("value", channel == "candidate" ? feed + "-other" : feed);
         }
         if (fault == "fallback")
         {
