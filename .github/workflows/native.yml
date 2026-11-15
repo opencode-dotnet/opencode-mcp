@@ -848,6 +848,28 @@ jobs:
               Invoke-Case Install_Is_Idempotent {
                 $checksumOnly = Join-Path $root 'checksum-only'; New-Item -ItemType Directory $checksumOnly | Out-Null
                 Copy-Item -LiteralPath (Join-Path $assets 'SHA256SUMS') -Destination $checksumOnly
+                $payloadBefore = Get-Inventory (Get-Payload)
+                $recordsBefore = Get-Inventory $private
+                $pathBefore = Get-RawPath
+                Assert-Result (Invoke-Installer $addPath $checksumOnly) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH updated for future login sessions.')
+                Assert-Equal (Get-Inventory (Get-Payload)) $payloadBefore 'Later PATH consent never changes payload bytes'
+                Assert-Equal @(Get-Inventory $private | Where-Object { -not $_.StartsWith('path.record ') }) $recordsBefore 'Later PATH consent changes only path.record'
+                if ($windows) {
+                  $token = Join-Path $bin 'current'
+                  Assert-Equal @((Get-RawPath).Split(';') | Where-Object { $_ -ceq $token }) @($token) 'Later consent inserts exactly one owned token'
+                  $presence = if ($null -eq $pathBefore) { 'absent' } else { 'present' }
+                  Assert-Equal ([IO.File]::ReadAllLines((Join-Path $private 'path.record'))) @($token, $presence) 'Later consent records the exact token'
+                } else {
+                  $quotedPath = $bin.Replace("'", "'\''")
+                  $block = "# >>> opencode-mcp $data >>>`nexport PATH='$quotedPath':`"`$PATH`"`n# <<< opencode-mcp $data <<<`n"
+                  Assert-Equal ([IO.File]::ReadAllText($startup).EndsWith($block, [StringComparison]::Ordinal)) $true 'Later consent appends the exact owned block'
+                  Assert-Equal ([IO.File]::ReadAllText((Join-Path $private 'path.record'))) "$startup`n0`n$block" 'Later consent records the exact block'
+                }
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                if ($windows) { Assert-Equal (Get-RawPath) $pathBefore 'Uninstall reverses later PATH consent' }
+                else { Assert-Equal ([IO.File]::ReadAllText($startup).Contains("# >>> opencode-mcp $data >>>")) $false 'Uninstall removes the later owned block' }
+                Assert-Equal (Test-Path -LiteralPath (Join-Path $private 'path.record')) $false 'Uninstall removes later-consent ownership'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                 $unchanged = @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { $_.FullName } else { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks } })
                 Assert-Result (Invoke-Installer @() $checksumOnly) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH unchanged.')
                 Assert-Equal @(Get-ChildItem -LiteralPath $bin, $private -Recurse -Force | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { $_.FullName } else { $_.FullName + ' ' + $_.LastWriteTimeUtc.Ticks } }) $unchanged 'Idempotence changes no installed entry or timestamp'
@@ -872,6 +894,7 @@ jobs:
                       $result = Invoke-Installer @() $assets $bin $data $observation
                       Assert-Result $result 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                       Assert-Equal @($result.Verbose | Where-Object { $_ -match 'Unreadable process (path|module)\.' }) @() 'Unreadable processes produce no installer failure diagnostic'
+                      Assert-Equal @($result.Verbose | Where-Object { $_ -ceq 'VERBOSE: Process executable path is unavailable; not an installed-command match.' }) @('VERBOSE: Process executable path is unavailable; not an installed-command match.') 'Unreadable process paths are visible in verbose'
                       Assert-Installed
                     }
                   }
@@ -936,10 +959,37 @@ jobs:
               }
               if ($windows) { Invoke-Case Upgrade_With_Brief_Scanner_Lock {
                 foreach ($lockedPath in @('(Join-Path $staging ''LICENSE'')', ("'" + $command.Replace("'", "''") + "'"))) {
-                  Assert-Result (Invoke-ScannerLockedInstaller $lockedPath $upgrade $fixture) 0 @("opencode-mcp: Installed $alternate ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                  $result = Invoke-ScannerLockedInstaller $lockedPath $upgrade $fixture
+                  Assert-Result $result 0 @("opencode-mcp: Installed $alternate ($rid): $command", 'opencode-mcp: PATH unchanged.')
+                  Assert-Equal @($result.Verbose | Where-Object { $_ -match '^VERBOSE: System.IO.IOException: .+' } | Select-Object -First 1 | ForEach-Object { $_.Split(':')[1].Trim() }) @('System.IO.IOException') 'Verbose sharing violation proves a retry happened'
                   Assert-Installed $alternate $alternatePayload
                   Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory | ForEach-Object Name) @() 'Scanner lock leaves no staging, temporary or previous directory'
                   Assert-Result (Invoke-Installer $explicit) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                }
+                & {
+                  # Exercise the run-wide retry deadline with dummy operations and no real wait.
+                  $ast = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
+                  foreach ($name in @('Write-InstallerFailure','Invoke-InstallerOperation')) {
+                    Invoke-Expression ($ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true).Extent.Text)
+                  }
+                  $state = @{ RetryDeadline = $null }; $attempts = @{ First = 0; Second = 0; Delays = 0 }
+                  function Start-Sleep { param($Milliseconds) $attempts.Delays++ }
+                  Invoke-InstallerOperation {
+                    $attempts.First++
+                    if ($attempts.First -eq 1) { throw [IO.IOException]::new('Scanner sharing violation.', -2147024864) }
+                  }
+                  $state.RetryDeadline = [datetime]::MinValue
+                  $causes = @()
+                  try {
+                    Invoke-InstallerOperation {
+                      $attempts.Second++
+                      if ($attempts.Second -eq 1) { throw [IO.IOException]::new('Scanner sharing violation.', -2147024864) }
+                    }
+                  } catch { $causes += $_.Exception.GetBaseException().Message }
+                  Assert-Equal $causes @('Scanner sharing violation.') 'A later operation cannot reset the expired run deadline'
+                  Assert-Equal $attempts.First 2 'First sharing violation was retried'
+                  Assert-Equal $attempts.Second 1 'Expired run never retries the next operation'
+                  Assert-Equal $attempts.Delays 1 'One shared deadline permits no second delay'
                 }
               } }
               if ($windows) { Invoke-Case Reinstall_With_Command_Scanner_Lock {
@@ -963,8 +1013,13 @@ jobs:
                 try {
                   if ($windows) { $heldCommand = Start-HeldCommand }
                   else { & chmod a-w $bin; if ($LASTEXITCODE -ne 0) { throw 'Activation obstruction failed.' } }
-                  Assert-Result (Invoke-Installer $upgrade $fixture) 1 @('opencode-mcp: Installation failed during activation.')
-                  if ($windows) { Assert-Equal $heldCommand.HasExited $false 'Upgrade never stops the held native child' }
+                  $result = Invoke-Installer $upgrade $fixture
+                  Assert-Result $result 1 @('opencode-mcp: Installation failed during activation.')
+                  if ($windows) {
+                    Assert-Equal $heldCommand.HasExited $false 'Upgrade never stops the held native child'
+                    Assert-Equal @($result.Verbose | Where-Object { $_ -match ': Installed command is running\.$' }) @('VERBOSE: System.Management.Automation.RuntimeException: Installed command is running.') 'Upgrade refuses the running command at once'
+                    Assert-Equal @($result.Verbose | Where-Object { $_ -match 'IOException' }) @() 'Running-command refusal never enters sharing-violation retry'
+                  }
                   Assert-Installed
                   Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private 'current')))) ([Convert]::ToBase64String($selection)) 'Selection preserved'
                   foreach ($name in @('owner','current','inventory')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $recordsBefore[$name] "Upgrade failure preserves $name bytes" }
@@ -975,6 +1030,14 @@ jobs:
                   if (-not $windows) { & chmod u+w $bin; if ($LASTEXITCODE -ne 0) { throw 'Obstruction cleanup failed.' } }
                 }
                 if ($windows) {
+                  foreach ($move in @('[IO.Directory]::Move($current, $previous)', '[IO.Directory]::Move($staging, $current)')) {
+                    $interrupted = $text.Replace($move, ($move + "; throw 'Activation interruption.'"))
+                    Assert-Result (Invoke-Installer $upgrade $fixture $bin $data $interrupted) 1 @('opencode-mcp: Installation failed during activation.')
+                    Assert-Installed
+                    foreach ($name in @('owner','current','inventory')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $recordsBefore[$name] "Interrupt after $move preserves $name bytes" }
+                    Assert-Equal (Get-RawPath) $pathBefore 'Interrupt during either activation move preserves PATH'
+                    Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Force | ForEach-Object Name) @() 'Activation interruption rolls back every owned temporary directory'
+                  }
                   try {
                     $handle = [IO.File]::Open((Join-Path $private 'inventory'), 'Open', 'Read', 'Read')
                     Assert-Result (Invoke-Installer $upgrade $fixture) 1 @('opencode-mcp: Installation failed during activation.', "opencode-mcp: Cleanup failed; retained owned directory: $private.")
@@ -1221,6 +1284,9 @@ jobs:
                 Assert-Result (Invoke-Installer $invalid) 2 @('opencode-mcp: Version must be an exact SemVer 2.0.0 value without a leading v.')
                 Assert-Result (Invoke-Installer ($uninstall + $explicit)) 2 @('opencode-mcp: Uninstall accepts only the installation directory.')
                 if (-not $windows) {
+                  foreach ($invalidVersion in @("$version`ninvalid", "invalid`n$version", "$version`n$version")) {
+                    Assert-Result (Invoke-Installer @('--version', $invalidVersion)) 2 @('opencode-mcp: Version must be an exact SemVer 2.0.0 value without a leading v.')
+                  }
                   Assert-Result (Invoke-Installer @('--version=invalid')) 2 @('opencode-mcp: Unknown option: --version=invalid.')
                   Assert-Result (Invoke-Installer ($explicit + $explicit)) 2 @('opencode-mcp: Option may be specified only once: --version.')
                   Assert-Result (Invoke-Installer @('--version')) 2 @('opencode-mcp: Option requires a value: --version.')
@@ -1251,6 +1317,15 @@ jobs:
                   $pipeOutput = @(Invoke-InstallerScriptBlock @{ Uninstall = $true; InstallDir = $bin })
                   Assert-Equal $pipeOutput @("opencode-mcp: Uninstalled opencode-mcp: $bin") 'Repeated in-session broadcast reuses interop type'
                   Assert-Equal (Get-RawPath) $rawPath 'Scriptblock uninstall restores original raw PATH'
+                  & {
+                    Set-StrictMode -Version Latest
+                    Assert-Equal @(Invoke-InstallerScriptBlock @{ AssetDir = $assets; InstallDir = $bin }) @($installedMessage, 'opencode-mcp: PATH unchanged.') 'Strict caller can install through a scriptblock'
+                    Assert-Installed
+                    Assert-Equal @(Invoke-InstallerScriptBlock @{ Uninstall = $true; InstallDir = $bin }) @("opencode-mcp: Uninstalled opencode-mcp: $bin") 'Strict caller can uninstall through a scriptblock'
+                    $strictErrors = @()
+                    try { $null = (@{}).Missing } catch { $strictErrors += $_.FullyQualifiedErrorId }
+                    Assert-Equal $strictErrors @('PropertyNotFoundStrict') 'Installer leaves caller strict mode enabled'
+                  }
                   foreach ($switchSuffix in @('', ':$true')) {
                     $outer = "param(`$AssetDir, `$InstallDir)`n& ([scriptblock]::Create([IO.File]::ReadAllText('" + $installer.Replace("'", "''") + "'))) -AssetDir `$AssetDir -InstallDir `$InstallDir -AddToPath$switchSuffix -Verbose"
                     Assert-Result (Invoke-Installer @() $assets $bin $data $outer) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
@@ -1266,8 +1341,11 @@ jobs:
                   Assert-Equal $diagnostics.Verbose @("VERBOSE: System.Management.Automation.RuntimeException: opencode-mcp: SHA-256 mismatch: $archiveName.", "VERBOSE: System.Management.Automation.RuntimeException: opencode-mcp: SHA-256 mismatch: $archiveName.") 'Original refusal and final scriptblock throw each expose their cause once'
                   $outer = "param(`$AssetDir, `$InstallDir)`ntry { & ([scriptblock]::Create([IO.File]::ReadAllText('" + $installer.Replace("'", "''") + "'))) -AssetDir `$AssetDir -InstallDir `$InstallDir -Verbose } catch { `$_.Exception.Message }`n'outer-continued'"
                   Assert-Result (Invoke-Installer @() $bad $bin $data $outer) 0 @("opencode-mcp: SHA-256 mismatch: $archiveName.", 'outer-continued')
+                  $defaultInstall = Join-Path $env:LOCALAPPDATA 'Programs/opencode-mcp'
+                  Assert-Equal (Test-Path -LiteralPath $defaultInstall) $false 'No-option iex starts without a real default installation'
                   $outer = "`$env:OS = 'unsupported'`n`$VerbosePreference = 'Continue'`ntry { Invoke-Expression ([IO.File]::ReadAllText('" + $installer.Replace("'", "''") + "')) -Verbose } catch { `$_.Exception.Message }`n'iex-outer-continued'"
                   Assert-Result (Invoke-Installer @() $assets $bin $data $outer) 0 @("opencode-mcp: Unsupported platform: $([Environment]::OSVersion.Platform)/$env:PROCESSOR_ARCHITECTURE.", 'iex-outer-continued')
+                  Assert-Equal (Test-Path -LiteralPath $defaultInstall) $false 'No-option iex never creates the real default installation'
                   $functionsBefore = @(Get-ChildItem Function: | ForEach-Object Name)
                   $callerVersion = $version; $Version = 'caller-version'
                   $definitions = $text.Substring(0, $text.LastIndexOf("`n", $text.TrimEnd().Length - 1) + 1)
@@ -1287,11 +1365,12 @@ jobs:
                   Assert-Equal (Test-Path -LiteralPath $command) $false 'Successful uninstall retry removes command'
                   Assert-Equal (Test-Path -LiteralPath $private) $false 'Successful uninstall retry removes records and payload'
                   $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
-                  $observations = @{ Protocols = @(); Assets = @() }
+                  $observations = @{ Protocols = @(); Assets = @(); Progress = @() }
                   function Invoke-WebRequest {
                     param([switch]$UseBasicParsing, $Uri, $OutFile)
                     $observations.Protocols += [string][Net.ServicePointManager]::SecurityProtocol
                     $observations.Assets += ([uri]$Uri).Segments[-1]
+                    $observations.Progress += [string]$ProgressPreference
                     if ($OutFile) { [IO.File]::Copy((Join-Path $assets ([uri]$Uri).Segments[-1]), $OutFile) }
                     else { @{ Content = [IO.File]::ReadAllText((Join-Path $assets ([uri]$Uri).Segments[-1])) } }
                   }
@@ -1300,7 +1379,9 @@ jobs:
                       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]$protocol[0]
                       $observations.Protocols = @()
                       $observations.Assets = @()
+                      $observations.Progress = @()
                       Assert-Equal @(Invoke-InstallerScriptBlock @{ InstallDir = $bin }) @($installedMessage, 'opencode-mcp: PATH unchanged.') 'Download fixture installs the untouched candidate'
+                      Assert-Equal $observations.Progress @('SilentlyContinue', 'SilentlyContinue') 'Downloads disable progress in both runtimes'
                       Assert-Equal $observations.Protocols @($protocol[1], $protocol[1]) 'TLS preserves SystemDefault or adds TLS 1.2 without replacing existing flags'
                       Assert-Equal $observations.Assets @('SHA256SUMS', $archiveName) 'Fresh download requests checksum then archive'
                       Assert-Installed
@@ -1397,8 +1478,13 @@ jobs:
                   try {
                     if ($windows) { $heldCommand = Start-HeldCommand }
                     else { & chmod a-w $bin; if ($LASTEXITCODE -ne 0) { throw 'Uninstall obstruction failed.' } }
-                    Assert-Result (Invoke-Installer $uninstall) 1 @('opencode-mcp: Installation failed during uninstall.')
-                    if ($windows) { Assert-Equal $heldCommand.HasExited $false 'Uninstall never stops the held native child' }
+                    $result = Invoke-Installer $uninstall
+                    Assert-Result $result 1 @('opencode-mcp: Installation failed during uninstall.')
+                    if ($windows) {
+                      Assert-Equal $heldCommand.HasExited $false 'Uninstall never stops the held native child'
+                      Assert-Equal @($result.Verbose | Where-Object { $_ -match ': Installed command is running\.$' }) @('VERBOSE: System.Management.Automation.RuntimeException: Installed command is running.') 'Uninstall refuses the running command at once'
+                      Assert-Equal @($result.Verbose | Where-Object { $_ -match 'IOException' }) @() 'Held-child uninstall never enters sharing-violation retry'
+                    }
                     Assert-Installed
                     Assert-Equal (Get-RawPath) $ownedPath 'Failed command removal preserves owned PATH'
                     foreach ($name in @('owner','current','inventory','path.record')) { Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $private $name)))) $records[$name] "Failed uninstall preserves $name bytes" }
@@ -1427,16 +1513,15 @@ jobs:
                     try {
                       $env:PATH = $signalCommands + ':' + $originalPath
                       Assert-Result (Invoke-Installer $uninstall) 143 @()
-                      Assert-Equal (Test-Path -LiteralPath $command) $false 'Removed PATH block never gets a restored command link'
+                      Assert-Installed
                       Assert-Equal (Test-Path -LiteralPath (Join-Path $private 'path.record')) $false 'Removed block leaves no PATH ownership record'
                       Assert-Equal ([IO.File]::ReadAllText($startup).Contains("# >>> opencode-mcp $data >>>")) $false 'Owned block is gone after interrupted uninstall'
                       Assert-Equal @(Get-ChildItem -LiteralPath $parent -Filter '.opencode-mcp-*' -Force | ForEach-Object Name | Sort-Object) $tempNames 'Startup rewrite leaves no temporary file'
-                    } finally {
                       $env:PATH = $originalPath
-                      [IO.File]::WriteAllBytes($startup, [Convert]::FromBase64String($ownedPath))
-                      [IO.File]::WriteAllBytes((Join-Path $private 'path.record'), [Convert]::FromBase64String($records['path.record']))
-                      if (-not (Test-Path -LiteralPath $command)) { New-Item -ItemType SymbolicLink -Path $command -Target (Join-Path (Get-Payload) 'opencode-mcp') | Out-Null }
-                    }
+                      Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: Uninstalled opencode-mcp: $bin")
+                      Assert-Equal (Test-Path -LiteralPath $private) $false 'Next uninstall completes without repairing any fixture state'
+                      Assert-Result (Invoke-Installer $addPath) 0 @($installedMessage, 'opencode-mcp: PATH updated for future login sessions.')
+                    } finally { $env:PATH = $originalPath }
                   }
                   if ($windows) {
                     $ownedKind = $userKey.GetValueKind('Path')

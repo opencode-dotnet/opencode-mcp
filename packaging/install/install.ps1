@@ -8,7 +8,9 @@ param(
     [string]$AssetDir
 )
 
+Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $Options = $PSBoundParameters
 $FileInvocation = [bool]{}.File
 
@@ -178,8 +180,9 @@ function Test-InstallerCommandAccess {
     $running = @(foreach ($process in Get-Process) {
         try {
             $path = $process.Path
+            if (-not $path) { Write-Verbose 'Process executable path is unavailable; not an installed-command match.' }
             if ($path -and [string]::Equals($path, $state.Command, [StringComparison]::OrdinalIgnoreCase)) { $process.Id }
-        } catch { continue } # Unreadable system/other-user processes are not installed-command matches.
+        } catch { Write-InstallerFailure $_; continue } # Unreadable system/other-user processes are not installed-command matches.
         finally { $process.Dispose() }
     })
     if ($running.Count -gt 0) { throw 'Installed command is running.' }
@@ -189,7 +192,6 @@ function Test-InstallerCommandAccess {
     }
 }
 function Invoke-InstallerOperation([scriptblock]$Operation) {
-    $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($true) {
         try {
             & $Operation
@@ -197,10 +199,12 @@ function Invoke-InstallerOperation([scriptblock]$Operation) {
         } catch {
             Write-InstallerFailure $_
             $cause = $_.Exception.GetBaseException()
-            $remaining = 30000 - $clock.ElapsedMilliseconds
-            if (($cause -isnot [IO.IOException] -and $cause -isnot [UnauthorizedAccessException]) -or $cause.HResult -notin @(-2147024864, -2147024891) -or $remaining -le 0) { throw }
+            if (($cause -isnot [IO.IOException] -and $cause -isnot [UnauthorizedAccessException]) -or $cause.HResult -notin @(-2147024864, -2147024891)) { throw }
+            if (-not $state.RetryDeadline) { $state.RetryDeadline = [datetime]::UtcNow.AddSeconds(30) }
+            $remaining = ($state.RetryDeadline - [datetime]::UtcNow).TotalMilliseconds
+            if ($remaining -le 0) { throw }
             Start-Sleep -Milliseconds ([Math]::Min(200, $remaining))
-            if ($clock.ElapsedMilliseconds -ge 30000) { throw }
+            if ([datetime]::UtcNow -ge $state.RetryDeadline) { throw }
         }
     }
 }
@@ -222,7 +226,7 @@ function Invoke-InstallerCleanup {
                 Invoke-InstallerPathWrite $value $current.Kind
             } catch { Write-InstallerFailure $_; $errors += $_ }
         }
-        if ($state.Activated) {
+        if ($state.Activated -and [IO.Directory]::Exists((Join-Path $state.Install 'current'))) {
             try {
                 $state.Staging = Join-Path $state.Private ('removing-' + [guid]::NewGuid().ToString('N'))
                 Invoke-InstallerOperation { [IO.Directory]::Move((Join-Path $state.Install 'current'), $state.Staging) }
@@ -280,9 +284,21 @@ function Invoke-InstallerInstall {
     if ($entries.Count -ne 1 -or $entries[0] -cnotmatch ('\A[0-9a-f]{64}  ' + [regex]::Escape($archive) + '\z')) { $state.Refused = $true; throw "opencode-mcp: Invalid checksum entry: $archive." }
     $archiveHash = $entries[0].Substring(0, 64)
     if ($state.Owned -and $state.OldVersion -ceq $state.Version -and $state.OldRid -ceq $state.Rid -and $state.OldArchiveHash -ceq $archiveHash) {
+        if ($state.AddPath -and -not $state.PathOwned) {
+            $token = Join-Path $state.Install 'current'
+            $currentPath = Get-InstallerUserPath
+            if (@(([string]$currentPath.Value).Split(';') | Where-Object { $_ -ieq $token }).Count -eq 0) {
+                $state.Phase = 'path'
+                $state.Work = Join-Path $state.Private ('temporary-' + [guid]::NewGuid().ToString('N'))
+                [IO.Directory]::CreateDirectory($state.Work) | Out-Null
+                Invoke-InstallerPathAddition
+                $pathRecord = Join-Path $state.Work 'path.record'
+                if ([IO.File]::Exists($pathRecord)) { Invoke-InstallerRecordReplace $pathRecord (Join-Path $state.Private 'path.record') }
+            }
+        }
         $state.Success = $true
         $state.Message = "Already installed $($state.Version) ($($state.Rid)): $($state.Command)"
-        $state.PathMessage = 'PATH unchanged.'
+        $state.PathMessage = if ($state.PathChanged) { 'PATH updated for future login sessions.' } else { 'PATH unchanged.' }
         return
     }
     $state.Phase = 'staging'
@@ -310,12 +326,12 @@ function Invoke-InstallerInstall {
         $current = Join-Path $state.Install 'current'
         if ($state.Owned) {
             $previous = Join-Path $state.Private ('previous-' + [guid]::NewGuid().ToString('N'))
-            Invoke-InstallerOperation { [IO.Directory]::Move($current, $previous) }
             $state.Previous = $previous
+            Invoke-InstallerOperation { [IO.Directory]::Move($current, $previous) }
         }
+        $state.Activated = $true
         Invoke-InstallerOperation { [IO.Directory]::Move($staging, $current) }
         $state.Staging = $null
-        $state.Activated = $true
     }
     $encoding = New-Object Text.UTF8Encoding $false
     $created = if ($state.Created) { '1' } else { '0' }
@@ -443,7 +459,8 @@ $OpenCodeMcpReleaseVersion = '0.1.0-preview.1'
 }
 $OpenCodeMcpInstallerEntry = {
     param([object[]]$Arguments)
-    # Preserve PowerShell's named-argument metadata, including attached switch values.
+    # On 5.1 and 7, @args turns -Switch:$value into a positional value under PositionalBinding = $false.
+    # A top-level param would bind into the caller's scope under iex, so forward named metadata via the AST.
     # Argument values stay array references, never executable text; the native binder owns validation.
     $command = ([scriptblock]::Create('Invoke-OpenCodeMcpInstaller')).Ast.EndBlock.Statements[0].PipelineElements[0]
     $extent = $command.Extent

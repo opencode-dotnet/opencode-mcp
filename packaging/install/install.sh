@@ -7,6 +7,8 @@ operation() { if ! "$@" 2>/dev/null; then failed; fi; }
 required() { command -v "$1" >/dev/null 2>&1 || refuse "Required command is unavailable: $1."; }
 line() { sed -n "${2}p" "$1"; }
 valid_version() {
+    case $1 in *'
+'*) return 1 ;; esac
     printf '%s\n' "$1" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' || return 1
     prerelease=${1%%+*}
     case $prerelease in
@@ -220,14 +222,15 @@ finish() {
     cleanup_error=0
     if [ "$result" -ne 0 ] && [ "$phase" = cleanup ]; then cleanup_error=1; fi
     if [ "$result" -ne 0 ] && [ "$uninstall" = 1 ] && [ "$phase" != cleanup ] && [ ! -e "$link" ] && [ ! -L "$link" ]; then
-        if [ "$path_owned" = 0 ] || path_block_present; then
-            ln -s "$payload/opencode-mcp" "$link" 2>/dev/null || cleanup_error=1
+        if [ "$path_owned" = 0 ] || path_block_present; then :
         else
             block_status=$?
             if [ "$block_status" = 1 ]; then rm -f "$data/path.record" 2>/dev/null || cleanup_error=1
             else cleanup_error=1
             fi
         fi
+        # Restore the link even when PATH removal completed, so uninstall remains retryable.
+        ln -s "$payload/opencode-mcp" "$link" 2>/dev/null || cleanup_error=1
     fi
     if [ "$result" -ne 0 ] && [ "$phase" != cleanup ] && [ "$activated" = 1 ]; then
         if [ "$owned" = 1 ] && ! { [ -L "$link" ] && [ "$(readlink "$link")" = "$payload/opencode-mcp" ]; }; then
@@ -304,7 +307,7 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
             --add-to-path) add_path=1 ;;
             --uninstall) uninstall=1 ;;
             *) [ "$#" -gt 0 ] || refuse "Option requires a value: $option."
-                path_value "$option" "$1"
+                if [ "$option" != --version ] || [ -z "$1" ]; then path_value "$option" "$1"; fi
                 case $option in
                     --version) version=$1 ;;
                     --install-dir) install=$1; install_given=1 ;;
@@ -363,8 +366,8 @@ OPENCODE_MCP_RELEASE_VERSION='0.1.0-preview.1'
         phase=path
         work=$(mktemp -d "$data/staging-XXXXXX" 2>/dev/null) || failed
         remove_path
-        phase=cleanup; retained=$data
         operation rm -f "$data/path.record"
+        phase=cleanup; retained=$data
         operation rm -f "$data/owner" "$data/current" "$data/inventory"
         retained=$payload
         operation rm -rf "$payload"
@@ -405,8 +408,18 @@ $checksums
 EOF
     [ "$count" = 1 ] || refuse "Invalid checksum entry: $archive."
     if [ "$owned" = 1 ] && [ "$version/$rid/$hash" = "$old_version/$old_rid/$old_archive_hash" ]; then
+        if [ "$path_changed" = 1 ]; then
+            phase=path
+            trap finish 0
+            work=$(mktemp -d "$data/temporary-XXXXXX" 2>/dev/null) || failed
+            write_path
+            operation mv "$work/path.record" "$data/path.record"
+            phase=cleanup; path_written=0
+            operation rm -rf "$work"
+            work=
+        fi
         message "Already installed $version ($rid): $link"
-        message 'PATH unchanged.'
+        if [ "$path_changed" = 1 ]; then message 'PATH updated for future login sessions.'; else message 'PATH unchanged.'; fi
         return 0
     fi
     phase=staging

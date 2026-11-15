@@ -699,9 +699,9 @@ are refused without destructive repair or adoption. Uninstall preflights ownersh
 PATH reversal, removes only recorded state, and removes installer-created directories only when
 empty. Pre-existing directories, unrelated files, configuration and data survive. Unix ownership
 comes from the data directory; an explicit installation directory must contain the recorded link.
-No owned installation means no change. A running `opencode-mcp` command (a process whose executable
-is the installed command) is refused at once, without process termination, retry or elevation. On
-Windows only, a sharing violation on the installed command or on a directory the installer itself
+No owned installation means no change. On Windows, a running `opencode-mcp` command (a process whose
+executable is the installed command) is refused at once, without process termination, retry or elevation.
+On Windows only, a sharing violation on the installed command or on a directory the installer itself
 created or owns, with no such process running, is retried for at most 30 seconds, because on-access
 scanners briefly hold newly written executables; it then fails as before. `-Verbose` shows the
 underlying cause of a failure; default output is unchanged. Scripts configure no MCP client, start no daemon and
