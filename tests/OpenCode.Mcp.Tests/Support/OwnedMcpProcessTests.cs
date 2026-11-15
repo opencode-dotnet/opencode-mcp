@@ -151,6 +151,9 @@ public sealed class OwnedMcpProcessTests
     {
         var launch = DiagnosticLaunch("set /p hold=", "read hold");
         using var child = CreateOwnedChild(launch);
+        using var exited = new ManualResetEventSlim();
+        child.EnableRaisingEvents = true;
+        child.Exited += (_, _) => exited.Set(); // Raised once the killed child is reaped.
         var lookups = new List<int>();
         Task? childExit = null;
         var stdout = Task.CompletedTask;
@@ -166,7 +169,7 @@ public sealed class OwnedMcpProcessTests
                 lookups.Add(id);
                 var found = window == "identity" ? Process.GetProcessById(id) : null; // Exit after the lookup, before its start time is read.
                 child.Kill(); // Or between the owner's exit check and its lookup.
-                if (!SpinWait.SpinUntil(() => child.HasExited, TimeSpan.FromSeconds(15))) // HasExited reaps the killed child.
+                if (!exited.Wait(TimeSpan.FromSeconds(15)))
                 {
                     throw new InvalidOperationException("The owned child did not exit after its kill.");
                 }
