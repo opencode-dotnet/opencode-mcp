@@ -23,5 +23,6 @@ Or let an MCP client start it on demand, with nothing installed beforehand:
 
     dotnet dnx -v minimal OpenCodeDotNet.Mcp@<version> --yes -- --transport stdio
 
-This package selects the native package for the machine's runtime; the installed command runs the
-native executable directly and does not need the .NET runtime to run.
+Both commands need the .NET 10 SDK and a published version. Installing `OpenCodeDotNet.Mcp`
+selects the native implementation package for the machine; the installed command runs its native
+executable directly and does not need the .NET runtime to run.

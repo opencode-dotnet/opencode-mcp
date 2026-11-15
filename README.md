@@ -20,14 +20,16 @@ The server's contract is to:
 
 Each release is published through three channels from one verified build: NuGet MCP tool packages
 on NuGet.org and on GitHub Packages, and native archives with install scripts on GitHub Releases.
-Every channel carries the same bytes. See the [roadmap](docs/ROADMAP.md) for current availability.
+All three carry the same native payloads; NuGet.org adds its repository signature to the packages.
+See the [roadmap](docs/ROADMAP.md) for current availability.
 
 ## Install
 
 Pick the channel that fits the machine. Replace `<version>` with the exact release version (without
-a leading `v`); every command below pins it and never resolves "latest".
+a leading `v`); every command below pins it and never resolves "latest". The commands need a
+published version: before a release exists, its packages, archives and script URLs do not.
 
-### NuGet tool (needs the .NET SDK)
+### NuGet tool (needs the .NET 10 SDK)
 
 Install the command once, then start it as `opencode-mcp`:
 
@@ -47,11 +49,12 @@ The package set is one root package, `OpenCodeDotNet.Mcp`, and one native packag
 (`OpenCodeDotNet.Mcp.<rid>`); the SDK selects the native package for the machine. The installed
 command runs the native executable directly; it does not need the .NET runtime to run.
 
-To use GitHub Packages instead of NuGet.org, map the `OpenCodeDotNet.Mcp` packages to the
-`https://nuget.pkg.github.com/opencode-dotnet/index.json` source in a NuGet configuration and
-authenticate to it with a GitHub token that has `read:packages`; the repository's
-[`packaging/github-packages.nuget.config`](packaging/github-packages.nuget.config) shows the source
-mapping.
+To use GitHub Packages instead of NuGet.org, copy
+[`packaging/github-packages.nuget.config`](packaging/github-packages.nuget.config), which maps the
+`OpenCodeDotNet.Mcp` packages to `https://nuget.pkg.github.com/opencode-dotnet/index.json`. Add
+credentials for its `opencode-dotnet` source: your GitHub user name and a personal access token
+(classic) with `read:packages`. GitHub Packages requires them even for public packages. Then add
+`--configfile <that file>` to either command above.
 
 ### Native archives (no .NET needed)
 
@@ -59,6 +62,11 @@ Each release has one archive per runtime, `opencode-mcp-<version>-<rid>.zip` for
 `.tar.gz` for Linux and macOS, and a `SHA256SUMS` file. Download the archive for the machine,
 compare its SHA-256 with `SHA256SUMS`, extract it and run `opencode-mcp`. The install scripts below
 do the same and also place the command.
+
+Preview binaries are not signed with a publisher identity. On macOS, a browser download can carry
+the quarantine attribute and Gatekeeper can block the command; after verifying the download, remove
+it from the extracted command with `xattr -d com.apple.quarantine ./opencode-mcp`. On Windows,
+SmartScreen can warn about a downloaded archive.
 
 ## Install scripts
 
