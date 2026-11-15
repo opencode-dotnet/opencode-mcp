@@ -894,7 +894,7 @@ jobs:
                       $result = Invoke-Installer @() $assets $bin $data $observation
                       Assert-Result $result 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
                       Assert-Equal @($result.Verbose | Where-Object { $_ -match 'Unreadable process (path|module)\.' }) @() 'Unreadable processes produce no installer failure diagnostic'
-                      Assert-Equal @($result.Verbose | Where-Object { $_ -ceq 'VERBOSE: Process executable path is unavailable; not an installed-command match.' }) @('VERBOSE: Process executable path is unavailable; not an installed-command match.') 'Unreadable process paths are visible in verbose'
+                      Assert-Equal @($result.Verbose | Where-Object { $_ -cmatch '^VERBOSE: Executable path unavailable for [1-9][0-9]* process\(es\); not installed-command matches\.$' }).Count 1 'Unreadable process paths are reported once in verbose'
                       Assert-Installed
                     }
                   }

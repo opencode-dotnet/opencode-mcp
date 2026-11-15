@@ -177,14 +177,16 @@ function Invoke-InstallerRecordReplace($Source, $Destination) {
     }
 }
 function Test-InstallerCommandAccess {
+    $unreadable = 0
     $running = @(foreach ($process in Get-Process) {
         try {
             $path = $process.Path
-            if (-not $path) { Write-Verbose 'Process executable path is unavailable; not an installed-command match.' }
+            if (-not $path) { $unreadable++ }
             if ($path -and [string]::Equals($path, $state.Command, [StringComparison]::OrdinalIgnoreCase)) { $process.Id }
         } catch { Write-InstallerFailure $_; continue } # Unreadable system/other-user processes are not installed-command matches.
         finally { $process.Dispose() }
     })
+    if ($unreadable -gt 0) { Write-Verbose "Executable path unavailable for $unreadable process(es); not installed-command matches." }
     if ($running.Count -gt 0) { throw 'Installed command is running.' }
     Invoke-InstallerOperation {
         $handle = [IO.File]::Open($state.Command, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -224,6 +226,9 @@ function Invoke-InstallerCleanup {
                 $value = @($tokens | Where-Object { -not [string]::Equals($_, $token, [StringComparison]::OrdinalIgnoreCase) }) -join ';'
                 if ($state.PathOriginallyAbsent -and $value -ceq '') { $value = $null }
                 Invoke-InstallerPathWrite $value $current.Kind
+                # A PATH-only completion has no record backups: drop only the path.record it published.
+                $published = Join-Path $state.Private 'path.record'
+                if ($state.PathRecordPublished -and [IO.File]::Exists($published)) { Invoke-InstallerOperation { [IO.File]::Delete($published) } }
             } catch { Write-InstallerFailure $_; $errors += $_ }
         }
         if ($state.Activated -and [IO.Directory]::Exists((Join-Path $state.Install 'current'))) {
@@ -293,6 +298,7 @@ function Invoke-InstallerInstall {
                 [IO.Directory]::CreateDirectory($state.Work) | Out-Null
                 Invoke-InstallerPathAddition
                 $pathRecord = Join-Path $state.Work 'path.record'
+                $state.PathRecordPublished = $true
                 if ([IO.File]::Exists($pathRecord)) { Invoke-InstallerRecordReplace $pathRecord (Join-Path $state.Private 'path.record') }
             }
         }
