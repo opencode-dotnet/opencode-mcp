@@ -7,13 +7,13 @@ namespace OpenCode.Mcp.Tools.Native;
 
 internal sealed class NativeProcessSnapshot(IFileSystem files, INativeProcessRunner runner, string root, TextWriter output)
 {
-    private const string Query = "$ErrorActionPreference='Stop'; Get-Process | Select-Object Id,ProcessName,CPU,WorkingSet64,@{Name='StartTime';Expression={try {$_.StartTime.ToUniversalTime().ToString('O')} catch {$null}}},CommandLine | ConvertTo-Json -Compress";
+    private const string Query = "$ErrorActionPreference='Stop'; $commandLines=@{}; if ($IsWindows) {try {Get-CimInstance Win32_Process -Property ProcessId,CommandLine -OperationTimeoutSec 30 | ForEach-Object {$commandLines[[int]$_.ProcessId]=$_.CommandLine}} catch {$commandLines=@{}}}; Get-Process | Select-Object Id,ProcessName,CPU,WorkingSet64,@{Name='StartTime';Expression={try {$_.StartTime.ToUniversalTime().ToString('O')} catch {$null}}},@{Name='CommandLine';Expression={if ($IsWindows) {$commandLines[$_.Id]} else {$_.CommandLine}}} | ConvertTo-Json -Compress";
 
     public async Task RecordAsync(string directory, Func<DateTimeOffset> timestamp, CancellationToken token)
     {
         files.Directory.CreateDirectory(directory);
         var json = await new NativeProcesses(runner, root).RequireAsync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", Query],
-            new Dictionary<string, string?>(StringComparer.Ordinal), token).ConfigureAwait(false);
+            new Dictionary<string, string?>(StringComparer.Ordinal), token, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
         var now = timestamp();
         using var processes = JsonDocument.Parse(json);
         var lines = processes.RootElement.EnumerateArray().OrderByDescending(static process => Cpu(process))

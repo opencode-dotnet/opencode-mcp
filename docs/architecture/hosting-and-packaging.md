@@ -312,7 +312,9 @@ not a second distributed product. The entry is compiled separately from the solu
   and pulls the manifest runtime image before this command; neither preparation runs inside the
   test step's budget. The proof still inspects the local image before using it.
 - `snapshot --output <directory>` records PID, process name, CPU, working set, age and command line,
-  sorted by CPU descending, in `processes.txt`; its first 25 rows also reach the job log.
+  sorted by CPU descending, in `processes.txt` and logs its first 25 rows with a two-minute query
+  bound, using one bounded CIM query for Windows command lines and an empty command-line field
+  for a row without one.
 - `validate --receipts <dir> [--manifest <path>]` checks the manifest's complete ordered receipt set,
   common source/SDK/version/dependency identities, successful publish and three test runs, effective
   properties, warning results, manifest runner/image identities, payload manifests, archive

@@ -243,7 +243,8 @@ snapshots; upload failures remain blocking. Artifact names are unique per job/pe
 Completed receipts are uploaded only after successful proof; validation
 has no `always()` override and starts only when all needed jobs succeed. Both workflows prebuild
 the file-based entry in a normal step before tests. Process snapshots run with `always()` and
-`--no-build` through the shared `snapshot` subcommand in both workflows. Upload errors remain
+`--no-build` through the shared `snapshot` subcommand in both workflows, with five-minute bounds on
+the CI, native-build, Linux-proof and package snapshot steps. Upload errors remain
 blocking. The validation success and its log establish the complete-set result; no index file or
 separate job-result input stands in for that dependency graph. The native workflow must be green
 at the pull request's head before queue entry, including hosted parsing and all six RIDs.

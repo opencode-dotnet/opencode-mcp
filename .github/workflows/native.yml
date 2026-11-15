@@ -121,6 +121,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Record processes after tests
         if: always()
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
@@ -224,6 +225,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Record processes after tests
         if: always()
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
@@ -331,6 +333,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Record processes after tests
         if: always()
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
@@ -458,6 +461,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Record processes after tests
         if: always()
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet run --no-build tools/native.cs -- snapshot --output (Join-Path $env:RUNNER_TEMP 'process-snapshot')
