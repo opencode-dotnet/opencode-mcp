@@ -145,6 +145,76 @@ public sealed class OwnedMcpProcessTests
     }
 
     [Test]
+    public async Task DisposeAsync_Should_Skip_An_Owned_Process_That_Exits_Before_Its_Lookup(CancellationToken token)
+    {
+        var launch = DiagnosticLaunch("set /p hold=", "read hold");
+        using var child = CreateOwnedChild(launch);
+        var lookups = new List<int>();
+        Task? childExit = null;
+        var stdout = Task.CompletedTask;
+        var stderr = Task.CompletedTask;
+        Process? root = null;
+        Task? rootExit = null;
+        using var guard = CancellationTokenSource.CreateLinkedTokenSource(token);
+        guard.CancelAfter(TimeSpan.FromSeconds(45)); // Bounds only the disposal wait; the completed disposal remains the oracle.
+        var owner = new OwnedMcpProcess(_files)
+        {
+            FindProcess = id =>
+            {
+                lookups.Add(id);
+                child.Kill(); // The process exits between the owner's exit check and its lookup.
+                child.WaitForExit();
+                return Process.GetProcessById(id);
+            },
+        };
+        try
+        {
+            foreach (var entry in owner.CreateEnvironment(launch))
+            {
+                child.StartInfo.Environment[entry.Key] = entry.Value;
+            }
+            child.Start();
+            childExit = child.WaitForExitAsync(CancellationToken.None); // Independent evidence survives owner disposal.
+            stdout = child.StandardOutput.ReadToEndAsync(token);
+            stderr = child.StandardError.ReadToEndAsync(token);
+            await owner.StartAsync(launch, token);
+            root = Process.GetProcessById(owner.ProcessId);
+            rootExit = root.WaitForExitAsync(CancellationToken.None); // The test owns its backstop independently.
+            await Assert.That(owner.ObserveOwnedExecutables().Keys).Contains(child.Id);
+            await Assert.That(child.HasExited).IsFalse();
+            await owner.DisposeAsync().AsTask().WaitAsync(guard.Token);
+            await Assert.That(lookups).IsEquivalentTo([child.Id], CollectionOrdering.Matching);
+            await Assert.That(child.HasExited).IsTrue();
+            await Assert.That(root.HasExited).IsTrue();
+            await Assert.That(_files.Directory.Exists(launch.OwnedRoot)).IsFalse();
+        }
+        finally
+        {
+            try
+            {
+                if (root is not null && !root.HasExited)
+                {
+                    root.Kill(entireProcessTree: true);
+                }
+                if (childExit is not null && !child.HasExited)
+                {
+                    child.Kill();
+                }
+                await Task.WhenAll(childExit ?? Task.CompletedTask, stdout, stderr, rootExit ?? Task.CompletedTask)
+                    .WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None); // Backstop cleanup must finish after caller cancellation.
+            }
+            finally
+            {
+                root?.Dispose();
+                if (_files.Directory.Exists(launch.OwnedRoot))
+                {
+                    _files.Directory.Delete(launch.OwnedRoot, recursive: true);
+                }
+            }
+        }
+    }
+
+    [Test]
     public async Task StartAsync_Should_Retain_Complete_Redacted_Acquisition_Diagnostics(CancellationToken token)
     {
         var launch = DiagnosticLaunch(">&2 echo first& >&2 echo NuGet TOKEN=synthetic& >&2 echo last", "printf '%s\n' first 'NuGet TOKEN=synthetic' last >&2");

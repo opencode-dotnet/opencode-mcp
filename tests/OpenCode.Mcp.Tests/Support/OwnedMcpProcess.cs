@@ -58,6 +58,9 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
     /// <summary>Gets the child's recorded protocol observations.</summary>
     public WireTranscript Transcript { get; } = new();
 
+    /// <summary>Finds a running process by id; tests replace it to reach an exit between the check and the lookup.</summary>
+    internal Func<int, Process> FindProcess { get; init; } = Process.GetProcessById;
+
     internal RecordingDuplexStream StandardInput => _input ?? throw new InvalidOperationException("The child has not started.");
     internal bool HasExited => _process.HasExited;
     internal int ProcessId => _process.Id;
@@ -343,7 +346,7 @@ internal sealed partial class OwnedMcpProcess : IAsyncDisposable
             {
                 if (!process.HasExited)
                 {
-                    using var current = Process.GetProcessById(process.Id);
+                    using var current = FindProcess(process.Id);
                     if (current.StartTime != identity)
                     {
                         throw new InvalidOperationException("An owned PID was reused; retained root: " + _root);
