@@ -63,10 +63,12 @@ Each release has one archive per runtime, `opencode-mcp-<version>-<rid>.zip` for
 compare its SHA-256 with `SHA256SUMS`, extract it and run `opencode-mcp`. The install scripts below
 do the same and also place the command.
 
-Preview binaries are not signed with a publisher identity. On macOS, a browser download can carry
-the quarantine attribute and Gatekeeper can block the command; after verifying the download, remove
-it from the extracted command with `xattr -d com.apple.quarantine ./opencode-mcp`. On Windows,
-SmartScreen can warn about a downloaded archive.
+Preview binaries are not signed with a publisher identity. The macOS command is ad hoc signed and
+not notarized. On macOS, an archive that a browser downloads carries the quarantine attribute, and
+the extracted command keeps it, also when `tar` extracts it. Gatekeeper then blocks the command and
+shows a prompt. After you verify the download, remove the attribute from the extracted command
+before you run it: `xattr -d com.apple.quarantine ./opencode-mcp`. A download with `curl` has no
+quarantine attribute. On Windows, SmartScreen can warn about a downloaded archive.
 
 ## Install scripts
 
