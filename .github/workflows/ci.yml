@@ -169,10 +169,17 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
+    permissions:
+      contents: read
+      checks: write
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2025, ubuntu-24.04, macos-15]
+        include:
+          - { os: windows-2025, badge: windows }
+          - { os: ubuntu-24.04, badge: linux }
+          - { os: macos-15, badge: macos }
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -231,6 +238,52 @@ jobs:
           $ErrorActionPreference = 'Stop'
           dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --treenode-filter "/*/*/*/*[Category!=Package]" --list-tests
           exit $LASTEXITCODE
+
+      - name: Publish test results
+        id: test-results
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        if: success() || failure()
+        # A fork pull request has no checks permission; let it fail without failing the run.
+        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        with:
+          name: "Test Results (${{ matrix.badge }})"
+          path: "artifacts/test-results/**/*.trx"
+          reporter: dotnet-trx
+          path-replace-backslashes: true
+          fail-on-error: true
+
+      # The test badge is status only: posting never fails CI. The tool exits 0 on a failed post,
+      # and continue-on-error covers the pre-flight checks too. A failing master run still posts its
+      # counts. The composite action lives under .github/workflows/ in its repository, where a
+      # remote step reference is refused, so the pinned commit is checked out and used by local path.
+      - name: Checkout BadgeSmith action
+        if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push'
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          repository: localstack-dotnet/badge-smith
+          # The commit the live api.localstackfor.net deployment runs, so the signing tool and the
+          # server stay in step.
+          ref: bc7ed07860ec4b0e702add6370c2636daccb2adf
+          path: .badge-smith
+          persist-credentials: false
+
+      - name: Update test badge via BadgeSmith API
+        if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push'
+        continue-on-error: true
+        uses: ./.badge-smith/.github/workflows/update-test-badge
+        with:
+          platform: ${{ matrix.badge }}
+          test_passed: '${{ steps.test-results.outputs.passed || 0 }}'
+          test_failed: '${{ steps.test-results.outputs.failed || 0 }}'
+          test_skipped: '${{ steps.test-results.outputs.skipped || 0 }}'
+          test_url_html: ${{ steps.test-results.outputs.url_html || '' }}
+          commit_sha: '${{ github.sha }}'
+          run_id: '${{ github.run_id }}'
+          repository: '${{ github.repository }}'
+          server_url: '${{ github.server_url }}'
+          api_base_url: 'https://api.localstackfor.net'
+          hmac_secret: '${{ secrets.TESTDATASECRET }}'
 
       - name: Upload test results
         if: always()
