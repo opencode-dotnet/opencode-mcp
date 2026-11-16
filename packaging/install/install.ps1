@@ -375,7 +375,7 @@ function Invoke-InstallerInstall {
     $state.Phase = 'staging'
     $staging = Join-Path $state.Private ('staging-' + [guid]::NewGuid().ToString('N'))
     $state.Staging = $staging
-    Expand-Archive -LiteralPath (Join-Path $state.Work $archive) -DestinationPath $staging
+    Expand-Archive -LiteralPath (Join-Path $state.Work $archive) -DestinationPath $staging -ErrorAction Stop
     if (-not [IO.File]::Exists((Join-Path $staging 'opencode-mcp.exe'))) { throw 'Native command is absent.' }
     $inventory = @(Get-InstallerInventory $staging)
     if (($inventory -join "`n") -cne (@(Get-InstallerInventory $staging) -join "`n")) { throw 'Staged inventory changed.' }
