@@ -137,6 +137,11 @@ function Get-InstallerOwnership {
             }
             if ($complete) { Invoke-InstallerOperation { [IO.Directory]::Move($removing[0].FullName, $current) } }
             else {
+                $record = @(Get-InstallerPathRecord)
+                if ($record.Count) {
+                    $path = Get-InstallerUserPath
+                    if (@(([string]$path.Value).Split(';') | Where-Object { [string]::Equals($_, $record[0], [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { Get-InstallerPathOwnership }
+                }
                 Invoke-InstallerOperation { [IO.Directory]::Delete($removing[0].FullName, $true) }
                 $removing = @()
             }
