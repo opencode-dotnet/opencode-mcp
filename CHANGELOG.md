@@ -8,6 +8,7 @@
 
 - Windows installation recovers uninstalls interrupted after moving aside the payload, part-way through deleting it, or after deleting it but before removing its records, and removes verified leftover staging, previous, temporary and rolled-back removing directories on the next run.
 - Windows installation stops at extraction of a corrupt release archive with the staging failure diagnostic instead of printing raw extraction errors.
+- Under Windows PowerShell 5.1, a file that the installer cannot read for its SHA-256 check stops the run at that read with the installer's failure diagnostic instead of printing raw read errors.
 - A Windows PATH update that fails before changing the registry now reports only that failure, not a cleanup failure as well.
 - Windows installation checks platform support and prerequisites before resolving installation and asset paths.
 - Windows install rollback and cleanup get a fresh sharing-violation retry budget, and command access checks detect a command that starts during the check.
