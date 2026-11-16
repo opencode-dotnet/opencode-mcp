@@ -7,6 +7,7 @@
 - Windows installation recovers uninstalls interrupted after moving aside a complete payload or after deleting it but before removing its records, and removes verified leftover staging, previous and temporary directories on the next run.
 - Windows install rollback and cleanup get a fresh sharing-violation retry budget, and command access checks detect a command that starts during the check.
 - Windows installation checks platform support and prerequisites before resolving installation and asset paths.
+- A Windows PATH update that fails before changing the registry now reports only that failure, not a cleanup failure as well.
 
 ## [0.1.0-preview.2] - 2026-11-15
 
