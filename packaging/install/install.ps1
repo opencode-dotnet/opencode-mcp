@@ -121,7 +121,7 @@ function Get-InstallerOwnership {
     foreach ($entry in Get-ChildItem -LiteralPath $state.Private -Force) {
         if ($entry.Name -cin @('owner','current','inventory','path.record')) { continue }
         if ($entry.PSIsContainer -and -not ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            if ($present -and $entry.Name -cmatch '\A(staging|previous|temporary)-[0-9a-f]{32}\z') { $leftovers += $entry; continue }
+            if ($present -and $entry.Name -cmatch '\A(staging|previous|temporary|removing)-[0-9a-f]{32}\z') { $leftovers += $entry; continue }
             if (-not $present -and $entry.Name -cmatch '\Aremoving-[0-9a-f]{32}\z') { $removing += $entry; continue }
         }
         $state.Refused = $true; throw "opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$($entry.Name)."

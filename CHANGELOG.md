@@ -5,7 +5,7 @@
 ### Fixed
 
 - Windows installation stops at extraction of a corrupt release archive with the staging failure diagnostic instead of printing raw extraction errors.
-- Windows installation recovers uninstalls interrupted after moving aside the payload, part-way through deleting it, or after deleting it but before removing its records, and removes verified leftover staging, previous and temporary directories on the next run.
+- Windows installation recovers uninstalls interrupted after moving aside the payload, part-way through deleting it, or after deleting it but before removing its records, and removes verified leftover staging, previous, temporary and rolled-back removing directories on the next run.
 - Windows install rollback and cleanup get a fresh sharing-violation retry budget, and command access checks detect a command that starts during the check.
 - Windows installation checks platform support and prerequisites before resolving installation and asset paths.
 - A Windows PATH update that fails before changing the registry now reports only that failure, not a cleanup failure as well.

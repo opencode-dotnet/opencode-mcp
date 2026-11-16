@@ -673,8 +673,8 @@ A running command can make the first rename fail with `Installation failed durin
 nothing is stopped and the old installation remains intact. Individual activation surfaces are
 replaced atomically; this is not a crash-atomic transaction across filesystem state and user PATH.
 An operation failure precedes any cleanup failure, which names retained owned storage. The next
-Windows run removes retained direct `.opencode-mcp` directories named `staging-`, `previous-` or
-`temporary-` followed by 32 lowercase hexadecimal characters, after verifying the current payload
+Windows run removes retained direct `.opencode-mcp` directories named `staging-`, `previous-`,
+`temporary-` or `removing-` followed by 32 lowercase hexadecimal characters, after verifying the current payload
 and intact ownership records; other unexpected entries are refused.
 
 A same-version, byte-identical installation is idempotent. Explicit versions select that exact
