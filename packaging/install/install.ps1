@@ -207,9 +207,10 @@ function Invoke-InstallerPathAddition {
     $current = Get-InstallerUserPath
     if (@(([string]$current.Value).Split(';') | Where-Object { $_ -ieq $token }).Count -gt 0) { return }
     $state.PathOriginallyAbsent = $null -eq $current.Value
-    $state.PathWritten = $true
     $value = if ([string]::IsNullOrEmpty($current.Value)) { $token } else { $current.Value + ';' + $token }
     Invoke-InstallerPathWrite $value $current.Kind
+    # Rollback owns the PATH token only once the registry write has succeeded.
+    $state.PathWritten = $true
     $absent = if ($state.PathOriginallyAbsent) { 'absent' } else { 'present' }
     [IO.File]::WriteAllLines((Join-Path $state.Work 'path.record'), @($token, $absent), (New-Object Text.UTF8Encoding $false))
     $state.PathOwned = $true

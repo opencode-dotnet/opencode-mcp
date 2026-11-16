@@ -927,7 +927,7 @@ jobs:
                 $pathBefore = Get-RawPath
                 if ($windows) {
                   $injected = $text.Replace('$key.SetValue(''Path'', $Value, $Kind)', 'throw ''PATH write failure.''')
-                  $lines = @('opencode-mcp: Installation failed during path.', "opencode-mcp: Cleanup failed; retained owned directory: $private.")
+                  $lines = @('opencode-mcp: Installation failed during path.')
                 } else {
                   $injected = $text.Replace('operation mv -f "$path_temp" "$path_file"', 'failed')
                   $lines = @('opencode-mcp: Installation failed during path.')
@@ -938,6 +938,7 @@ jobs:
                   Assert-Equal (Get-Inventory $private) $recordsBefore 'PATH-only write failure preserves every ownership record byte'
                   Assert-Equal (Test-Path -LiteralPath (Join-Path $private 'path.record')) $false 'Failed completion publishes no PATH ownership'
                   Assert-Equal (Get-RawPath) $pathBefore 'Failed PATH write preserves the raw PATH representation'
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Force | Where-Object { $_.Name -like 'temporary-*' } | ForEach-Object Name) @() 'Failed PATH write retains no temporary directory'
                   Assert-Installed
                 } finally {
                   if ($windows) { Get-ChildItem -LiteralPath $private -Filter 'temporary-*' -Directory | Remove-Item -Recurse -Force }
