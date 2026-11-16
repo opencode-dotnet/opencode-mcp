@@ -1434,7 +1434,7 @@ jobs:
                 }
               } }
               if ($windows) { Invoke-Case Recover_Removes_Only_Owned_Leftovers {
-                foreach ($prefix in @('previous','staging','temporary')) {
+                foreach ($prefix in @('previous','staging','temporary','removing')) {
                   $leftover = Join-Path $private ($prefix + '-' + [guid]::NewGuid().ToString('N'))
                   New-Item -ItemType Directory $leftover | Out-Null
                   [IO.File]::WriteAllText((Join-Path $leftover 'LICENSE'), 'retained owned storage')
@@ -1442,7 +1442,7 @@ jobs:
                   Assert-Equal (Test-Path -LiteralPath $leftover) $false 'Next run removes named owned storage'
                   Assert-Installed
                 }
-                foreach ($name in @('previous-notes', ('removing-' + [guid]::NewGuid().ToString('N')))) {
+                foreach ($name in @('previous-notes', 'removing-notes')) {
                   $foreign = Join-Path $private $name
                   New-Item -ItemType Directory $foreign | Out-Null
                   try {
