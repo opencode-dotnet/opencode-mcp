@@ -943,6 +943,27 @@ jobs:
                   if ($windows) { Get-ChildItem -LiteralPath $private -Filter 'temporary-*' -Directory | Remove-Item -Recurse -Force }
                 }
               }
+              if ($windows) { Invoke-Case Upgrade_Corrupt_Archive_Stops_During_Staging {
+                $corrupt = Join-Path $root 'corrupt'; New-Item -ItemType Directory $corrupt | Out-Null
+                $corruptArchive = Join-Path $corrupt "opencode-mcp-$alternate-$rid$suffix"
+                Copy-Item -LiteralPath (Join-Path $assets $archiveName) -Destination $corruptArchive
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                $zip = [IO.Compression.ZipFile]::Open($corruptArchive, 'Update')
+                try {
+                  $zip.GetEntry('opencode-mcp.exe').Delete()
+                  [void]$zip.CreateEntry('../opencode-mcp.exe')
+                } finally { $zip.Dispose() }
+                $hash = (Get-FileHash $corruptArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+                [IO.File]::WriteAllText((Join-Path $corrupt 'SHA256SUMS'), "$hash  opencode-mcp-$alternate-$rid$suffix`n")
+                $result = Invoke-Installer $upgrade $corrupt
+                Assert-Result $result 1 @('opencode-mcp: Installation failed during staging.')
+                Assert-Equal $result.Stdout '' 'Archive failure writes nothing to stdout'
+                Assert-Equal $result.Stderr ("opencode-mcp: Installation failed during staging." + [Environment]::NewLine) 'Archive failure writes only the staging diagnostic to stderr'
+                Assert-Installed $version $expected
+                Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Force | ForEach-Object Name) @() 'Archive failure leaves no staging or temporary directory'
+                Assert-Equal @($result.Verbose | Where-Object { $_ -match '^VERBOSE: [^:]+: Can not process invalid archive entry ' }) @("VERBOSE: Microsoft.PowerShell.Commands.WriteErrorException: Can not process invalid archive entry '../opencode-mcp.exe'.") 'Verbose cause identifies the invalid archive entry'
+                Assert-Equal @($result.Verbose | Where-Object { $_ -match 'Native command is absent\.' }) @() 'Archive failure never reaches native-command validation'
+              } }
               Invoke-Case Upgrade_Selects_Complete_New_Payload {
                 Copy-Item -LiteralPath (Join-Path $assets $archiveName) -Destination (Join-Path $fixture "opencode-mcp-$alternate-$rid$suffix")
                 $alternatePayload = Join-Path $root 'alternate'; New-Item -ItemType Directory $alternatePayload | Out-Null
