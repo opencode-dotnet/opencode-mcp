@@ -1288,26 +1288,73 @@ jobs:
                 Assert-Equal (Test-Path -LiteralPath $private) $false 'Completed-removal recovery deletes owned records'
                 Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
               } }
-              if ($windows) { Invoke-Case Recover_Refuses_Partial_Removing_Payload {
+              if ($windows) { Invoke-Case Recover_Completes_Partial_Removing_Payload {
+                foreach ($recovery in @('uninstall','install')) {
+                  $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                  [IO.Directory]::Move((Join-Path $bin 'current'), $removing)
+                  [IO.File]::Delete((Join-Path $removing 'LICENSE'))
+                  $options = @(if ($recovery -ceq 'uninstall') { $uninstall })
+                  $lines = if ($recovery -ceq 'uninstall') { @("opencode-mcp: No owned installation: $bin") } else { @($installedMessage, 'opencode-mcp: PATH unchanged.') }
+                  Assert-Result (Invoke-Installer $options) 0 $lines
+                  Assert-Equal (Test-Path -LiteralPath $removing) $false 'Recovery removes the partial payload'
+                  if ($recovery -ceq 'uninstall') {
+                    Assert-Equal (Test-Path -LiteralPath $private) $false 'Recovery removes every old record and private storage'
+                    Assert-Equal (Test-Path -LiteralPath $bin) $false 'Recovery removes the empty installer-created directory'
+                    Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                  }
+                  Assert-Installed
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Force | Sort-Object Name | ForEach-Object Name) @('current','inventory','owner') 'Fresh install leaves only its new records'
+                }
+              } }
+              if ($windows) { Invoke-Case Recover_Completes_Empty_Removing_Payload {
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                [IO.Directory]::Move((Join-Path $bin 'current'), $removing)
+                Get-ChildItem -LiteralPath $removing -Force | Remove-Item -Recurse -Force
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: No owned installation: $bin")
+                Assert-Equal (Test-Path -LiteralPath $private) $false 'Empty-payload recovery removes every record and private storage'
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Empty-payload recovery removes its empty installation directory'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                Assert-Installed
+              } }
+              if ($windows) { Invoke-Case Recover_Uninstall_Completes_Partial_Delete {
+                Assert-Result (Invoke-Installer $addPath) 0 @("opencode-mcp: Already installed $version ($rid): $command", 'opencode-mcp: PATH updated for future login sessions.')
+                $point = 'Invoke-InstallerOperation { [IO.Directory]::Move($current, $removing) }'
+                Assert-Result (Invoke-Installer $uninstall $assets $bin $data (New-InterruptedUninstall $point)) 1 @('opencode-mcp: Installation failed during uninstall.')
+                $removing = @(Get-ChildItem -LiteralPath $private -Directory -Filter 'removing-*')
+                Assert-Equal $removing.Count 1 'Interruption retains exactly one payload'
+                [IO.File]::Delete((Join-Path $removing[0].FullName 'LICENSE'))
+                Assert-Equal (Get-RawPath) $recoveryPath 'Interruption retains the owned PATH entry'
+                Assert-Result (Invoke-Installer $uninstall) 0 @("opencode-mcp: No owned installation: $bin")
+                Assert-Equal (Get-RawPath) $before 'Partial-delete recovery reverses only its owned PATH entry'
+                Assert-Equal (Test-Path -LiteralPath $private) $false 'Partial-delete recovery removes all owned storage'
+                Assert-Equal (Test-Path -LiteralPath $bin) $false 'Partial-delete recovery removes its empty installation directory'
+                Assert-Result (Invoke-Installer @()) 0 @($installedMessage, 'opencode-mcp: PATH unchanged.')
+                Assert-Installed
+              } }
+              if ($windows) { foreach ($damage in @('Changed','Extra')) { Invoke-Case "Recover_Refuses_${damage}_Removing_Payload" {
                 $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
                 $current = Join-Path $bin 'current'
                 $license = [IO.File]::ReadAllBytes((Join-Path $current 'LICENSE'))
                 [IO.Directory]::Move($current, $removing)
-                [IO.File]::Delete((Join-Path $removing 'LICENSE'))
+                $changed = if ($damage -ceq 'Changed') { 'LICENSE' } else { 'unexpected' }
+                [IO.File]::WriteAllText((Join-Path $removing $changed), 'changed owned payload')
                 $retained = Get-Inventory $private
+                $pathBefore = Get-RawPath
                 $directories = @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object)
                 try {
                   Assert-Result (Invoke-Installer @()) 2 @("opencode-mcp: Installed files differ from the ownership record: .opencode-mcp/$(Split-Path $removing -Leaf).")
-                  Assert-Equal (Test-Path -LiteralPath $current) $false 'Partial payload is never published as current'
-                  Assert-Equal (Get-Item -LiteralPath $removing).Name (Split-Path $removing -Leaf) 'Partial payload stays in its named removing directory'
-                  Assert-Equal (Get-Inventory $private) $retained 'Refusal preserves partial payload and ownership record bytes'
+                  Assert-Equal (Test-Path -LiteralPath $current) $false 'Unverified payload is never published as current'
+                  Assert-Equal (Get-Item -LiteralPath $removing).Name (Split-Path $removing -Leaf) 'Unverified payload stays in its named removing directory'
+                  Assert-Equal (Get-Inventory $private) $retained 'Refusal preserves unverified payload and ownership record bytes'
+                  Assert-Equal (Get-RawPath) $pathBefore 'Refusal preserves raw PATH'
                   Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object) $directories 'Refusal preserves every retained directory'
                 } finally {
                   $payload = if (Test-Path -LiteralPath $removing) { $removing } else { $current }
+                  if ($damage -ceq 'Extra') { [IO.File]::Delete((Join-Path $payload 'unexpected')) }
                   [IO.File]::WriteAllBytes((Join-Path $payload 'LICENSE'), $license)
                   if ($payload -ceq $removing) { [IO.Directory]::Move($removing, $current) }
                 }
-              } }
+              } } }
               if ($windows) { Invoke-Case Recover_Reports_Removing_Payload_IO_Failure {
                 $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
                 $current = Join-Path $bin 'current'
