@@ -711,7 +711,7 @@ comes from the data directory; an explicit installation directory must contain t
 On Windows, an owner record with no current payload permits recovery of exactly one
 `removing-<32 lowercase hexadecimal characters>` directory with a complete, verified payload;
 a verified subset is deleted and record/PATH removal is completed, as when the payload was already deleted.
-Malformed PATH records or inventories refuse before any deletion. The owner record is removed last during uninstall.
+With a `removing-*` directory, a malformed PATH record or inventory refuses before anything is deleted. The owner record is removed last during uninstall.
 No owned installation means no change. On Windows, a running `opencode-mcp` command (a process whose
 executable is the installed command) is refused at once, without process termination, retry or elevation.
 On Windows only, a sharing violation on the installed command or on a directory the installer itself

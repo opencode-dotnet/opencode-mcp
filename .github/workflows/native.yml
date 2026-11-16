@@ -1379,6 +1379,39 @@ jobs:
                   if ($damage -ceq 'Malformed_Path_Record' -and (Test-Path -LiteralPath (Join-Path $private 'path.record'))) { [IO.File]::Delete((Join-Path $private 'path.record')) }
                 }
               } } }
+              if ($windows) { Invoke-Case Recover_Refuses_Duplicate_Path_Token_Removing_Payload {
+                $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
+                $current = Join-Path $bin 'current'
+                $license = [IO.File]::ReadAllBytes((Join-Path $current 'LICENSE'))
+                $pathBefore = Get-RawPath
+                $pathKind = if ($null -ne $pathBefore) { $userKey.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+                $caseFailure = $null
+                try {
+                  $presence = if ($null -eq $pathBefore) { 'absent' } else { 'present' }
+                  [IO.File]::WriteAllLines((Join-Path $private 'path.record'), @($current, $presence), (New-Object Text.UTF8Encoding $false))
+                  [IO.Directory]::Move($current, $removing)
+                  [IO.File]::Delete((Join-Path $removing 'LICENSE'))
+                  $userKey.SetValue('Path', "$pathBefore;$current;$current", $pathKind)
+                  $retained = Get-Inventory $private
+                  $duplicatedPath = Get-RawPath
+                  $directories = @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object)
+                  Assert-Result (Invoke-Installer @()) 2 @('opencode-mcp: PATH ownership is ambiguous: user-Path.')
+                  Assert-Equal (Test-Path -LiteralPath $current) $false 'Unverified payload is never published as current'
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Filter 'removing-*' | ForEach-Object Name) @((Split-Path $removing -Leaf)) 'Unverified payload stays in its named removing directory'
+                  Assert-Equal (Get-Inventory $private) $retained 'Refusal preserves unverified payload and ownership record bytes'
+                  Assert-Equal (Get-RawPath) $duplicatedPath 'Refusal preserves raw PATH'
+                  Assert-Equal @(Get-ChildItem -LiteralPath $private -Directory -Recurse -Force | ForEach-Object FullName | Sort-Object) $directories 'Refusal preserves every retained directory'
+                } catch { $caseFailure = $_; throw } finally {
+                  try {
+                    if ($null -eq $pathBefore) { $userKey.DeleteValue('Path', $false) } else { $userKey.SetValue('Path', $pathBefore, $pathKind) }
+                    if (Test-Path -LiteralPath $removing) {
+                      [IO.File]::WriteAllBytes((Join-Path $removing 'LICENSE'), $license)
+                      [IO.Directory]::Move($removing, $current)
+                    }
+                    [IO.File]::Delete((Join-Path $private 'path.record'))
+                  } catch { if (-not $caseFailure) { throw }; Write-Host $_ }
+                }
+              } }
               if ($windows) { Invoke-Case Recover_Reports_Removing_Payload_IO_Failure {
                 $removing = Join-Path $private ('removing-' + [guid]::NewGuid().ToString('N'))
                 $current = Join-Path $bin 'current'
