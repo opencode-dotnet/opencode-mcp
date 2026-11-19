@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.IO.Abstractions;
 using System.Text.Json;
@@ -14,9 +15,18 @@ internal sealed class NativeProcessSnapshot(IFileSystem files, INativeProcessRun
     {
         files.Directory.CreateDirectory(directory);
         var commandLines = new Dictionary<int, string?>();
-        var unavailable = OperatingSystem.IsWindows() ? await QueryCommandLinesAsync(commandLines, token).ConfigureAwait(false) : null;
-        var json = await new NativeProcesses(runner, root).RequireAsync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", Query],
-            new Dictionary<string, string?>(StringComparer.Ordinal), token, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+        string? unavailable;
+        string json;
+        try
+        {
+            unavailable = OperatingSystem.IsWindows() ? await QueryCommandLinesAsync(commandLines, token).ConfigureAwait(false) : null;
+            json = await new NativeProcesses(runner, root).RequireAsync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", Query],
+                new Dictionary<string, string?>(StringComparer.Ordinal), token, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+        }
+        catch (Win32Exception error) when (error.NativeErrorCode == 2)
+        {
+            throw new InvalidOperationException("Missing prerequisite: PowerShell 7 (pwsh) on PATH.", error);
+        }
         var now = timestamp();
         using var processes = JsonDocument.Parse(json);
         var lines = processes.RootElement.EnumerateArray().OrderByDescending(static process => Cpu(process))

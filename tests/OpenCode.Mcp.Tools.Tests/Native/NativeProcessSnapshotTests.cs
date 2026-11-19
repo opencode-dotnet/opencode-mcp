@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json;
 using OpenCode.Mcp.Tools.Native;
@@ -14,6 +15,52 @@ public sealed class NativeProcessSnapshotTests
 {
     private const string SnapshotQuery = "$ErrorActionPreference='Stop'; Get-Process | Select-Object Id,ProcessName,CPU,WorkingSet64,@{Name='StartTime';Expression={try {$_.StartTime.ToUniversalTime().ToString('O')} catch {$null}}},@{Name='CommandLine';Expression={if (-not $IsWindows) {$_.CommandLine}}} | ConvertTo-Json -Compress";
     private const string CommandLineQuery = "$ErrorActionPreference='Stop'; Get-CimInstance Win32_Process -Property ProcessId,CommandLine -OperationTimeoutSec 30 | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(30_000)]
+    public async Task RecordAsync_Should_Name_Missing_PowerShell(bool afterCommandLineQuery, CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var missing = new Win32Exception(2);
+        var runner = new FakeNativeProcessRunner
+        {
+            Response = (request, _) => afterCommandLineQuery && request.Arguments[^1] == CommandLineQuery
+                ? Task.FromResult(new NativeProcessResult(0, "[]", "")) : throw missing,
+        };
+        var root = files.Path.Combine(files.Path.GetTempPath(), "snapshot");
+        var error = await Assert.That(() => new NativeProcessSnapshot(files, runner, files.Path.GetTempPath(), TextWriter.Null)
+            .RecordAsync(root, () => DateTimeOffset.UtcNow, token)).ThrowsExactly<InvalidOperationException>();
+        var failure = await Assert.That(error).IsNotNull();
+        await Assert.That(failure.Message).IsEqualTo("Missing prerequisite: PowerShell 7 (pwsh) on PATH.");
+        await Assert.That(failure.InnerException).IsSameReferenceAs(missing);
+        await Assert.That(files.File.Exists(files.Path.Combine(root, "processes.txt"))).IsFalse();
+        string[] queries = [OperatingSystem.IsWindows() ? CommandLineQuery : SnapshotQuery];
+        if (OperatingSystem.IsWindows() && afterCommandLineQuery)
+        {
+            queries = [CommandLineQuery, SnapshotQuery];
+        }
+        await Assert.That(runner.Calls.Select(static call => call.FileName)).IsEquivalentTo(queries.Select(static _ => "pwsh"), CollectionOrdering.Matching);
+        await Assert.That(runner.Calls.Select(static call => call.Arguments[^1])).IsEquivalentTo(queries, CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task RecordAsync_Should_Propagate_PowerShell_Access_Denied(CancellationToken token)
+    {
+        var files = new MockFileSystem();
+        var denied = new Win32Exception(5);
+        var runner = new FakeNativeProcessRunner { Response = (_, _) => throw denied };
+        var root = files.Path.Combine(files.Path.GetTempPath(), "snapshot");
+        var error = await Assert.That(() => new NativeProcessSnapshot(files, runner, files.Path.GetTempPath(), TextWriter.Null)
+            .RecordAsync(root, () => DateTimeOffset.UtcNow, token)).ThrowsExactly<Win32Exception>();
+        await Assert.That(error).IsSameReferenceAs(denied);
+        await Assert.That(files.File.Exists(files.Path.Combine(root, "processes.txt"))).IsFalse();
+        await Assert.That(runner.Calls.Select(static call => call.FileName)).IsEquivalentTo(["pwsh"], CollectionOrdering.Matching);
+        await Assert.That(runner.Calls.Select(static call => call.Arguments[^1]))
+            .IsEquivalentTo([OperatingSystem.IsWindows() ? CommandLineQuery : SnapshotQuery], CollectionOrdering.Matching);
+    }
 
     [Test]
     [Arguments("timeout", "command lines unavailable: CIM query timed out after 45 s")]
