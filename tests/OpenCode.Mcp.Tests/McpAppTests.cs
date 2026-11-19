@@ -1,6 +1,5 @@
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Options;
@@ -9,6 +8,7 @@ using ModelContextProtocol.Server;
 using NSubstitute;
 using OpenCode.Mcp.Hosting;
 using OpenCode.Mcp.Hosting.Models;
+using OpenCode.Mcp.Tests.Support;
 using OpenTelemetry.Logs;
 using TUnit.Assertions.Enums;
 
@@ -17,6 +17,7 @@ namespace OpenCode.Mcp.Tests;
 /// <summary>Checks both transports through the shared production composition.</summary>
 public sealed class McpAppTests
 {
+    private const string ProductName = "opencode-mcp";
     private const string InvalidSelector = "Select 'stdio' or 'http' once using '--transport <value>'. (Parameter 'arguments')";
 
     /// <summary>The caller's writer receives a selection refusal before host composition begins.</summary>
@@ -48,7 +49,7 @@ public sealed class McpAppTests
     [Arguments(McpTransport.Http)]
     public async Task Configure_Should_Register_Product_Identity_And_Protocol_When_Transport_Is_Selected(McpTransport mode)
     {
-        var builder = CreateBuilder();
+        var builder = new McpHostBuilder().Build();
         McpApp.Configure(builder, mode);
         using var services = builder.Services.BuildServiceProvider();
         var identity = services.GetRequiredService<ProductIdentity>();
@@ -58,10 +59,10 @@ public sealed class McpAppTests
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()).IsNotNull();
         var expectedVersion = attribute.InformationalVersion.Split('+')[0];
 
-        await Assert.That(identity.Name).IsEqualTo("opencode-mcp");
+        await Assert.That(identity.Name).IsEqualTo(ProductName);
         await Assert.That(identity.Version).IsEqualTo(expectedVersion);
         await Assert.That(services.GetRequiredService<ProductIdentity>()).IsSameReferenceAs(identity);
-        await Assert.That(advertised.Name).IsEqualTo("opencode-mcp");
+        await Assert.That(advertised.Name).IsEqualTo(ProductName);
         await Assert.That(advertised.Version).IsEqualTo(expectedVersion);
         await Assert.That(options.ProtocolVersion).IsEqualTo("2026-07-28");
     }
@@ -72,7 +73,7 @@ public sealed class McpAppTests
     [Arguments(McpTransport.Http)]
     public async Task Configure_Should_Register_Only_Bootstrap_Ping_When_Transport_Is_Selected(McpTransport mode)
     {
-        var builder = CreateBuilder();
+        var builder = new McpHostBuilder().Build();
         McpApp.Configure(builder, mode);
         using var services = builder.Services.BuildServiceProvider();
         var options = services.GetRequiredService<IOptions<McpServerOptions>>().Value;
@@ -95,7 +96,7 @@ public sealed class McpAppTests
     [Test]
     public async Task Configure_Should_Select_Stateless_Http_When_Http_Is_Requested()
     {
-        var builder = CreateBuilder();
+        var builder = new McpHostBuilder().Build();
         builder.Services.Configure<HttpServerTransportOptions>(static options =>
             options.SessionMode = HttpServerSessionMode.Stateful);
         McpApp.Configure(builder, McpTransport.Http);
@@ -112,7 +113,7 @@ public sealed class McpAppTests
     public async Task Configure_Should_Preserve_OpenTelemetry_And_Route_Console_To_Standard_Error_When_Transport_Is_Selected(
         McpTransport mode)
     {
-        var builder = CreateBuilder();
+        var builder = new McpHostBuilder().Build();
         using var oldProvider = Substitute.For<ILoggerProvider>();
         builder.Logging.AddProvider(oldProvider);
         McpApp.Configure(builder, mode);
@@ -130,7 +131,7 @@ public sealed class McpAppTests
     [Test]
     public async Task Configure_Should_Apply_Overrides_Last_When_Logging_Provider_Is_Replaced()
     {
-        var builder = CreateBuilder();
+        var builder = new McpHostBuilder().Build();
         using var replacement = Substitute.For<ILoggerProvider>();
         McpApp.Configure(builder, McpTransport.Stdio, services => services.AddSingleton(replacement));
         using var services = builder.Services.BuildServiceProvider();
@@ -147,7 +148,7 @@ public sealed class McpAppTests
     [Test]
     public async Task Configure_Should_Apply_Overrides_Last_When_Transport_Options_Are_Replaced()
     {
-        var builder = CreateBuilder();
+        var builder = new McpHostBuilder().Build();
         McpApp.Configure(builder, McpTransport.Http, static services =>
             services.Configure<HttpServerTransportOptions>(static options =>
                 options.SessionMode = HttpServerSessionMode.Stateful));
@@ -165,10 +166,4 @@ public sealed class McpAppTests
         await Assert.That(() => McpApp.Configure(null!, McpTransport.Stdio))
             .ThrowsExactly<ArgumentNullException>().WithParameterName("builder");
     }
-
-    private static HostApplicationBuilder CreateBuilder() => new(new HostApplicationBuilderSettings
-    {
-        DisableDefaults = true,
-        ApplicationName = typeof(McpApp).Assembly.GetName().Name,
-    });
 }
