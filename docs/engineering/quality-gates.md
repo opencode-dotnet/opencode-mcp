@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-16
+Date: 2026-11-20
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -99,6 +99,7 @@ bundle into the shared `%USERPROFILE%/.aspire` directory. Set it before the firs
 it until all tests finish because generated metadata retains its bundle paths. Set `ASPIRE_HOME`
 to an owned directory named `opencode-mcp-aspire-home` under the system temp folder.
 
+The process-snapshot test requires PowerShell 7 (`pwsh`) on `PATH` on every operating system.
 Before a pull request opens, run the local check from the repository root. It catches failures
 before they cost a CI run. A current handoff may add scope-specific checks but cannot weaken it.
 The local check builds with the analyzer wall on and runs every test module of the solution:
