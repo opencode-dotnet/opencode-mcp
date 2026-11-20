@@ -284,7 +284,7 @@ public sealed class OwnedAppHostTests
             builder.Eventing.Subscribe<BeforeStartEvent>(async (_, token) =>
             {
                 await caller.CancelAsync();
-                await Task.Delay(Timeout.Infinite, token);
+                await WaitForCancellationAsync(token);
             });
 
             await Assert.That(_files.Directory.Exists(owner.OwnedRoot)).IsTrue();
@@ -304,12 +304,13 @@ public sealed class OwnedAppHostTests
         var builder = await CreateBuilderAsync(wholeTest.Token);
         await using var owner = new OwnedAppHost(_files, builder);
         var expected = new IOException("AppHost service disposal failed.");
+        // Root DI DisposeAsync stops subsequent in-process root disposals early; BeforeStartEvent blocks before DCP or product launch.
         builder.Services.AddSingleton(_ => new FailingDisposable(expected));
         builder.Eventing.Subscribe<BeforeStartEvent>(async (starting, token) =>
         {
             _ = starting.Services.GetRequiredService<FailingDisposable>();
             await caller.CancelAsync();
-            await Task.Delay(Timeout.Infinite, token);
+            await WaitForCancellationAsync(token);
         });
 
         try
@@ -364,7 +365,7 @@ public sealed class OwnedAppHostTests
                 handles = [.. owner.ProductProcesses.Select(static process => process.SafeHandle)];
                 await Assert.That(handles).IsNotEmpty();
                 await caller.CancelAsync();
-                await Task.Delay(Timeout.Infinite, token);
+                await WaitForCancellationAsync(token);
             });
 
             try
@@ -434,6 +435,9 @@ public sealed class OwnedAppHostTests
             }
         });
     }
+
+    private static Task WaitForCancellationAsync(CancellationToken token) =>
+        new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task.WaitAsync(token);
 
     private static async Task AssertCallerCancellationAsync(OwnedAppHost owner, CancellationToken caller)
     {

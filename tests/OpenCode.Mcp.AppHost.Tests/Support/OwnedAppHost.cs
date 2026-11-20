@@ -69,8 +69,10 @@ internal sealed class OwnedAppHost : IAsyncDisposable
     /// <summary>Gets the HTTP authority allocated at the start of the readiness phase.</summary>
     public Uri Endpoint => _endpoint ?? throw new InvalidOperationException("The product endpoint has not been allocated.");
 
+    /// <summary>Waits until startup enters the product readiness phase.</summary>
     internal Task WaitForReadinessEntryAsync(CancellationToken token) => _readinessEntered.Task.WaitAsync(token);
 
+    /// <summary>Waits until the product process is retained for cleanup.</summary>
     internal Task WaitForProductObservationAsync(CancellationToken token) => _productObserved.Task.WaitAsync(token);
 
     /// <summary>Gets a read-only snapshot of retained product process handles.</summary>
