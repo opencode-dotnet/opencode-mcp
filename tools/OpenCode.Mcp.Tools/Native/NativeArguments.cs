@@ -6,7 +6,7 @@ internal static class NativeArguments
     {
         if (arguments.Count == 0)
         {
-            throw new InvalidOperationException("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root, assets, publication or snapshot.");
+            throw new InvalidOperationException("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root, assets, publication, snapshot or merge-group-reuse.");
         }
         var operation = arguments[0];
         string[] required = operation switch
@@ -23,6 +23,7 @@ internal static class NativeArguments
             "assets" => ["--receipts", "--evidence", "--output", "--version"],
             "publication" => ["--receipts", "--feed", "--assets", "--version", "--commit"],
             "snapshot" => ["--output"],
+            "merge-group-reuse" => ["--facts", "--output"],
             _ => throw new InvalidOperationException("Arguments: unknown command " + operation + "."),
         };
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -51,7 +52,8 @@ internal static class NativeArguments
         var command = new NativeCommand(operation, values.GetValueOrDefault("--rid"), values.GetValueOrDefault("--output"),
             values.GetValueOrDefault("--publish-directory"), values.GetValueOrDefault("--path"), values.GetValueOrDefault("--receipts"),
             GithubOutput: values.GetValueOrDefault("--github-output"), Evidence: values.GetValueOrDefault("--evidence"), Feed: values.GetValueOrDefault("--feed"),
-            Version: values.GetValueOrDefault("--version"), Assets: values.GetValueOrDefault("--assets"), Commit: values.GetValueOrDefault("--commit"));
+            Version: values.GetValueOrDefault("--version"), Assets: values.GetValueOrDefault("--assets"), Commit: values.GetValueOrDefault("--commit"),
+            Facts: values.GetValueOrDefault("--facts"));
         return values.TryGetValue("--manifest", out var manifest) ? command with { Manifest = manifest } : command;
     }
 }

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO.Abstractions;
 using System.Text.Json;
 using System.Xml;
+using OpenCode.Mcp.Tools.Ci;
 using OpenCode.Mcp.Tools.Native.Abstractions;
 using OpenCode.Mcp.Tools.Packaging;
 
@@ -20,6 +21,13 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             {
                 await new NativeProcessSnapshot(files, runner, root, output).RecordAsync(
                     files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing snapshot output."), root), (clock ?? TimeProvider.System).GetUtcNow, token).ConfigureAwait(false);
+                return 0;
+            }
+            if (command.Operation == "merge-group-reuse")
+            {
+                var facts = files.Path.GetFullPath(command.Facts ?? throw new InvalidOperationException("Missing reuse facts directory."), root);
+                var outputFile = files.Path.GetFullPath(command.Output ?? throw new InvalidOperationException("Missing reuse output."), root);
+                await new MergeGroupReuseRunner(files, output).RunAsync(facts, outputFile, token).ConfigureAwait(false);
                 return 0;
             }
             var manifest = await new NativeManifestStore(files).ReadAsync(files.Path.GetFullPath(command.Manifest, root), token).ConfigureAwait(false);
@@ -56,12 +64,7 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             NativeDiagnostics.Refuse(NativePublishPolicy.HostDiagnostics(rid, host.Os, host.OsArchitecture, host.ProcessArchitecture));
             if (command.Operation == "inspect")
             {
-                var processes = new NativeProcesses(runner, root);
-                var toolchain = await new NativePrerequisites(files, processes).CheckAsync(rid, host, token).ConfigureAwait(false);
-                var inspection = await new NativeInspector(files, processes).InspectAsync(rid,
-                    files.Path.GetFullPath(command.Path ?? throw new InvalidOperationException("Missing inspection path."), root), toolchain, token).ConfigureAwait(false);
-                await output.WriteLineAsync(inspection.AsMemory(), token).ConfigureAwait(false);
-                return 0;
+                return await InspectAsync(command, rid, host, token).ConfigureAwait(false);
             }
             var publishDirectory = command.PublishDirectory is null ? null : files.Path.GetFullPath(command.PublishDirectory, root);
             var destination = publishDirectory is null ? files.Path.GetFullPath(command.Evidence ?? command.Output ?? files.Path.Combine("artifacts", "native", rid), root)
@@ -88,6 +91,16 @@ internal sealed class NativeApplication(IFileSystem files, INativeProcessRunner 
             await errors.WriteLineAsync(diagnostic.AsMemory(), CancellationToken.None).ConfigureAwait(false);
             return 2;
         }
+    }
+
+    private async Task<int> InspectAsync(NativeCommand command, string rid, NativeHost host, CancellationToken token)
+    {
+        var processes = new NativeProcesses(runner, host.WorkingDirectory);
+        var toolchain = await new NativePrerequisites(files, processes).CheckAsync(rid, host, token).ConfigureAwait(false);
+        var inspection = await new NativeInspector(files, processes).InspectAsync(rid,
+            files.Path.GetFullPath(command.Path ?? throw new InvalidOperationException("Missing inspection path."), host.WorkingDirectory), toolchain, token).ConfigureAwait(false);
+        await output.WriteLineAsync(inspection.AsMemory(), token).ConfigureAwait(false);
+        return 0;
     }
 
     private async Task RunBuildAsync(string operation, NativeBuildRequest request, string? publishDirectory, CancellationToken token)

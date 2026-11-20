@@ -1,6 +1,6 @@
 # Repository Workflow
 
-Date: 2026-11-14
+Date: 2026-11-20
 
 Canonical working agreements for research, implementation, temporary work, verification, and Git
 history.
@@ -152,9 +152,10 @@ operational state in `../ROADMAP.md`; the rules below are the contract they impl
   requires the queue and the `CI result` check, for administrators too.
 - A pull request joins the queue on the maintainer's approval, once the `CI result` check of its
   own head is green. The queue tests it again on top of current `master` and the entries ahead of
-  it, and merges only on that green: a green result from an older base is not enough. After the
-  merge, the work is done when the CI the merge commit triggers on `master` is green; a merge of
-  only Markdown or `LICENSE` triggers none, and its queue result stands.
+  it, except when [CI proves the same trees can reuse the pull request's result](quality-gates.md#continuous-integration).
+  The queue merges only on a green queue result. After the merge, the work is done when the CI
+  the merge commit triggers on `master` is green. A merge of only Markdown or `LICENSE` triggers
+  none, and its queue result stands.
 - CI runs on every pull request and queue entry. A change that touches only Markdown or `LICENSE`
   passes without the build and test jobs. Never put `[skip ci]` in a pull request's commits: the
   required check would not report, and the pull request could not join the queue.
