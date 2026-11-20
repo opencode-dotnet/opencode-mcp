@@ -66,4 +66,3 @@ including the Linux clean-container proof. Verification evidence belongs in pull
 - **Preview binaries are not signed.** On macOS, Gatekeeper can hold a command extracted from a
   browser download until its quarantine attribute is removed. Windows SmartScreen can warn. The
   README says how to continue after you verify the download.
-- **AppHost cancellation coverage is incomplete.** Cancellation during running startup is not covered.
