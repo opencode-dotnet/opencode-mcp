@@ -13,20 +13,26 @@ public sealed class NativeContainerOwnerTests
 
     [Test]
     [Timeout(30_000)]
-    public async Task CleanupAsync_Should_Poll_Until_An_In_Progress_Removal_Is_Missing(CancellationToken token)
+    public async Task CleanupAsync_Should_Poll_Every_250_Milliseconds_Until_An_In_Progress_Removal_Is_Missing(CancellationToken token)
     {
-        var inspections = 0;
-        _runner.Response = (request, _) =>
+        var calls = 0;
+        _runner.Response = (request, _) => Task.FromResult(++calls switch
         {
-            if (request.Arguments[0] == "rm")
-            {
-                return Task.FromResult(RemovalInProgress());
-            }
-            return Task.FromResult(request.Arguments[1] == "inspect" && ++inspections == 1
-                ? new NativeProcessResult(0, "[]", "") : MissingOrListing(request));
-        };
-        var owner = Owner();
-        var errors = await owner.CleanupAsync().WaitAsync(token);
+            1 => RemovalInProgress(),
+            2 => new NativeProcessResult(0, "[]", ""),
+            _ => MissingOrListing(request),
+        });
+        var clock = new ManualTimeProvider();
+        var owner = Owner(clock);
+        var cleanupTask = owner.CleanupAsync();
+
+        // Completed runner responses keep cleanup synchronous until the poll timer is registered.
+        await Assert.That(clock.ArmedTimerCount).IsEqualTo(2);
+        await Assert.That(clock.Advance(TimeSpan.FromMilliseconds(249))).IsEqualTo(0);
+        await Assert.That(_runner.Calls.Count).IsEqualTo(2);
+        await Assert.That(cleanupTask.IsCompleted).IsFalse();
+        await Assert.That(clock.Advance(TimeSpan.FromMilliseconds(1))).IsEqualTo(1);
+        var errors = await cleanupTask.WaitAsync(token);
         await Assert.That(errors).IsEmpty();
         await Assert.That(owner.AbsenceProven).IsTrue();
         await Assert.That(_runner.Calls.Select(static call => string.Join(' ', call.Arguments)))
