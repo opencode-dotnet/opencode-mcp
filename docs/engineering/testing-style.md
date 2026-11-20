@@ -325,6 +325,9 @@ fire-and-forget. Dispose MCP clients before disposing AppHost and its builder. W
 exits and the watcher, close the retained handles, then delete only the owner's root. Startup
 failure preserves the original error before any cleanup error; forced termination of a recorded
 product is a failed cleanup, not successful AppHost disposal.
+When the caller cancels during startup or readiness before the active phase deadline expires,
+`StartAsync` reports an `OperationCanceledException` with the caller's token first, ahead of any
+cleanup error.
 Give app disposal, builder disposal and observer joining independent bounds, snapshot recorded
 processes and exit waits under the ownership lock, attempt cleanup of every recorded product
 independently, and await exits under a fresh 30-second bound that earlier timeouts cannot cancel.
@@ -338,8 +341,9 @@ Cleanup tests hold independent process handles and capture the owner's safe hand
 disposal. Assert `HasExited` before waiting, then assert the captured handles are closed, a fresh
 connection is refused, the owned root is absent, and the sibling sentinel's contents are unchanged.
 A completed no-op disposal must fail at an assertion, not an exit timeout. Test backstops release
-their own evidence after those assertions, including during mutation runs. Real request failure,
-resource-ready callback failure, explicit cancellation and repeated disposal each exercise cleanup.
+their own evidence after those assertions, including during mutation runs. Cleanup coverage includes
+request and resource-ready callback failures, cancellation before startup, during startup and during
+readiness, cleanup failure after caller cancellation, and repeated disposal.
 
 AppHost phase hang guards are: entry-point builder resolution 360 seconds; DCP/application startup
 180 seconds; resource health and ready callbacks 120 seconds; MCP connection 45 seconds; each

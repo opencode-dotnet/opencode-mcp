@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Win32.SafeHandles;
 using Testably.Abstractions;
 
@@ -200,10 +202,7 @@ public sealed class OwnedAppHostTests
                 ?? throw new InvalidOperationException("Resource notifications are unavailable.");
             await Assert.That(notifications.TryGetCurrentState("mcp", out var update)).IsTrue();
             var snapshot = await Assert.That(update).IsNotNull();
-            var pid = Convert.ToInt32(snapshot.Snapshot.Properties.Single(static property => property.Name == "executable.pid").Value,
-                System.Globalization.CultureInfo.InvariantCulture);
-            using var observed = Process.GetProcessById(pid);
-            independent = RetainIndependentProcess(observed);
+            independent = RetainReadyProductProcess(snapshot);
             // Independent evidence must outlive the resource callback's cancellation on shutdown.
             exit = independent.WaitForExitAsync(CancellationToken.None);
             throw expected;
@@ -245,6 +244,162 @@ public sealed class OwnedAppHostTests
         });
     }
 
+    /// <summary>Caller cancellation during host construction uses the caller's token and releases the owned root.</summary>
+    [Test]
+    public async Task StartAsync_Should_Preserve_Caller_Cancellation_When_The_Host_Is_Building()
+    {
+        using var wholeTest = new CancellationTokenSource(TimeSpan.FromMinutes(20)); // Host construction and cleanup.
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(wholeTest.Token);
+        var builder = await CreateBuilderAsync(wholeTest.Token);
+        await using var owner = new OwnedAppHost(_files, builder);
+        var cancellation = Task.CompletedTask;
+        builder.Services.AddSingleton<IHostLifetime>(_ =>
+        {
+            cancellation = caller.CancelAsync();
+            throw new OperationCanceledException(new CancellationToken(canceled: true));
+        });
+
+        try
+        {
+            await AssertCallerCancellationAsync(owner, caller.Token);
+        }
+        finally
+        {
+            await cancellation;
+        }
+        await Assert.That(owner.ProductProcesses).IsEmpty();
+        await Assert.That(_files.Directory.Exists(owner.OwnedRoot)).IsFalse();
+    }
+
+    /// <summary>Cancellation from inside Aspire startup releases the root before the product can launch.</summary>
+    [Test]
+    public async Task StartAsync_Should_Release_Owned_Files_When_Cancelled_In_BeforeStart()
+    {
+        using var wholeTest = new CancellationTokenSource(TimeSpan.FromMinutes(20)); // Startup event and cleanup.
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(wholeTest.Token);
+        var builder = await CreateBuilderAsync(wholeTest.Token);
+        await using var owner = new OwnedAppHost(_files, builder);
+        await WithSentinelAsync(owner, async sentinel =>
+        {
+            builder.Eventing.Subscribe<BeforeStartEvent>(async (_, token) =>
+            {
+                await caller.CancelAsync();
+                await WaitForCancellationAsync(token);
+            });
+
+            await Assert.That(_files.Directory.Exists(owner.OwnedRoot)).IsTrue();
+            await AssertCallerCancellationAsync(owner, caller.Token);
+            await Assert.That(owner.ProductProcesses).IsEmpty();
+            await Assert.That(_files.Directory.Exists(owner.OwnedRoot)).IsFalse();
+            await Assert.That(await _files.File.ReadAllTextAsync(sentinel, wholeTest.Token)).IsEqualTo(SentinelContents);
+        });
+    }
+
+    /// <summary>Cleanup failure follows caller cancellation and preserves the owned root.</summary>
+    [Test]
+    public async Task StartAsync_Should_Preserve_Caller_Cancellation_When_Cleanup_Fails()
+    {
+        using var wholeTest = new CancellationTokenSource(TimeSpan.FromMinutes(20)); // Startup event and failed cleanup.
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(wholeTest.Token);
+        var builder = await CreateBuilderAsync(wholeTest.Token);
+        await using var owner = new OwnedAppHost(_files, builder);
+        var expected = new IOException("AppHost service disposal failed.");
+        // Root DI DisposeAsync stops subsequent in-process root disposals early; BeforeStartEvent blocks before DCP or product launch.
+        builder.Services.AddSingleton(_ => new FailingDisposable(expected));
+        builder.Eventing.Subscribe<BeforeStartEvent>(async (starting, token) =>
+        {
+            _ = starting.Services.GetRequiredService<FailingDisposable>();
+            await caller.CancelAsync();
+            await WaitForCancellationAsync(token);
+        });
+
+        try
+        {
+            var aggregate = await Assert.That(() => owner.StartAsync(caller.Token)).ThrowsExactly<AggregateException>();
+            var failure = await Assert.That(aggregate).IsNotNull();
+            await Assert.That(failure.InnerExceptions.Count).IsEqualTo(2);
+            var cancellation = await Assert.That(failure.InnerExceptions[0]).IsTypeOf<OperationCanceledException>();
+            AssertCallerToken(await Assert.That(cancellation).IsNotNull(), caller.Token);
+            await Assert.That(failure.InnerExceptions[0].GetType()).IsEqualTo(typeof(OperationCanceledException));
+            var cleanup = await Assert.That(failure.InnerExceptions[1]).IsTypeOf<AggregateException>();
+            var cleanupFailure = await Assert.That(cleanup).IsNotNull();
+            await Assert.That(cleanupFailure.InnerExceptions[0]).IsSameReferenceAs(expected);
+            await Assert.That(_files.Directory.Exists(owner.OwnedRoot)).IsTrue();
+            await owner.DisposeAsync();
+        }
+        finally
+        {
+            RemoveOwnedFiles(owner);
+        }
+    }
+
+    /// <summary>Cancellation while readiness is pending releases the already running product and its listener.</summary>
+    [Test]
+    public async Task StartAsync_Should_Release_The_Product_When_Cancelled_During_Readiness()
+    {
+        using var wholeTest = new CancellationTokenSource(TimeSpan.FromMinutes(20)); // Ready event and cleanup.
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(wholeTest.Token);
+        var builder = await CreateBuilderAsync(wholeTest.Token);
+        await using var owner = new OwnedAppHost(_files, builder);
+        var product = builder.Resources.OfType<ProjectResource>().Single();
+        Process? independent = null;
+        Task? exit = null;
+        Uri? endpoint = null;
+        SafeProcessHandle[] handles = [];
+        await WithSentinelAsync(owner, async sentinel =>
+        {
+            builder.Eventing.Subscribe<ResourceReadyEvent>(product, async (ready, token) =>
+            {
+                var notifications = ready.Services.GetRequiredService<ResourceNotificationService>();
+                if (!notifications.TryGetCurrentState(product.Name, out var update))
+                {
+                    throw new InvalidOperationException("The ready product has no resource snapshot.");
+                }
+                independent = RetainReadyProductProcess(update);
+                // Exit evidence must outlive cancellation of both startup and the callback.
+                exit = independent.WaitForExitAsync(CancellationToken.None);
+                await Assert.That(independent.HasExited).IsFalse();
+                endpoint = new Uri(product.GetEndpoint("http").Url);
+                await owner.WaitForReadinessEntryAsync(token);
+                await owner.WaitForProductObservationAsync(token);
+                handles = [.. owner.ProductProcesses.Select(static process => process.SafeHandle)];
+                await Assert.That(handles).IsNotEmpty();
+                await caller.CancelAsync();
+                await WaitForCancellationAsync(token);
+            });
+
+            try
+            {
+                await AssertCallerCancellationAsync(owner, caller.Token);
+                var process = await Assert.That(independent).IsNotNull();
+                await Assert.That(process.HasExited).IsTrue();
+                var exitTask = await Assert.That(exit).IsNotNull();
+                await exitTask.WaitAsync(wholeTest.Token);
+                foreach (var handle in handles)
+                {
+                    await Assert.That(handle.IsClosed).IsTrue();
+                }
+                var address = await Assert.That(endpoint).IsNotNull();
+                await Assert.That(owner.Endpoint).IsEqualTo(address);
+                await AssertEndpointReleasedAsync(address, wholeTest.Token);
+                await Assert.That(_files.Directory.Exists(owner.OwnedRoot)).IsFalse();
+                await Assert.That(await _files.File.ReadAllTextAsync(sentinel, wholeTest.Token)).IsEqualTo(SentinelContents);
+            }
+            finally
+            {
+                foreach (var handle in handles)
+                {
+                    handle.Dispose();
+                }
+                if (independent is not null)
+                {
+                    using var fallback = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // Independent product exit after a test failure.
+                    await ReleaseEvidenceAsync(owner, [independent], exit is null ? [] : [exit], fallback.Token);
+                }
+            }
+        });
+    }
+
     /// <summary>Repeated disposal keeps completed process evidence and leaves the sibling sentinel unchanged.</summary>
     [Test]
     public async Task DisposeAsync_Should_Complete_Idempotently_When_Disposal_Is_Repeated()
@@ -279,6 +434,25 @@ public sealed class OwnedAppHostTests
                 await ReleaseEvidenceAsync(owner, independent, exits, wholeTest.Token);
             }
         });
+    }
+
+    private static Task WaitForCancellationAsync(CancellationToken token) =>
+        new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task.WaitAsync(token);
+
+    private static async Task AssertCallerCancellationAsync(OwnedAppHost owner, CancellationToken caller)
+    {
+        var failure = await Assert.That(() => owner.StartAsync(caller)).ThrowsExactly<OperationCanceledException>();
+        var error = await Assert.That(failure).IsNotNull();
+        AssertCallerToken(error, caller);
+    }
+
+    private static void AssertCallerToken(OperationCanceledException error, CancellationToken caller)
+    {
+        // TUnit's value formatter reads WaitHandle, which throws for a disposed linked source.
+        if (error.CancellationToken != caller)
+        {
+            Assert.Fail($"Cancellation carried a foreign token: {error}");
+        }
     }
 
     private async Task WithSentinelAsync(OwnedAppHost owner, Func<string, Task> action)
@@ -358,6 +532,14 @@ public sealed class OwnedAppHostTests
         }
     }
 
+    private static Process RetainReadyProductProcess(ResourceEvent update)
+    {
+        var pid = Convert.ToInt32(update.Snapshot.Properties.Single(static property => property.Name == "executable.pid").Value,
+            System.Globalization.CultureInfo.InvariantCulture);
+        using var observed = Process.GetProcessById(pid);
+        return RetainIndependentProcess(observed);
+    }
+
     private static Process RetainIndependentProcess(Process observed)
     {
         var process = Process.GetProcessById(observed.Id);
@@ -409,5 +591,10 @@ public sealed class OwnedAppHostTests
             .ThrowsExactly<SocketException>();
         var error = await Assert.That(failure).IsNotNull();
         await Assert.That(error.SocketErrorCode).IsEqualTo(SocketError.ConnectionRefused);
+    }
+
+    private sealed class FailingDisposable(IOException failure) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => ValueTask.FromException(failure);
     }
 }

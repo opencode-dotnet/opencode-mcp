@@ -25,6 +25,7 @@ internal sealed class OwnedAppHost : IAsyncDisposable
     private readonly List<Task> _exits = [];
     private readonly Lock _gate = new();
     private readonly TaskCompletionSource _productObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _readinessEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private DistributedApplication? _app;
     private Task _observer = Task.CompletedTask;
     private Task? _dispose;
@@ -65,8 +66,14 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
     }
 
-    /// <summary>Gets the allocated HTTP authority after successful readiness.</summary>
-    public Uri Endpoint => _endpoint ?? throw new InvalidOperationException("The product has not reached readiness.");
+    /// <summary>Gets the HTTP authority allocated at the start of the readiness phase.</summary>
+    public Uri Endpoint => _endpoint ?? throw new InvalidOperationException("The product endpoint has not been allocated.");
+
+    /// <summary>Waits until startup enters the product readiness phase.</summary>
+    internal Task WaitForReadinessEntryAsync(CancellationToken token) => _readinessEntered.Task.WaitAsync(token);
+
+    /// <summary>Waits until the product process is retained for cleanup.</summary>
+    internal Task WaitForProductObservationAsync(CancellationToken token) => _productObserved.Task.WaitAsync(token);
 
     /// <summary>Gets a read-only snapshot of retained product process handles.</summary>
     internal IReadOnlyList<Process> ProductProcesses
@@ -86,19 +93,24 @@ internal sealed class OwnedAppHost : IAsyncDisposable
     /// <summary>Builds and starts the application, retaining process ownership before waiting for readiness.</summary>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        var phaseDeadline = CancellationToken.None;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             _app = await _builder.BuildAsync(cancellationToken);
             _observer = ObserveResourcesAsync(_app, _observation.Token);
-            using (var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            using (var startupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(180))) // DCP startup and resource creation.
+            using (var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, startupDeadline.Token))
             {
-                startup.CancelAfter(TimeSpan.FromSeconds(180)); // DCP startup and resource creation.
+                phaseDeadline = startupDeadline.Token;
                 await _app.StartAsync(startup.Token);
             }
+            phaseDeadline = CancellationToken.None;
             _endpoint = _app.GetEndpoint("mcp", "http");
-            using var health = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            health.CancelAfter(TimeSpan.FromSeconds(120)); // Product health and resource-ready callbacks.
+            using var healthDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(120)); // Product health and resource-ready callbacks.
+            phaseDeadline = healthDeadline.Token;
+            using var health = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, healthDeadline.Token);
+            _readinessEntered.TrySetResult();
             var ready = _app.ResourceNotifications.WaitForResourceHealthyAsync("mcp", health.Token);
             await Task.WhenAny(ready, _observer).Unwrap();
             await ready;
@@ -106,6 +118,11 @@ internal sealed class OwnedAppHost : IAsyncDisposable
         }
         catch (Exception original)
         {
+            // Classify before cleanup; a caller cancelling during cleanup must not relabel this failure.
+            var callerCancellation = original is OperationCanceledException canceled && canceled.CancellationToken != cancellationToken
+                && cancellationToken.IsCancellationRequested && !phaseDeadline.IsCancellationRequested
+                ? new OperationCanceledException(canceled.Message, canceled, cancellationToken)
+                : null;
             try
             {
                 await DisposeAsync();
@@ -113,7 +130,11 @@ internal sealed class OwnedAppHost : IAsyncDisposable
             catch (Exception cleanup)
             {
                 _dispose = Task.CompletedTask; // Startup reports both failures; later disposal must not replace them.
-                throw new AggregateException(original, cleanup);
+                throw new AggregateException(callerCancellation ?? original, cleanup);
+            }
+            if (callerCancellation is not null)
+            {
+                throw callerCancellation;
             }
             throw;
         }
