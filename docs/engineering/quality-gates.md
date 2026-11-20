@@ -498,11 +498,32 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   parent; merge groups compare with their declared base, including preceding queue entries.
   Git supplies NUL-separated paths with rename detection disabled, so a source-to-Markdown rename
   still selects code. Only an ordinal `.md` suffix or the exact root `LICENSE` path is exempt.
+  On pull requests, `Changes` uploads `tested-tree-<run_attempt>` with seven-day retention.
+  Its two lines record the synthetic merge commit's tree and its first parent's tree, in that order.
+- **Reuse job.** The `reuse` job runs on `merge_group` with a 10-minute bound and read-only
+  `contents: read`, `actions: read`, and `pull-requests: read` permissions. It reuses CI only when
+  all five conditions hold:
+  1. The group commit has two parents, the `master` queue ref identifies a pull request, and the
+     head and declared base are valid commit hashes. The second parent supplies the head.
+  2. The pull request still has that head and targets `master`.
+  3. The head's latest `pull_request` run of `.github/workflows/ci.yml` finished successfully,
+     and its latest attempt has one successful `CI result` job.
+  4. The attempt has one unexpired tested-tree artifact with the expected name, created during its
+     successful `Changes` job. The recorded trees equal the group's tree and declared base tree.
+  5. The pull request leaves guarded paths untouched, compared case-insensitively. These are
+     `.github/**`, `tools/**`, and any `Directory.Build.*`, `Directory.Packages.props`, `global.json`,
+     or `nuget.config` file. Before .NET setup or repository tooling runs, the shell checks these
+     paths and verifies that `base_sha` and the first parent match `origin/master`, so a stacked
+     entry cannot run unmerged tooling from an earlier queue entry.
+
+  Missing, invalid, or uncertain evidence uses the usual CI job selection. “Re-run failed jobs”
+  leaves a successful `Changes` job in its old attempt, so the new attempt has no tested-tree
+  artifact and runs full CI. The job summary records the decision and links the selected run attempt.
 - **Lint job.** One Linux job restores the local tools, runs Slopwatch, the Release build with the
   analyzer wall, both format passes, and the "Verify native tool entry" step (the separate file-app
   build and empty-receipt smoke).
-- **Aspire home input.** The CI task supplies an owned `ASPIRE_HOME` under each job's temporary
-  directory before every build and test command, and retains it through that job's tests. Dashboard
+- **Aspire home input.** Lint and build/test supply an owned `ASPIRE_HOME` under each job's temporary
+  directory before building or testing the solution, and retain it through that job's tests. Dashboard
   data stays beneath that home. The AppHost SDK's normal build acquires its paired CLI bundle
   through `DnxPinned`; no global Aspire, Docker, native compiler or certificate-trust preparation
   is required for this HTTP-only, container-free graph. Build output is never shared between OSes.
@@ -512,18 +533,17 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   every test step so TUnit does not upload with the ambient runtime token. These managed legs
   establish no native coverage for any RID.
 - **`CI result`.** One fail-closed job named `CI result` runs with `if: always()`, needs every
-  other job, and is the one required check: a skipped matrix leg reports under its unexpanded name,
-  so the legs cannot be required one by one. A change that reaches code needs every job green; a
-  documentation-only change needs the changes job green and the skipped jobs skipped.
+  other job, and is the one required check. A skipped matrix leg reports under its unexpanded
+  name, so the legs cannot be required one by one. The verdict table below governs job results.
 - **Merge queue.** Everything lands on the default branch through the merge queue, which requires
   the `CI result` check (`workflow.md`).
 - **Least privilege and bounds.** The workflow has `contents: read`; each build/test leg adds
-  `checks: write` for its test report, and nothing else is granted. A superseded pull request run
-  is cancelled, while each default-branch push has a per-commit concurrency group so a newer commit
-  does not cancel its pending or running workflow; every job has a bounded timeout. The .NET SDK is set
-  up from `global.json` and each job logs the version that resolved. Steps run in `pwsh` and check
-  every command's exit code. Job bounds are 5 minutes for classification, 30 for lint, 55 for each
-  build/test leg and 5 for the aggregate check.
+  `checks: write` for its test report. The reuse job's additional read permissions are listed above.
+  CI cancels a superseded pull request run. Each default-branch push has a per-commit concurrency
+  group so a newer commit cannot cancel its pending or running workflow. Every job has a bounded
+  timeout. Jobs that use the SDK set it up from `global.json` and log the resolved version.
+  Steps run in `pwsh` and check every command's exit code. Job bounds are 5 minutes for
+  classification, 10 for reuse, 30 for lint, 55 for each build/test leg and 5 for the aggregate check.
 - **Artifacts.** Each build/test leg uploads `artifacts/test-results/**` with `if: always()`, an
   OS-specific artifact name and seven-day retention. This directory holds the test platform's TRX
   files, TUnit HTML and JSON reports and, on a hang, hang-dump files; all are uploaded. No redaction
@@ -555,14 +575,15 @@ After a failed test step, if the build succeeded and the run was not cancelled, 
 step runs `dotnet test --solution OpenCode.Mcp.slnx --configuration Release --no-build --treenode-filter "/*/*/*/*[Category!=Package]" --list-tests`.
 This lists tests without executing them again. Both steps disable TUnit artifact upload.
 
-`CI result` accepts exactly these dependency states; missing, failed, cancelled or invalid states
-fail closed:
+`CI result` first requires `Changes` to succeed. A reuse claim means the reuse job succeeded
+and returned `true`. The check accepts only the passing combinations below.
 
-| Changes result | Code output | Lint result | Build/test result | Verdict |
-|---|---|---|---|---|
-| `success` | `true` | `success` | `success` | Pass |
-| `success` | `false` | `skipped` | `skipped` | Pass |
-| Any other combination | | | | Fail |
+| Changes result | Reuse claim | Event | Code output | Lint result | Build/test result | Verdict |
+|---|---|---|---|---|---|---|
+| `success` | Yes | `merge_group` | `true` or `false` | `skipped` | `skipped` | Pass |
+| `success` | No | Any | `true` | `success` | `success` | Pass |
+| `success` | No | Any | `false` | `skipped` | `skipped` | Pass |
+| Any other combination | | | | | | Fail |
 
 Review workflow syntax before submission and require hosted parse validation; a local build does
 not parse workflow YAML.

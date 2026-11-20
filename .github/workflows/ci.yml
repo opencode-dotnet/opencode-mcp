@@ -81,10 +81,199 @@ jobs:
           }
           "code=$code" >> $env:GITHUB_OUTPUT
 
+      - name: Record the tested tree
+        if: github.event_name == 'pull_request'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trees = git rev-parse 'HEAD^{tree}' 'HEAD^1^{tree}'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the tested trees.' }
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'tested-tree'), ($trees -join "`n") + "`n")
+
+      - name: Upload the tested tree
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tested-tree-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tested-tree
+          retention-days: 7
+          if-no-files-found: error
+
+  reuse:
+    name: Reuse tested tree
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      reuse: ${{ steps.guard.outputs.reuse || steps.decide.outputs.reuse }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Guard against self-vouching before executing repository tooling
+        id: guard
+        env:
+          QUEUE_REF: ${{ github.ref }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_FETCH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $facts = Join-Path $env:RUNNER_TEMP 'reuse'
+          New-Item -ItemType Directory -Path $facts | Out-Null
+          function Save-Fact($name, $value) { [IO.File]::WriteAllText((Join-Path $facts $name), $value) }
+          function Save-Revision($name, $revision) {
+            $sha = git rev-parse --verify $revision
+            if ($LASTEXITCODE -ne 0) { $sha = '' }
+            Save-Fact $name $sha
+            return $sha
+          }
+          Save-Fact 'queue-ref' $env:QUEUE_REF
+          Save-Fact 'base' $env:QUEUE_BASE
+          $null = Save-Revision 'tree' 'HEAD^{tree}'
+          $parents = git rev-list --parents -n 1 HEAD
+          $parentCount = if ($LASTEXITCODE -eq 0) { $parents.Split(' ').Length - 1 } else { '' }
+          Save-Fact 'parent-count' $parentCount
+          $head = Save-Revision 'head' 'HEAD^2'
+          $reason = & {
+            try {
+              if ($parentCount -ne 2 -or !$head) { throw 'Cannot resolve the guard revisions.' }
+              # Determine the common ancestor before the shallow fetch can change the history walk.
+              $mergeBase = git merge-base 'HEAD^1' $head
+              $mergeBaseExit = $LASTEXITCODE
+              $credential = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("x-access-token:$env:QUEUE_FETCH_TOKEN"))
+              $env:QUEUE_FETCH_AUTH = "AUTHORIZATION: basic $credential"
+              git --config-env=http.https://github.com/.extraheader=QUEUE_FETCH_AUTH fetch --no-tags --depth=1 origin refs/heads/master | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch master.' }
+              $masterTip = git rev-parse --verify FETCH_HEAD
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the fetched master tip.' }
+              if ($env:QUEUE_BASE -cne $masterTip -or $parents.Split(' ')[1] -cne $masterTip) { return 'rule 5: base differs from master' }
+              if ($mergeBaseExit -ne 0) { throw 'Cannot resolve the merge base.' }
+              $paths = Join-Path $facts 'changed-paths'
+              git diff --name-only --no-renames -z $mergeBase $head > $paths
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot read the changed paths.' }
+              if (!(Save-Revision 'base-tree' "$($env:QUEUE_BASE)^{tree}")) { throw 'Cannot resolve the base tree.' }
+              $comparison = [StringComparison]::OrdinalIgnoreCase
+              # Keep these guarded paths in sync with MergeGroupReuseDecision.IsGuarded.
+              foreach ($path in [IO.File]::ReadAllText($paths, [Text.UTF8Encoding]::new($false, $true)).Split([char]0)) {
+                $leaf = $path.Split('/')[-1]
+                if ($path.StartsWith('.github/', $comparison) -or $path.StartsWith('tools/', $comparison) -or
+                    $leaf.StartsWith('Directory.Build.', $comparison) -or $leaf.Equals('Directory.Packages.props', $comparison) -or
+                    $leaf.Equals('global.json', $comparison) -or $leaf.Equals('nuget.config', $comparison)) {
+                  return 'rule 5: guarded path'
+                }
+              }
+            } catch {
+              'unavailable guard facts'
+            }
+          }
+          $env:QUEUE_FETCH_AUTH = $null
+          $env:QUEUE_FETCH_TOKEN = $null
+          git config --local --unset-all http.https://github.com/.extraheader 2>$null
+          $global:LASTEXITCODE = 0
+          if ($reason) {
+            @('reuse=false', "reason=$reason", 'blocked=true') >> $env:GITHUB_OUTPUT
+            @('### Merge-group reuse', 'reuse=false', "reason=$reason") >> $env:GITHUB_STEP_SUMMARY
+          }
+          exit 0
+
+      - name: Setup .NET SDK
+        if: steps.guard.outputs.blocked != 'true'
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Log resolved SDK
+        if: steps.guard.outputs.blocked != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet --version
+          exit $LASTEXITCODE
+
+      - name: Gather GitHub facts
+        id: facts
+        if: steps.guard.outputs.blocked != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $facts = Join-Path $env:RUNNER_TEMP 'reuse'
+          $api = "repos/$env:GITHUB_REPOSITORY"
+          function Get-Fact($name, $endpoint, $collection) {
+            $file = Join-Path $facts $name
+            [IO.File]::WriteAllText($file, '')
+            if (!$endpoint) { return }
+            try {
+              if ($collection) {
+                $pages = gh api --paginate --slurp $endpoint
+                if ($LASTEXITCODE -ne 0) { throw "Cannot fetch $name." }
+                # Check the fetch before flattening its pages. jq preserves the timestamp strings.
+                $pages | jq --arg collection $collection '{($collection): [ .[][$collection][] ]}' > $file
+              } else {
+                gh api $endpoint > $file
+              }
+              if ($LASTEXITCODE -ne 0) { throw "Cannot write $name." }
+              if ($collection -cin 'workflow_runs', 'artifacts') {
+                Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+              }
+            } catch {
+              Write-Warning "Cannot gather $name."
+              [IO.File]::WriteAllText($file, '')
+            }
+          }
+          $queue = ([string](Get-Content (Join-Path $facts 'queue-ref') -Raw)).Trim()
+          $head = ([string](Get-Content (Join-Path $facts 'head') -Raw)).Trim()
+          $prEndpoint = if ($queue -cmatch '^refs/heads/gh-readonly-queue/master/pr-(\d+)-') { "$api/pulls/$($Matches[1])" }
+          $null = Get-Fact 'pr.json' $prEndpoint
+          $runs = Get-Fact 'runs.json' "$api/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head&per_page=100" 'workflow_runs'
+          $latest = $runs.workflow_runs | Where-Object { $_.path -ceq '.github/workflows/ci.yml' -and $_.event -ceq 'pull_request' -and $_.head_sha -ceq $head } |
+            Sort-Object -Property created_at, id -Descending | Select-Object -First 1
+          $id, $attempt = $latest.id, $latest.run_attempt
+          $run = if ($id -and $attempt) { "$api/actions/runs/$id" }
+          $null = Get-Fact 'jobs.json' $(if ($run) { "$run/attempts/$attempt/jobs?per_page=100" }) 'jobs'
+          $artifacts = Get-Fact 'artifacts.json' $(if ($run) { "$run/artifacts?per_page=100" }) 'artifacts'
+          $treeFile = Join-Path $facts 'tested-tree'
+          [IO.File]::WriteAllText($treeFile, '')
+          if ($run) { "link=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$id/attempts/$attempt" >> $env:GITHUB_OUTPUT }
+          $artifact = @($artifacts.artifacts | Where-Object { $_.name -ceq "tested-tree-$attempt" -and $_.expired -eq $false })
+          if ($artifact.Count -ne 1 -or !$artifact[0].id) { exit 0 }
+          try {
+            $zipFile = Join-Path $facts 'artifact.zip'
+            gh api "$api/actions/artifacts/$($artifact[0].id)/zip" > $zipFile
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot download artifact.' }
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [IO.Compression.ZipFile]::OpenRead($zipFile)
+            $entry = @($zip.Entries | Where-Object { $_.FullName -ceq 'tested-tree' })
+            if ($entry.Count -ne 1) { throw 'Expected one tested-tree entry.' }
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry[0], $treeFile, $true)
+          } catch {
+            Write-Warning 'Cannot extract the tested tree.'
+            [IO.File]::WriteAllText($treeFile, '')
+          } finally {
+            if ($zip) { $zip.Dispose() }
+          }
+          exit 0
+
+      - name: Decide reuse
+        id: decide
+        if: steps.guard.outputs.blocked != 'true'
+        env:
+          REUSED_RUN: ${{ steps.facts.outputs.link }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run tools/native.cs -- merge-group-reuse --facts (Join-Path $env:RUNNER_TEMP 'reuse') --output $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @('### Merge-group reuse', (Get-Content $env:GITHUB_OUTPUT -Raw), "Run: $env:REUSED_RUN") >> $env:GITHUB_STEP_SUMMARY
+
   lint:
     name: Lint
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' && !(needs.reuse.result == 'success' && needs.reuse.outputs.reuse == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -165,8 +354,8 @@ jobs:
 
   build-and-test:
     name: Build and test (${{ matrix.os }})
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' && !(needs.reuse.result == 'success' && needs.reuse.outputs.reuse == 'true') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
     permissions:
@@ -310,7 +499,7 @@ jobs:
 
   ci-result:
     name: CI result
-    needs: [changes, lint, build-and-test]
+    needs: [changes, reuse, lint, build-and-test]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -318,25 +507,35 @@ jobs:
     steps:
       - name: Require every needed job
         env:
+          EVENT: ${{ github.event_name }}
+          REUSE_RESULT: ${{ needs.reuse.result }}
+          REUSE: ${{ needs.reuse.outputs.reuse }}
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           LINT: ${{ needs.lint.result }}
           BUILD_AND_TEST: ${{ needs.build-and-test.result }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Output "changes=$env:CHANGES code=$env:CODE lint=$env:LINT build-and-test=$env:BUILD_AND_TEST"
+          Write-Output "event=$env:EVENT reuse-result=$env:REUSE_RESULT reuse=$env:REUSE changes=$env:CHANGES code=$env:CODE lint=$env:LINT build-and-test=$env:BUILD_AND_TEST"
           $errors = [System.Collections.Generic.List[string]]::new()
           if ($env:CHANGES -cne 'success') { $errors.Add('Changes must succeed.') }
-          switch -CaseSensitive ($env:CODE) {
-            'true' {
-              if ($env:LINT -cne 'success') { $errors.Add('Code changes require successful lint.') }
-              if ($env:BUILD_AND_TEST -cne 'success') { $errors.Add('Code changes require successful build/test legs.') }
+          if ($env:REUSE_RESULT -ceq 'success' -and $env:REUSE -ceq 'true') {
+            if ($env:EVENT -cne 'merge_group') { $errors.Add('Reuse requires a merge group.') }
+            if ($env:CODE -cne 'true' -and $env:CODE -cne 'false') { $errors.Add('Code classification must be true or false.') }
+            if ($env:LINT -cne 'skipped') { $errors.Add('Reuse requires skipped lint.') }
+            if ($env:BUILD_AND_TEST -cne 'skipped') { $errors.Add('Reuse requires skipped build/test legs.') }
+          } else {
+            switch -CaseSensitive ($env:CODE) {
+              'true' {
+                if ($env:LINT -cne 'success') { $errors.Add('Code changes require successful lint.') }
+                if ($env:BUILD_AND_TEST -cne 'success') { $errors.Add('Code changes require successful build/test legs.') }
+              }
+              'false' {
+                if ($env:LINT -cne 'skipped') { $errors.Add('Documentation-only changes require skipped lint.') }
+                if ($env:BUILD_AND_TEST -cne 'skipped') { $errors.Add('Documentation-only changes require skipped build/test legs.') }
+              }
+              default { $errors.Add('Code classification must be true or false.') }
             }
-            'false' {
-              if ($env:LINT -cne 'skipped') { $errors.Add('Documentation-only changes require skipped lint.') }
-              if ($env:BUILD_AND_TEST -cne 'skipped') { $errors.Add('Documentation-only changes require skipped build/test legs.') }
-            }
-            default { $errors.Add('Code classification must be true or false.') }
           }
           foreach ($message in $errors) { Write-Output "::error::$message" }
           if ($errors.Count -gt 0) { exit 1 }

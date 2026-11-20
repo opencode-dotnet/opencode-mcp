@@ -86,7 +86,34 @@ public sealed class NativeArgumentsTests
         await Assert.That(() => NativeArguments.Parse(["pack-child", "--rid", "win-x64"]))
             .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --evidence.", StringComparison.Ordinal);
         await Assert.That(() => NativeArguments.Parse([])).ThrowsExactly<InvalidOperationException>()
-            .WithMessage("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root, assets, publication or snapshot.", StringComparison.Ordinal);
+            .WithMessage("Arguments: use verify, stage, inspect, validate, matrix, control, prove-linux, pack-child, pack-root, assets, publication, snapshot or merge-group-reuse.", StringComparison.Ordinal);
+    }
+
+    [Test]
+    public async Task Parse_Should_Preserve_Merge_Group_Reuse_Paths()
+    {
+        NativeCommand? command = null;
+        await Assert.That(() => command = NativeArguments.Parse(["merge-group-reuse", "--output", "github output", "--facts", "facts folder"])).ThrowsNothing();
+        await Assert.That(command).IsEqualTo(new NativeCommand("merge-group-reuse", null, "github output", null, null, null, Facts: "facts folder"));
+    }
+
+    [Test]
+    public async Task Parse_Should_Refuse_Invalid_Merge_Group_Reuse_Options()
+    {
+        await Assert.That(() => NativeArguments.Parse(["merge-group-reuse", "--output", "out"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --facts.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["merge-group-reuse", "--facts", "facts"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing --output.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["merge-group-reuse", "--facts", "--output", "out"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing value for --facts.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["merge-group-reuse", "--facts", "facts", "--output"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: missing value for --output.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["merge-group-reuse", "--facts", "one", "--facts", "two"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: duplicate --facts.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["merge-group-reuse", "--output", "one", "--output", "two"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: duplicate --output.", StringComparison.Ordinal);
+        await Assert.That(() => NativeArguments.Parse(["merge-group-reuse", "--manifest", "manifest"]))
+            .ThrowsExactly<InvalidOperationException>().WithMessage("Arguments: unknown option --manifest for merge-group-reuse.", StringComparison.Ordinal);
     }
 
     [Test]
