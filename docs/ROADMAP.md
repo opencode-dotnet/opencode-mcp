@@ -1,6 +1,6 @@
 # Roadmap
 
-Date: 2026-11-15
+Date: 2026-11-21
 
 Operational state: what exists today, what is queued next, what is still open, and what is known to
 be incomplete. This file is a summary and shrinks as work lands. `../AGENTS.md` routes to the
@@ -9,7 +9,7 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 
 ## Status
 
-**Preview. `0.1.0-preview.2` is published to NuGet.org, GitHub Packages and GitHub Releases.**
+**Preview. `0.1.0-preview.3` is published to NuGet.org, GitHub Packages and GitHub Releases.**
 
 The manual release workflow publishes one verified build, unchanged, to the three channels. Each
 channel was verified after publication by installing from it on the six hosted RIDs. Before
